@@ -18,6 +18,7 @@ def authorize(call: ToolCallProposal) -> PolicyDecision:
         return PolicyDecision(
             tool_name=call.tool_name,
             allowed=False,
+            reason_code="TOOL_NOT_ALLOWLISTED",
             requires_approval=requires_approval,
             reason="Tool is not in the Issue 1 read-only allow-list.",
         )
@@ -27,11 +28,13 @@ def authorize(call: ToolCallProposal) -> PolicyDecision:
         return PolicyDecision(
             tool_name=call.tool_name,
             allowed=False,
+            reason_code="ARGUMENT_CONTRACT_MISMATCH",
             reason="Arguments do not exactly match the tool contract.",
         )
 
     return PolicyDecision(
         tool_name=call.tool_name,
         allowed=True,
+        reason_code="TOOL_ALLOWED",
         reason="Exact read-only tool and argument contract matched.",
     )

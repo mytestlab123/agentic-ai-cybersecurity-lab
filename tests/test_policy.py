@@ -12,3 +12,4 @@ def test_approval_cannot_add_a_missing_mutation_capability() -> None:
 
     assert decision.allowed is False
     assert decision.requires_approval is True
+    assert decision.reason_code == "TOOL_NOT_ALLOWLISTED"

@@ -47,8 +47,23 @@ class PatchingSop(Contract):
 class PolicyDecision(Contract):
     tool_name: str
     allowed: bool
+    reason_code: Literal[
+        "TOOL_ALLOWED",
+        "TOOL_NOT_ALLOWLISTED",
+        "ARGUMENT_CONTRACT_MISMATCH",
+    ]
     reason: str
     requires_approval: bool = False
+
+
+class AuditEvent(Contract):
+    stage: Literal["MODEL_OUTPUT_VALIDATION", "POLICY_AUTHORIZATION"]
+    outcome: Literal["BLOCKED"]
+    reason_code: Literal[
+        "MODEL_OUTPUT_REJECTED",
+        "TOOL_NOT_ALLOWLISTED",
+        "ARGUMENT_CONTRACT_MISMATCH",
+    ]
 
 
 class ToolResult(Contract):
@@ -61,5 +76,6 @@ class HarnessResult(Contract):
     status: Literal["COMPLETED", "BLOCKED", "FAILED"]
     plan_summary: str
     policy_decisions: tuple[PolicyDecision, ...]
+    audit_events: tuple[AuditEvent, ...] = ()
     tool_results: tuple[ToolResult, ...] = ()
     errors: tuple[str, ...] = ()

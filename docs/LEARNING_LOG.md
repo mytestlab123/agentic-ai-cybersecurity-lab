@@ -20,3 +20,38 @@ demonstrates why trusting model-selected function names would fail open.
 - Unsafe termination request: `BLOCKED` with zero tool results.
 
 No AWS resource, model API, credential, or real identifier was used.
+
+## Experiment 2 - validate model output at runtime
+
+Python type annotations do not enforce an injected model's return value at
+runtime. A deliberately malformed dictionary previously caused an
+`AttributeError` before policy evaluation. The harness now validates model
+output against `AgentPlan` and returns a generic `BLOCKED` result when
+validation fails. No policy decision or tool execution occurs, and the raw
+model output is not copied into evidence.
+
+The focused regression test proves that malformed output fails closed with
+zero tool results and zero executed calls.
+
+## Experiment 3 - typed rejection audit event
+
+Malformed model output now produces one typed audit event containing only the
+fixed stage `MODEL_OUTPUT_VALIDATION`, outcome `BLOCKED`, and reason code
+`MODEL_OUTPUT_REJECTED`. These stable fields are useful for filtering and
+counting without copying untrusted model content into logs or evidence.
+
+The existing malformed-output regression remains the canonical test. It now
+also proves the event fields and confirms that an attacker-controlled fixture
+value is absent from the serialized harness result.
+
+## Experiment 4 - policy-denial audit event
+
+Policy decisions now separate a stable machine-readable `reason_code` from the
+short human-readable `reason`. A missing tool receives
+`TOOL_NOT_ALLOWLISTED`; malformed arguments receive
+`ARGUMENT_CONTRACT_MISMATCH`; an accepted call receives `TOOL_ALLOWED`.
+
+Denied decisions produce typed `POLICY_AUTHORIZATION` audit events before the
+harness returns `BLOCKED`. The event contains no prompt or argument values.
+The unsafe-mutation regression proves the code and event while continuing to
+prove zero executed tools.
