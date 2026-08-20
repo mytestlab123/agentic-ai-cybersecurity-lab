@@ -6,7 +6,12 @@
 UserRequest
     |
     v
-Model.plan()                 untrusted proposal boundary
+Model.plan()                 untrusted runtime output
+    |
+    v
+AgentPlan.model_validate()   deterministic contract boundary
+    |
+    +---- invalid ---------> BLOCKED + typed AuditEvent
     |
     v
 AgentPlan + ToolCallProposal
@@ -14,7 +19,7 @@ AgentPlan + ToolCallProposal
     v
 Policy.authorize()           deterministic, default deny
     |
-    +---- any denial ------> BLOCKED, zero tools execute
+    +---- any denial ------> BLOCKED + typed AuditEvent, zero tools execute
     |
     v
 ToolRegistry.execute()       allow-listed read-only functions
@@ -37,6 +42,15 @@ partially executing.
 
 ## Trust model
 
-Model output is untrusted even when it matches the user's words. Policy and
-tool code are deterministic. Approval, when introduced later, cannot grant a
-capability that the tool registry does not contain.
+Model output is untrusted even when it matches the user's words or a Python
+type annotation. The harness validates the runtime output as an `AgentPlan`
+before policy evaluation. A rejected output produces a typed audit event with
+fixed stage, outcome, and reason-code values; it does not copy raw model output
+into evidence. Policy and tool code are deterministic. Approval, when
+introduced later, cannot grant a capability that the tool registry does not
+contain.
+
+Policy decisions contain both a stable reason code for automation and a short
+human-readable reason. A denied decision produces an audit event from the
+stable code. The event excludes the user prompt, model explanation, and tool
+arguments.
