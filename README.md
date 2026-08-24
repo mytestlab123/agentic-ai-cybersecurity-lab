@@ -46,6 +46,27 @@ uv run python -m secure_agent_harness.demo
 No AWS account, API key, network service, or real security data is required.
 `uv.lock` pins the resolved learning environment.
 
+## Issue 5: local Inspector-to-SSM visual proof
+
+The first FAST POC milestone is local and synthetic. Start the dependency-free
+browser server with:
+
+```bash
+uv run python -m secure_agent_harness.poc_server
+```
+
+Open `http://127.0.0.1:8765`, enter the synthetic CVE
+`CVE-2099-0001`, and run the triage. The page shows the Inspector, instance,
+SSM readiness, and patch-compliance checks, then requires Approve or Reject.
+Approval records a no-op mock remediation; it never calls SSM or changes a
+fixture. See [docs/FAST_POC_ADAPTATION.md](docs/FAST_POC_ADAPTATION.md) for
+the reuse boundary and the gates before any AWS work.
+
+The interface is a ChatGPT-style local workspace with a conversation view,
+tool activity cards, structured evidence cards, and inline approval controls.
+If port `8765` is already occupied, use `POC_PORT=8766 uv run python -m
+secure_agent_harness.poc_server` and open `http://127.0.0.1:8766`.
+
 ## Learning vocabulary
 
 - **LLM:** a probabilistic model that may propose a plan. No real LLM is used

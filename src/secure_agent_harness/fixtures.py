@@ -1,6 +1,6 @@
 """Synthetic fixtures safe for public learning examples."""
 
-from .contracts import Finding, PatchingSop, Workload
+from .contracts import Finding, PatchingSop, PocInspectorFinding, Workload
 
 FINDINGS = {
     "FINDING_01": Finding(
@@ -43,4 +43,18 @@ RAW_INSTANCE_RESPONSES = {
         "InstanceType": "INSTANCE_TYPE_LARGE",
         "Tags": [{"Key": "Name", "Value": "SYNTHETIC_NAME_01"}],
     }
+}
+
+# Issue 5 uses an intentionally future-looking CVE identifier so the browser
+# proof is clearly synthetic and cannot be mistaken for live vulnerability
+# intelligence.
+POC_INSPECTOR_FINDINGS = {
+    "CVE-2099-0001": PocInspectorFinding(
+        cve_id="CVE-2099-0001",
+        lab_env="SYNTHETIC_LAB",
+        resource_alias="EC2_RESOURCE_01",
+        finding_state="ACTIVE",
+        severity="HIGH",
+        title="Synthetic package update required",
+    )
 }

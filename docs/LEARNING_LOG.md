@@ -67,3 +67,22 @@ normalized state, and a coarse size class.
 The regression test proves the allow-listed read completes and that every raw
 fixture value is absent from the serialized result. No AWS SDK, account, or
 live resource was used.
+
+## Issue 5 - local Inspector-to-SSM visual proof
+
+The FAST POC reuses the secure harness boundary and adds a dependency-free
+browser adapter. A scripted plan proposes four read-only synthetic checks:
+Inspector finding, instance context, SSM managed-node readiness, and patch
+compliance. The result exposes aliases and typed state only, with stable
+`policy_reason_codes` and `executed_calls` fields.
+
+The browser stops at `APPROVAL_REQUIRED`. Reject records `HUMAN_REJECTED` and
+Approve records `MOCK_REMEDIATION_NOOP`; both paths perform no mutation. An
+unknown synthetic CVE is blocked before any tool runs. The local HTTP proof
+used `CVE-2099-0001` and `SYNTHETIC_LAB`; no AWS, AgentCore, credentials, or
+live sample deployment was used.
+
+The browser surface was then upgraded to a ChatGPT-style workspace with a
+conversation view, assistant tool cards, structured evidence cards, and inline
+approval controls. The presentation change did not widen the tool registry or
+change the approval/no-mutation contract.

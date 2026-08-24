@@ -7,6 +7,10 @@ ALLOWED_ARGUMENTS = {
     "read_workload": frozenset({"resource_id"}),
     "read_patching_sop": frozenset({"sop_id"}),
     "read_sanitized_instance": frozenset({"resource_alias"}),
+    "mock_inspector_finding": frozenset({"cve_id", "lab_env"}),
+    "mock_instance_context": frozenset({"resource_alias"}),
+    "mock_ssm_node_context": frozenset({"resource_alias", "lab_env"}),
+    "mock_patch_compliance": frozenset({"cve_id", "resource_alias"}),
 }
 
 ACTION_WORDS = ("create", "delete", "patch", "reboot", "start", "stop", "terminate", "update", "write")
@@ -21,7 +25,7 @@ def authorize(call: ToolCallProposal) -> PolicyDecision:
             allowed=False,
             reason_code="TOOL_NOT_ALLOWLISTED",
             requires_approval=requires_approval,
-            reason="Tool is not in the Issue 1 read-only allow-list.",
+            reason="Tool is not in the read-only allow-list.",
         )
 
     actual = frozenset(call.arguments)
