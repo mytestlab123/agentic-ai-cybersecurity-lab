@@ -6,6 +6,7 @@ ALLOWED_ARGUMENTS = {
     "read_finding": frozenset({"finding_id"}),
     "read_workload": frozenset({"resource_id"}),
     "read_patching_sop": frozenset({"sop_id"}),
+    "read_sanitized_instance": frozenset({"resource_alias"}),
 }
 
 ACTION_WORDS = ("create", "delete", "patch", "reboot", "start", "stop", "terminate", "update", "write")

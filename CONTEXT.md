@@ -1,14 +1,18 @@
 # Context
 
-Current objective: review the completed local proof for Issue 1, a synthetic
-secure-agent harness.
+Current objective: Issue 2 local sanitization, one concept at a time.
 
-Current boundary: the injected model is scripted and local; tools are
-read-only in-memory lookups; policy is default-deny; no AWS or external API is
-used.
+Issue 1 is complete and merged in PR #4. The current boundary remains local:
+the model is scripted, tools are deterministic and read-only, policy is
+default-deny, and no AWS or external API is used.
 
-Validation: six focused tests and Python compilation pass locally.
+Issue 2 slice: one synthetic AWS-shaped instance response is sanitized into a
+typed alias-only result before model visibility. No AWS SDK, credential, live
+account, or resource is in scope.
 
-Next gate: Amit explains model vs agent vs harness, typed tool contracts,
-probabilistic vs deterministic behavior, and fail-closed execution before the
-project moves to personal AWS read-only adapters.
+Validation: 8 tests, Python compilation, normal and blocked demos, and
+`git diff --check` pass locally.
+
+Next gate: Amit traces the synthetic raw record through the sanitizer and
+explains why raw instance, network, DNS, tag, and profile values must not
+cross the model boundary before any live read-only adapter is considered.

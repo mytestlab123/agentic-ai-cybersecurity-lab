@@ -5,8 +5,9 @@ from typing import Any
 
 from pydantic import BaseModel
 
-from .contracts import ToolCallProposal, ToolResult
-from .fixtures import FINDINGS, PATCHING_SOPS, WORKLOADS
+from .contracts import SanitizedInstance, ToolCallProposal, ToolResult
+from .fixtures import FINDINGS, PATCHING_SOPS, RAW_INSTANCE_RESPONSES, WORKLOADS
+from .sanitization import sanitize_instance_record
 
 
 class FixtureNotFoundError(LookupError):
@@ -20,6 +21,14 @@ def _read_fixture(fixtures: dict[str, BaseModel], fixture_id: str) -> BaseModel:
         raise FixtureNotFoundError(f"Synthetic fixture not found: {fixture_id}") from exc
 
 
+def _read_sanitized_instance(resource_alias: str) -> SanitizedInstance:
+    try:
+        raw = RAW_INSTANCE_RESPONSES[resource_alias]
+    except KeyError as exc:
+        raise FixtureNotFoundError(f"Synthetic fixture not found: {resource_alias}") from exc
+    return sanitize_instance_record(raw, resource_alias)
+
+
 class ToolRegistry:
     def __init__(self) -> None:
         self.executed_calls: list[str] = []
@@ -27,6 +36,7 @@ class ToolRegistry:
             "read_finding": ("finding_id", lambda value: _read_fixture(FINDINGS, value)),
             "read_workload": ("resource_id", lambda value: _read_fixture(WORKLOADS, value)),
             "read_patching_sop": ("sop_id", lambda value: _read_fixture(PATCHING_SOPS, value)),
+            "read_sanitized_instance": ("resource_alias", _read_sanitized_instance),
         }
 
     def execute(self, call: ToolCallProposal) -> ToolResult:

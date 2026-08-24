@@ -31,3 +31,16 @@ PATCHING_SOPS = {
         ),
     )
 }
+
+RAW_INSTANCE_RESPONSES = {
+    "EC2_RESOURCE_01": {
+        "InstanceId": "RAW_INSTANCE_ID_01",
+        "PrivateIpAddress": "PRIVATE_IP_01",
+        "PrivateDnsName": "PRIVATE_DNS_01",
+        "VpcId": "VPC_ID_01",
+        "SubnetId": "SUBNET_ID_01",
+        "State": {"Name": "running"},
+        "InstanceType": "INSTANCE_TYPE_LARGE",
+        "Tags": [{"Key": "Name", "Value": "SYNTHETIC_NAME_01"}],
+    }
+}

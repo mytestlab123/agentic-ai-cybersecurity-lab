@@ -22,11 +22,15 @@ The local `ScriptedModel` is not an LLM. It makes the model boundary runnable
 without an API key or paid service. A real probabilistic model can later
 implement the same protocol, but it never receives direct tool authority.
 
-The three tools can only read:
+The Issue 1 tools can only read:
 
 - a synthetic security finding;
 - synthetic workload metadata;
 - a synthetic patching SOP.
+
+Issue 2 adds one local sanitization slice: a synthetic AWS-shaped instance
+record is reduced to an alias-only view before it becomes model-visible. No AWS
+SDK or live account is used.
 
 Unknown tools, mutation proposals, malformed arguments, and unknown fixture
 IDs fail closed.

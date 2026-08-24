@@ -37,7 +37,9 @@ partially executing.
 - `model.py`: protocol for plan producers and a local scripted implementation.
 - `contracts.py`: Pydantic request, plan, policy, and result types.
 - `policy.py`: exact tool and argument allow-list; everything else is denied.
-- `tools.py`: three in-memory readers over synthetic fixtures.
+- `tools.py`: allow-listed in-memory readers over synthetic fixtures.
+- `sanitization.py`: deterministic alias-only projection for the Issue 2
+  instance view.
 - `harness.py`: deterministic orchestration and evidence collection.
 
 ## Trust model
@@ -54,3 +56,8 @@ Policy decisions contain both a stable reason code for automation and a short
 human-readable reason. A denied decision produces an audit event from the
 stable code. The event excludes the user prompt, model explanation, and tool
 arguments.
+
+The Issue 2 instance reader keeps the raw synthetic record inside the local
+tool boundary. `sanitization.py` emits only the typed alias, environment,
+normalized state, and coarse size class; raw instance, network, DNS, and tag
+values are not copied into `ToolResult`.
