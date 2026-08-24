@@ -44,6 +44,13 @@ class PatchingSop(Contract):
     steps: tuple[str, ...]
 
 
+class SanitizedInstance(Contract):
+    resource_alias: str = Field(pattern=r"^EC2_RESOURCE_[0-9]{2}$")
+    environment: Literal["SYNTHETIC_LAB"]
+    state: Literal["RUNNING", "STOPPED", "PENDING", "TERMINATED", "UNKNOWN"]
+    size_class: Literal["SMALL", "MEDIUM", "LARGE", "UNKNOWN"]
+
+
 class PolicyDecision(Contract):
     tool_name: str
     allowed: bool

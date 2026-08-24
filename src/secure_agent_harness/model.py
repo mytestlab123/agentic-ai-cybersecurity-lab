@@ -40,5 +40,9 @@ class ScriptedModel:
                     tool_name="read_patching_sop",
                     arguments={"sop_id": "SOP_PATCHING_01"},
                 ),
+                ToolCallProposal(
+                    tool_name="read_sanitized_instance",
+                    arguments={"resource_alias": "EC2_RESOURCE_01"},
+                ),
             ),
         )

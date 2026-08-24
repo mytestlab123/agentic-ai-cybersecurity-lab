@@ -55,3 +55,15 @@ Denied decisions produce typed `POLICY_AUTHORIZATION` audit events before the
 harness returns `BLOCKED`. The event contains no prompt or argument values.
 The unsafe-mutation regression proves the code and event while continuing to
 prove zero executed tools.
+
+## Issue 2 - local sanitization slice
+
+The new `read_sanitized_instance` tool reads one synthetic AWS-shaped record
+through a deterministic sanitizer. The raw fixture contains instance,
+network, DNS, and tag-shaped fields using safe aliases. The model-visible
+`SanitizedInstance` contains only `resource_alias`, `SYNTHETIC_LAB`, a
+normalized state, and a coarse size class.
+
+The regression test proves the allow-listed read completes and that every raw
+fixture value is absent from the serialized result. No AWS SDK, account, or
+live resource was used.

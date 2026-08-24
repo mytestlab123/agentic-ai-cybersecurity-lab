@@ -17,15 +17,45 @@ class MalformedPlanModel:
         return {"summary": "", "tool_calls": "not-a-list"}
 
 
-def test_normal_request_reads_three_synthetic_records() -> None:
+def test_normal_request_reads_synthetic_records() -> None:
     tools = ToolRegistry()
     result = AgentHarness(ScriptedModel(), tools).run(
         UserRequest(request_id="REQUEST_01", prompt="Review the finding safely.")
     )
 
     assert result.status == "COMPLETED"
-    assert tools.executed_calls == ["read_finding", "read_workload", "read_patching_sop"]
+    assert tools.executed_calls == [
+        "read_finding",
+        "read_workload",
+        "read_patching_sop",
+        "read_sanitized_instance",
+    ]
     assert result.tool_results[0].data["resource_id"] == "EC2_RESOURCE_01"
+
+
+def test_sanitized_instance_result_exposes_aliases_only() -> None:
+    result = AgentHarness(ScriptedModel()).run(
+        UserRequest(request_id="REQUEST_07", prompt="Review the safe synthetic view.")
+    )
+
+    sanitized = result.tool_results[-1]
+    assert sanitized.tool_name == "read_sanitized_instance"
+    assert sanitized.data == {
+        "resource_alias": "EC2_RESOURCE_01",
+        "environment": "SYNTHETIC_LAB",
+        "state": "RUNNING",
+        "size_class": "LARGE",
+    }
+    serialized = result.model_dump_json()
+    for raw_value in (
+        "RAW_INSTANCE_ID_01",
+        "PRIVATE_IP_01",
+        "PRIVATE_DNS_01",
+        "VPC_ID_01",
+        "SUBNET_ID_01",
+        "SYNTHETIC_NAME_01",
+    ):
+        assert raw_value not in serialized
 
 
 def test_unsafe_mutation_proposal_blocks_entire_plan() -> None:
