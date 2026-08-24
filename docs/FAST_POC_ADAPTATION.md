@@ -178,3 +178,31 @@ controlled model text or sensitive fields.
   `mutation_performed: false`.
 - An unknown synthetic CVE stops with `CVE_NOT_FOUND` and
   `executed_calls: []`.
+
+## Milestone 2 read-only adapter
+
+`secure_agent_harness.aws_read_only.AwsReadOnlyEvidenceSource` now provides a
+client-injected read-only lane. It is deliberately not wired to a live AWS
+profile or the browser default.
+
+The sequence is exact and fail-closed:
+
+1. `Inspector2.list_findings` filters one CVE with an `EQUALS` vulnerability
+   filter and requires exactly one finding.
+2. The finding must bind to the exact runtime EC2 instance target.
+3. `EC2.describe_instances` reads only that instance and verifies the required
+   `Project` and `Environment` tags.
+4. `SSM.describe_instance_information` reads only that managed node and
+   requires an online/ready result.
+
+Zero findings, multiple findings, resource mismatch, tag mismatch, missing
+SSM readiness, pagination failure, or backend errors return `BLOCKED` with a
+stable reason code. The result exposes only a resource alias, coarse state,
+severity, check outcomes, and `executed_calls`; raw IDs, IPs, ARNs, titles,
+and exceptions stay inside the adapter boundary. There is no
+`send_command`, patch, reboot, or mutation client in this lane.
+
+The adapter uses injected clients so tests prove call shape without AWS
+credentials or network access. A future live run still requires the exact
+profile, region, target instance, project/environment tags, evidence path, and
+same-day cleanup/no-mutation decision to be approved separately.

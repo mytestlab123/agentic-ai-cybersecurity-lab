@@ -67,6 +67,12 @@ tool activity cards, structured evidence cards, and inline approval controls.
 If port `8765` is already occupied, use `POC_PORT=8766 uv run python -m
 secure_agent_harness.poc_server` and open `http://127.0.0.1:8766`.
 
+Milestone 2 also includes a client-injected read-only Inspector/EC2/SSM
+evidence adapter in `secure_agent_harness.aws_read_only`. Its fake-client
+tests prove exact finding binding, required tags, SSM readiness, and
+fail-closed reason codes. It is not connected to a live AWS profile and has
+no command, patch, reboot, or mutation path.
+
 ## Learning vocabulary
 
 - **LLM:** a probabilistic model that may propose a plan. No real LLM is used

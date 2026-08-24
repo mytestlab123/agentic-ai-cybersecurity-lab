@@ -174,3 +174,84 @@ class PocEvent(Contract):
     tool_name: str | None = None
     reason_code: str | None = None
     data: dict[str, Any] = Field(default_factory=dict)
+
+
+class ReadOnlyTarget(Contract):
+    """Runtime-only target binding; never returned as model-visible evidence."""
+
+    resource_alias: str = Field(pattern=r"^EC2_RESOURCE_[0-9]{2}$")
+    instance_id: str = Field(min_length=1, max_length=128)
+
+
+class ReadOnlyCheck(Contract):
+    check_name: Literal[
+        "INSPECTOR_FINDING",
+        "FINDING_EC2_BINDING",
+        "EC2_TARGET",
+        "EC2_TAGS",
+        "SSM_MANAGED_NODE",
+    ]
+    outcome: Literal["PASS", "NO_GO"]
+    reason_code: Literal[
+        "FINDING_MATCHED",
+        "FINDING_NOT_FOUND",
+        "FINDING_AMBIGUOUS",
+        "FINDING_RESOURCE_MISMATCH",
+        "EC2_TARGET_MATCHED",
+        "EC2_TARGET_NOT_FOUND",
+        "EC2_TARGET_AMBIGUOUS",
+        "EC2_TAGS_MATCHED",
+        "EC2_TAGS_MISMATCH",
+        "SSM_NODE_READY",
+        "SSM_NODE_NOT_FOUND",
+        "SSM_NODE_NOT_READY",
+        "READ_BACKEND_FAILED",
+    ]
+
+
+class AwsReadOnlyEvidence(Contract):
+    """Safe projection of three read-only AWS evidence calls."""
+
+    source: Literal["AWS_READ_ONLY"]
+    cve_id: str = Field(pattern=r"^CVE-[0-9]{4}-[0-9]{4,}$")
+    resource_alias: str = Field(pattern=r"^EC2_RESOURCE_[0-9]{2}$")
+    finding_count: int = Field(ge=1)
+    finding_state: Literal["ACTIVE", "RESOLVED", "UNKNOWN"]
+    finding_severity: Literal["INFORMATIONAL", "LOW", "MEDIUM", "HIGH", "CRITICAL", "UNKNOWN"]
+    finding_ec2_bound: Literal[True]
+    instance_state: Literal["RUNNING", "STOPPED", "PENDING", "TERMINATED", "UNKNOWN"]
+    expected_tags_verified: Literal[True]
+    ssm_managed: Literal[True]
+    ssm_readiness: Literal["READY", "NOT_READY"]
+    checks: tuple[ReadOnlyCheck, ...]
+    executed_calls: tuple[
+        Literal[
+            "inspector.list_findings",
+            "ec2.describe_instances",
+            "ssm.describe_instance_information",
+        ],
+        ...,
+    ]
+
+
+class AwsReadOnlyResult(Contract):
+    """Fail-closed result for the optional read-only AWS evidence lane."""
+
+    status: Literal["READY", "BLOCKED"]
+    reason_code: Literal[
+        "READ_ONLY_EVIDENCE_READY",
+        "FINDING_NOT_FOUND",
+        "FINDING_AMBIGUOUS",
+        "FINDING_RESOURCE_MISMATCH",
+        "EC2_TARGET_NOT_FOUND",
+        "EC2_TARGET_AMBIGUOUS",
+        "EC2_TAGS_MISMATCH",
+        "SSM_NODE_NOT_FOUND",
+        "SSM_NODE_NOT_READY",
+        "READ_BACKEND_FAILED",
+    ]
+    cve_id: str = Field(pattern=r"^CVE-[0-9]{4}-[0-9]{4,}$")
+    resource_alias: str = Field(pattern=r"^EC2_RESOURCE_[0-9]{2}$")
+    evidence: AwsReadOnlyEvidence | None = None
+    executed_calls: tuple[str, ...] = ()
+    message: str = Field(min_length=1, max_length=180)

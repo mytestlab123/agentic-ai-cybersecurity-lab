@@ -86,3 +86,15 @@ The browser surface was then upgraded to a ChatGPT-style workspace with a
 conversation view, assistant tool cards, structured evidence cards, and inline
 approval controls. The presentation change did not widen the tool registry or
 change the approval/no-mutation contract.
+
+## Issue 5 - read-only AWS evidence adapter
+
+Milestone 2 now has a client-injected adapter for Inspector2, EC2, and SSM.
+It filters one CVE, proves the finding binds to one exact instance, verifies
+the required lab tags, and checks that the matching SSM node is online. Zero,
+ambiguous, mismatched, or incomplete evidence returns `BLOCKED` before the
+next call. Fake-client tests prove the request shapes and that raw IDs, IPs,
+ARNs, titles, and backend exception text do not enter the result.
+
+No live AWS profile, credentials, network call, SSM command, patch, reboot, or
+mutation was used.
