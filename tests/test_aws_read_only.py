@@ -31,18 +31,35 @@ class FakeEc2:
 
 
 class FakeSsm:
-    def __init__(self, node: Mapping[str, object] | None) -> None:
+    def __init__(
+        self,
+        node: Mapping[str, object] | None,
+        patch_entries: list[Mapping[str, object]] | None = None,
+    ) -> None:
         self.node = node
+        self.patch_entries = patch_entries if patch_entries is not None else [
+            {
+                "InstalledCount": 10,
+                "MissingCount": 2,
+                "FailedCount": 0,
+                "SecurityNonCompliantCount": 2,
+                "CriticalNonCompliantCount": 1,
+            }
+        ]
         self.calls: list[dict[str, object]] = []
 
     def describe_instance_information(self, **kwargs: object) -> Mapping[str, object]:
         self.calls.append(kwargs)
         return {"InstanceInformationList": [] if self.node is None else [self.node]}
 
+    def list_inventory_entries(self, **kwargs: object) -> Mapping[str, object]:
+        self.calls.append(kwargs)
+        return {"Entries": self.patch_entries}
+
 
 def finding(instance_id: str = "INSTANCE_ID_01") -> dict[str, object]:
     return {
-        "findingArn": "arn:aws:inspector2:REGION:ACCOUNT_ID:finding/FINDING_ID",
+        "findingArn": "SYNTHETIC_FINDING_ARN",
         "awsAccountId": "ACCOUNT_ID",
         "status": "ACTIVE",
         "severity": "HIGH",
@@ -79,10 +96,11 @@ def source(
     tags: list[dict[str, str]] | None = None,
     ssm_node: Mapping[str, object] | None = None,
     inspector_fail: bool = False,
+    patch_entries: list[Mapping[str, object]] | None = None,
 ) -> tuple[AwsReadOnlyEvidenceSource, FakeInspector, FakeEc2, FakeSsm]:
     inspector = FakeInspector(findings if findings is not None else [finding()], inspector_fail)
     ec2 = FakeEc2(instance(tags))
-    ssm = FakeSsm(node() if ssm_node is None else ssm_node)
+    ssm = FakeSsm(node() if ssm_node is None else ssm_node, patch_entries)
     return AwsReadOnlyEvidenceSource(inspector, ec2, ssm), inspector, ec2, ssm
 
 
@@ -193,3 +211,37 @@ def test_backend_error_is_generic_and_fail_closed() -> None:
     assert ec2.calls == []
     assert ssm.calls == []
     assert "attacker-controlled backend detail" not in result.model_dump_json()
+
+
+def test_patch_summary_and_package_projection_are_safe() -> None:
+    finding_with_package = finding()
+    finding_with_package["packageVulnerabilityDetails"] = {
+        "vulnerablePackages": [
+            {"name": "openssl", "version": "1.0.2k", "fixedInVersion": "1.0.2k-26"},
+            {"name": "bad\nlog", "version": "1.0.0"},
+        ]
+    }
+    evidence_source, _inspector, _ec2, ssm = source(findings=[finding_with_package])
+
+    result = evidence_source.collect("CVE-2099-0001", TARGET, include_patch_summary=True)
+
+    assert result.status == "READY"
+    assert result.evidence.patch_summary.missing_count == 2
+    assert result.evidence.packages[0].name == "openssl"
+    assert len(result.evidence.packages) == 1
+    assert ssm.calls[-1] == {
+        "InstanceId": "INSTANCE_ID_01",
+        "TypeName": "AWS:PatchSummary",
+        "MaxResults": 50,
+    }
+    assert "bad\\nlog" not in result.model_dump_json()
+
+
+def test_missing_patch_summary_blocks_when_requested() -> None:
+    evidence_source, _inspector, _ec2, _ssm = source(patch_entries=[])
+
+    result = evidence_source.collect("CVE-2099-0001", TARGET, include_patch_summary=True)
+
+    assert result.status == "BLOCKED"
+    assert result.reason_code == "SSM_PATCH_SUMMARY_NOT_FOUND"
+    assert result.executed_calls[-1] == "ssm.list_inventory_entries"

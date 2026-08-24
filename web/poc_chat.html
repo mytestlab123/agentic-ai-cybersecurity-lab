@@ -18,6 +18,9 @@
     .brand-name { font-size:.94rem; font-weight:650; }
     .new-chat { display:flex; gap:10px; width:100%; padding:11px 12px; color:var(--text); background:transparent; border:1px solid #4b4b4b; border-radius:9px; text-align:left; }
     .new-chat:hover { background:#242424; }
+    .upload-button { display:flex; align-items:center; gap:9px; width:100%; padding:10px 11px; color:#cfcfcf; background:#242424; border:1px solid #414141; border-radius:8px; font-size:.8rem; }
+    .upload-button:hover { background:#2d2d2d; color:#fff; }
+    .upload-button input { display:none; }
     .side-label { padding:0 9px; color:#777; font-size:.7rem; font-weight:700; letter-spacing:.08em; }
     .chat-item { padding:10px 11px; border-radius:8px; color:#d1d1d1; font-size:.88rem; }
     .chat-item.active { background:#2c2c2c; color:#fff; }
@@ -101,7 +104,8 @@
       <div class="side-label">WORKSPACE</div>
       <div class="chat-item active">Shield&nbsp;&nbsp; Inspector to SSM</div>
       <div class="side-spacer"></div>
-      <div class="side-footer"><span class="mode-dot"></span>Local synthetic mode<br>No cloud credentials or live tools</div>
+      <label class="upload-button" for="evidence-upload"><span>↑</span><span>Upload read-only evidence</span><input id="evidence-upload" type="file" accept="application/json,.json"></label>
+      <div class="side-footer"><span class="mode-dot"></span>Local synthetic mode<br>Live upload is sanitized and read-only</div>
     </aside>
 
     <main class="main">
@@ -109,7 +113,7 @@
         <div><div class="eyebrow">SECURITY WORKSPACE</div><h1>Inspector to SSM</h1></div>
         <div class="status-pill"><span class="mode-dot"></span>Offline demo</div>
       </header>
-      <div class="safety-banner"><strong>Local synthetic demo.</strong> No AWS, AgentCore, or SSM call is made. Results are deterministic fixture evidence.</div>
+      <div class="safety-banner"><strong>Safe demo boundary.</strong> Local runs use synthetic fixtures. Uploaded live results must be typed, sanitized, and read-only.</div>
 
       <section class="chat" aria-live="polite">
         <div id="welcome" class="welcome">
@@ -140,6 +144,7 @@
     const promptEl = document.querySelector('#prompt');
     const labEnvEl = document.querySelector('#lab-env');
     const runButton = document.querySelector('#run');
+    const uploadEl = document.querySelector('#evidence-upload');
     const welcome = document.querySelector('#welcome');
     const messages = document.querySelector('#messages');
     const newChat = document.querySelector('#new-chat');
@@ -207,13 +212,19 @@
       if (evidence) {
         const grid = node('div', 'evidence-grid');
         evidenceCell(grid, 'CVE', evidence.cve_id);
-        evidenceCell(grid, 'Severity', evidence.severity);
+        evidenceCell(grid, 'Severity', evidence.finding_severity || evidence.severity);
         evidenceCell(grid, 'Resource', evidence.resource_alias);
         evidenceCell(grid, 'Finding', evidence.finding_state);
         evidenceCell(grid, 'Instance', evidence.instance_state);
-        evidenceCell(grid, 'SSM', evidence.managed_state + ' / ' + evidence.readiness);
-        evidenceCell(grid, 'Patch', evidence.patch_state);
-        evidenceCell(grid, 'Reboot', evidence.reboot_required ? 'Required' : 'Not required');
+        evidenceCell(grid, 'SSM', evidence.ssm_readiness ? (evidence.ssm_managed ? 'MANAGED / ' + evidence.ssm_readiness : 'NOT MANAGED') : evidence.managed_state + ' / ' + evidence.readiness);
+        if (evidence.patch_summary) {
+          evidenceCell(grid, 'Missing patches', evidence.patch_summary.missing_count);
+          evidenceCell(grid, 'Critical', evidence.patch_summary.critical_non_compliant_count);
+        } else {
+          evidenceCell(grid, 'Patch', evidence.patch_state || 'Not collected');
+          evidenceCell(grid, 'Reboot', evidence.reboot_required ? 'Required' : 'Not required');
+        }
+        if (evidence.packages) evidenceCell(grid, 'Packages', evidence.packages.length);
         card.appendChild(grid);
       }
       const summary = node('p', 'message-copy', result.message || '');
@@ -286,6 +297,20 @@
     });
 
     newChat.addEventListener('click', () => { messages.replaceChildren(); welcome.classList.remove('hidden'); promptEl.focus(); runId = null; });
+
+    uploadEl.addEventListener('change', async () => {
+      const file = uploadEl.files && uploadEl.files[0];
+      uploadEl.value = '';
+      if (!file) return;
+      addMessage('user', 'Upload sanitized Inspector / SSM evidence');
+      try {
+        const payload = JSON.parse(await file.text());
+        renderAssistant(await post('/api/live-evidence', payload));
+      } catch (error) {
+        const body = addMessage('assistant', 'The evidence upload was blocked.');
+        body.lastChild.classList.add('error-copy');
+      }
+    });
   </script>
 </body>
 </html>

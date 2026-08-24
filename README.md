@@ -70,8 +70,36 @@ secure_agent_harness.poc_server` and open `http://127.0.0.1:8766`.
 Milestone 2 also includes a client-injected read-only Inspector/EC2/SSM
 evidence adapter in `secure_agent_harness.aws_read_only`. Its fake-client
 tests prove exact finding binding, required tags, SSM readiness, and
-fail-closed reason codes. It is not connected to a live AWS profile and has
-no command, patch, reboot, or mutation path.
+fail-closed reason codes. It also projects sanitized Inspector package data and
+SSM `AWS:PatchSummary` counts when explicitly requested. The browser has an
+**Upload read-only evidence** control: it validates a sanitized result and
+never accepts raw AWS payloads or model text.
+
+The repo-owned `scripts/issue5_live_lab.py` is the bounded live-lab operator:
+
+```bash
+# read-only preflight; every target boundary is explicit
+uv run python scripts/issue5_live_lab.py plan \
+  --image-id AMI_ID \
+  --image-owner IMAGE_OWNER \
+  --subnet-id SUBNET_ID \
+  --security-group-id SG_ID \
+  --iam-instance-profile PROFILE_NAME
+
+# only after the plan is READY and the same-day TTL is accepted
+uv run python scripts/issue5_live_lab.py apply ... --confirm
+
+# exact-target, read-only Inspector + EC2 + SSM evidence
+uv run python scripts/issue5_live_lab.py collect --cve-id CVE-YYYY-NNNN
+
+# exact tagged target only; explicit cleanup confirmation is required
+uv run python scripts/issue5_live_lab.py cleanup --confirm
+```
+
+`plan` refuses public networking, requires a private SSM path, an existing
+no-ingress security group, an existing instance profile, an available AMI,
+and enabled Inspector EC2 coverage. Current account discovery found no
+complete launch plan, so no live instance or AWS mutation has been performed.
 
 ## Learning vocabulary
 

@@ -193,16 +193,41 @@ The sequence is exact and fail-closed:
 3. `EC2.describe_instances` reads only that instance and verifies the required
    `Project` and `Environment` tags.
 4. `SSM.describe_instance_information` reads only that managed node and
-   requires an online/ready result.
+  requires an online/ready result.
+5. The live operator can explicitly add `SSM.list_inventory_entries` for the
+   exact node and `AWS:PatchSummary` type.
 
 Zero findings, multiple findings, resource mismatch, tag mismatch, missing
 SSM readiness, pagination failure, or backend errors return `BLOCKED` with a
 stable reason code. The result exposes only a resource alias, coarse state,
-severity, check outcomes, and `executed_calls`; raw IDs, IPs, ARNs, titles,
-and exceptions stay inside the adapter boundary. There is no
+severity, constrained package/version fields, patch counts, check outcomes,
+and `executed_calls`; raw IDs, IPs, ARNs, titles, and exceptions stay inside
+the adapter boundary. There is no
 `send_command`, patch, reboot, or mutation client in this lane.
 
 The adapter uses injected clients so tests prove call shape without AWS
 credentials or network access. A future live run still requires the exact
 profile, region, target instance, project/environment tags, evidence path, and
 same-day cleanup/no-mutation decision to be approved separately.
+
+## Issue 5 - bounded live lab operator
+
+The repository now owns `scripts/issue5_live_lab.py`. It keeps the live path
+separate from the local demo:
+
+- `plan` performs exact-target read-only checks for the AMI, subnet, route or
+  SSM endpoint path, no-ingress security group, IAM instance profile, and
+  Inspector EC2 coverage;
+- `apply --confirm` is the only launch path, creates one small encrypted,
+  private/no-public-IP instance with a short TTL, and records its runtime
+  target locally rather than printing the identifier into evidence;
+- `collect` calls only the exact Inspector CVE filter, EC2 instance lookup, SSM
+  managed-node lookup, and `AWS:PatchSummary` inventory read, then writes a
+  typed sanitized result for the browser upload control;
+- `cleanup --confirm` checks the project/environment tags before terminating
+  the exact recorded target.
+
+The current personal account did not have a complete private SSM launch path
+or a usable existing instance profile for the tested candidate, so the plan
+returned `BLOCKED` and no instance was created. Enabling Inspector, creating
+networking/IAM, or using a public IP remains outside this change.

@@ -8,7 +8,7 @@ from typing import Any
 
 from pydantic import ValidationError
 
-from .contracts import PocRequest
+from .contracts import AwsReadOnlyResult, PocRequest
 from .poc import PocEngine
 
 
@@ -82,6 +82,18 @@ class _Handler(BaseHTTPRequestHandler):
                 return
             session = _ENGINE.start(request)
             self._send_json(200, _session_payload(session))
+            return
+
+        if self.path == "/api/live-evidence":
+            try:
+                result = AwsReadOnlyResult.model_validate(payload)
+            except ValidationError:
+                self._send_json(400, {"status": "BLOCKED", "reason_code": "REQUEST_REJECTED"})
+                return
+            self._send_json(
+                200,
+                {"result": result.model_dump(mode="json"), "events": []},
+            )
             return
 
         if self.path == "/api/decision":

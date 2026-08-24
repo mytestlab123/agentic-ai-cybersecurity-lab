@@ -190,6 +190,7 @@ class ReadOnlyCheck(Contract):
         "EC2_TARGET",
         "EC2_TAGS",
         "SSM_MANAGED_NODE",
+        "SSM_PATCH_SUMMARY",
     ]
     outcome: Literal["PASS", "NO_GO"]
     reason_code: Literal[
@@ -205,12 +206,33 @@ class ReadOnlyCheck(Contract):
         "SSM_NODE_READY",
         "SSM_NODE_NOT_FOUND",
         "SSM_NODE_NOT_READY",
+        "SSM_PATCH_SUMMARY_READY",
+        "SSM_PATCH_SUMMARY_NOT_FOUND",
+        "SSM_PATCH_SUMMARY_INVALID",
         "READ_BACKEND_FAILED",
     ]
 
 
+class AwsVulnerablePackage(Contract):
+    """Small, sanitized projection of one Inspector package record."""
+
+    name: str = Field(pattern=r"^[A-Za-z0-9][A-Za-z0-9._+:/@-]{0,79}$")
+    installed_version: str = Field(pattern=r"^[A-Za-z0-9][A-Za-z0-9._+:/@~-]{0,63}$")
+    fixed_version: str | None = Field(default=None, pattern=r"^[A-Za-z0-9][A-Za-z0-9._+:/@~-]{0,63}$")
+
+
+class AwsPatchSummary(Contract):
+    """Safe counts from the SSM AWS:PatchSummary inventory type."""
+
+    installed_count: int = Field(ge=0)
+    missing_count: int = Field(ge=0)
+    failed_count: int = Field(ge=0)
+    security_non_compliant_count: int = Field(ge=0)
+    critical_non_compliant_count: int = Field(ge=0)
+
+
 class AwsReadOnlyEvidence(Contract):
-    """Safe projection of three read-only AWS evidence calls."""
+    """Safe projection of exact-target Inspector, EC2, and SSM reads."""
 
     source: Literal["AWS_READ_ONLY"]
     cve_id: str = Field(pattern=r"^CVE-[0-9]{4}-[0-9]{4,}$")
@@ -223,12 +245,15 @@ class AwsReadOnlyEvidence(Contract):
     expected_tags_verified: Literal[True]
     ssm_managed: Literal[True]
     ssm_readiness: Literal["READY", "NOT_READY"]
+    packages: tuple[AwsVulnerablePackage, ...] = ()
+    patch_summary: AwsPatchSummary | None = None
     checks: tuple[ReadOnlyCheck, ...]
     executed_calls: tuple[
         Literal[
             "inspector.list_findings",
             "ec2.describe_instances",
             "ssm.describe_instance_information",
+            "ssm.list_inventory_entries",
         ],
         ...,
     ]
@@ -248,6 +273,8 @@ class AwsReadOnlyResult(Contract):
         "EC2_TAGS_MISMATCH",
         "SSM_NODE_NOT_FOUND",
         "SSM_NODE_NOT_READY",
+        "SSM_PATCH_SUMMARY_NOT_FOUND",
+        "SSM_PATCH_SUMMARY_INVALID",
         "READ_BACKEND_FAILED",
     ]
     cve_id: str = Field(pattern=r"^CVE-[0-9]{4}-[0-9]{4,}$")

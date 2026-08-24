@@ -1,10 +1,16 @@
 from pathlib import Path
+import json
+from threading import Thread
+from urllib.error import HTTPError
+from urllib.request import Request, urlopen
 
 import pytest
 from pydantic import ValidationError
 
 from secure_agent_harness.contracts import PocRequest
 from secure_agent_harness.poc import PocEngine
+from secure_agent_harness.poc_server import _Handler
+from http.server import ThreadingHTTPServer
 
 
 def _request(cve_id: str = "CVE-2099-0001") -> PocRequest:
@@ -76,6 +82,43 @@ def test_browser_surface_is_local_and_has_the_gate_controls() -> None:
 
     assert "/api/run" in html
     assert "/api/decision" in html
+    assert "/api/live-evidence" in html
+    assert "Upload read-only evidence" in html
     assert "Approve mock remediation" in html
     assert "Reject" in html
-    assert "No AWS, AgentCore, or SSM call" in html
+    assert "Uploaded live results must be typed, sanitized, and read-only" in html
+
+
+def test_live_evidence_upload_validates_without_echoing_untrusted_payload() -> None:
+    server = ThreadingHTTPServer(("127.0.0.1", 0), _Handler)
+    thread = Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    try:
+        request = Request(
+            f"http://127.0.0.1:{server.server_port}/api/live-evidence",
+            data=json.dumps(
+                {
+                    "status": "BLOCKED",
+                    "reason_code": "REQUEST_REJECTED",
+                    "cve_id": "CVE-2099-0001",
+                    "resource_alias": "EC2_RESOURCE_01",
+                    "message": "safe",
+                    "unexpected": "attacker-controlled payload",
+                }
+            ).encode(),
+            headers={"Content-Type": "application/json"},
+            method="POST",
+        )
+        try:
+            urlopen(request)
+        except HTTPError as error:
+            body = error.read().decode()
+            assert error.code == 400
+            assert "attacker-controlled payload" not in body
+            assert "REQUEST_REJECTED" in body
+        else:
+            raise AssertionError("malformed evidence upload unexpectedly passed")
+    finally:
+        server.shutdown()
+        server.server_close()
+        thread.join(timeout=2)

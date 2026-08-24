@@ -98,3 +98,20 @@ ARNs, titles, and backend exception text do not enter the result.
 
 No live AWS profile, credentials, network call, SSM command, patch, reboot, or
 mutation was used.
+
+## Issue 5 - live-lab boundary and patch summary projection
+
+The live path is now a repo-owned operator with separate `plan`, `apply`,
+`collect`, and `cleanup` commands. `plan` is the safety gate: an available
+AMI alone is not enough. The instance needs a private subnet with an existing
+SSM path, a no-ingress security group, an existing instance profile, and
+enabled Inspector EC2 coverage. Public IPs, new networking, new IAM, and
+Inspector enablement are not silently added to make the demo pass.
+
+The read-only adapter can optionally read SSM `AWS:PatchSummary` and projects
+only patch counts plus strictly constrained package/version fields. The local
+ChatGPT-style UI accepts a typed sanitized result upload; malformed or extra
+fields produce a generic `REQUEST_REJECTED` response and are not echoed.
+
+The current preflight found no complete launch plan, so no live instance,
+SSM command, patch, reboot, or mutation was performed.
