@@ -35,6 +35,7 @@ class FakeSsm:
         self,
         node: Mapping[str, object] | None,
         patch_entries: list[Mapping[str, object]] | None = None,
+        patch_states: list[Mapping[str, object]] | None = None,
     ) -> None:
         self.node = node
         self.patch_entries = patch_entries if patch_entries is not None else [
@@ -46,6 +47,7 @@ class FakeSsm:
                 "CriticalNonCompliantCount": 1,
             }
         ]
+        self.patch_states = patch_states if patch_states is not None else []
         self.calls: list[dict[str, object]] = []
 
     def describe_instance_information(self, **kwargs: object) -> Mapping[str, object]:
@@ -55,6 +57,10 @@ class FakeSsm:
     def list_inventory_entries(self, **kwargs: object) -> Mapping[str, object]:
         self.calls.append(kwargs)
         return {"Entries": self.patch_entries}
+
+    def describe_instance_patch_states(self, **kwargs: object) -> Mapping[str, object]:
+        self.calls.append(kwargs)
+        return {"InstancePatchStates": self.patch_states}
 
 
 def finding(instance_id: str = "INSTANCE_ID_01") -> dict[str, object]:
@@ -76,8 +82,8 @@ def instance(tags: list[dict[str, str]] | None = None) -> dict[str, object]:
         "Tags": tags
         if tags is not None
         else [
-            {"Key": "Project", "Value": "agentcore-inspector-ssm-poc"},
-            {"Key": "Environment", "Value": "lab"},
+            {"Key": "Project", "Value": "Security Copilot"},
+            {"Key": "Environment", "Value": "seccop-demo"},
         ],
     }
 
@@ -97,10 +103,11 @@ def source(
     ssm_node: Mapping[str, object] | None = None,
     inspector_fail: bool = False,
     patch_entries: list[Mapping[str, object]] | None = None,
+    patch_states: list[Mapping[str, object]] | None = None,
 ) -> tuple[AwsReadOnlyEvidenceSource, FakeInspector, FakeEc2, FakeSsm]:
     inspector = FakeInspector(findings if findings is not None else [finding()], inspector_fail)
     ec2 = FakeEc2(instance(tags))
-    ssm = FakeSsm(node() if ssm_node is None else ssm_node, patch_entries)
+    ssm = FakeSsm(node() if ssm_node is None else ssm_node, patch_entries, patch_states)
     return AwsReadOnlyEvidenceSource(inspector, ec2, ssm), inspector, ec2, ssm
 
 
@@ -120,7 +127,8 @@ def test_ready_evidence_is_exactly_bound_and_sanitized() -> None:
         "ssm.describe_instance_information",
     )
     assert inspector.calls[0]["filterCriteria"] == {
-        "vulnerabilityId": [{"comparison": "EQUALS", "value": "CVE-2099-0001"}]
+        "vulnerabilityId": [{"comparison": "EQUALS", "value": "CVE-2099-0001"}],
+        "resourceId": [{"comparison": "EQUALS", "value": "INSTANCE_ID_01"}],
     }
     assert ec2.calls[0] == {"InstanceIds": ["INSTANCE_ID_01"]}
     assert ssm.calls[0] == {
@@ -244,4 +252,28 @@ def test_missing_patch_summary_blocks_when_requested() -> None:
 
     assert result.status == "BLOCKED"
     assert result.reason_code == "SSM_PATCH_SUMMARY_NOT_FOUND"
-    assert result.executed_calls[-1] == "ssm.list_inventory_entries"
+    assert result.executed_calls[-2:] == (
+        "ssm.list_inventory_entries",
+        "ssm.describe_instance_patch_states",
+    )
+
+
+def test_patch_state_fallback_is_ready_after_patch_manager_scan() -> None:
+    state = {
+        "InstanceId": "INSTANCE_ID_01",
+        "InstalledCount": 100,
+        "MissingCount": 3,
+        "FailedCount": 0,
+        "SecurityNonCompliantCount": 3,
+        "CriticalNonCompliantCount": 1,
+        "InstalledPendingRebootCount": 0,
+        "Operation": "Scan",
+    }
+    evidence_source, _inspector, _ec2, ssm = source(patch_entries=[], patch_states=[state])
+
+    result = evidence_source.collect("CVE-2099-0001", TARGET, include_patch_summary=True)
+
+    assert result.status == "READY"
+    assert result.evidence.patch_summary.operation == "Scan"
+    assert result.evidence.patch_summary.missing_count == 3
+    assert result.executed_calls[-1] == "ssm.describe_instance_patch_states"

@@ -209,6 +209,7 @@ class ReadOnlyCheck(Contract):
         "SSM_PATCH_SUMMARY_READY",
         "SSM_PATCH_SUMMARY_NOT_FOUND",
         "SSM_PATCH_SUMMARY_INVALID",
+        "SSM_PATCH_STATE_READY",
         "READ_BACKEND_FAILED",
     ]
 
@@ -229,6 +230,8 @@ class AwsPatchSummary(Contract):
     failed_count: int = Field(ge=0)
     security_non_compliant_count: int = Field(ge=0)
     critical_non_compliant_count: int = Field(ge=0)
+    installed_pending_reboot_count: int = Field(default=0, ge=0)
+    operation: Literal["Scan", "Install", "Unknown"] = "Unknown"
 
 
 class AwsReadOnlyEvidence(Contract):
@@ -254,6 +257,7 @@ class AwsReadOnlyEvidence(Contract):
             "ec2.describe_instances",
             "ssm.describe_instance_information",
             "ssm.list_inventory_entries",
+            "ssm.describe_instance_patch_states",
         ],
         ...,
     ]
@@ -282,3 +286,32 @@ class AwsReadOnlyResult(Contract):
     evidence: AwsReadOnlyEvidence | None = None
     executed_calls: tuple[str, ...] = ()
     message: str = Field(min_length=1, max_length=180)
+
+
+class SecCopCsvRequest(Contract):
+    """Browser input for one exact-target SecCop comparison."""
+
+    csv_text: str = Field(min_length=1, max_length=500_000)
+    instance_id: str = Field(pattern=r"^i-[0-9a-f]{8,17}$")
+    cve_id: str = Field(pattern=r"^CVE-[0-9]{4}-[0-9]{4,}$")
+    region: Literal["ap-southeast-1", "ap-south-1"] = "ap-southeast-1"
+
+
+class SecCopComparison(Contract):
+    """Sanitized CSV-to-live comparison returned to the browser."""
+
+    status: Literal["READY", "BLOCKED"]
+    reason_code: Literal[
+        "SECCOP_COMPARISON_READY",
+        "CSV_SCHEMA_INVALID",
+        "CSV_TARGET_MISMATCH",
+        "CSV_CVE_NOT_FOUND",
+        "AWS_READ_ONLY_BLOCKED",
+        "AWS_BACKEND_UNAVAILABLE",
+    ]
+    cve_id: str = Field(pattern=r"^CVE-[0-9]{4}-[0-9]{4,}$")
+    resource_alias: str = Field(pattern=r"^EC2_RESOURCE_[0-9]{2}$")
+    csv_row_count: int = Field(ge=0)
+    csv_match_count: int = Field(ge=0)
+    live_result: AwsReadOnlyResult | None = None
+    message: str = Field(min_length=1, max_length=220)

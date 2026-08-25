@@ -20,6 +20,11 @@
     .new-chat:hover { background:#242424; }
     .upload-button { display:flex; align-items:center; gap:9px; width:100%; padding:10px 11px; color:#cfcfcf; background:#242424; border:1px solid #414141; border-radius:8px; font-size:.8rem; }
     .upload-button:hover { background:#2d2d2d; color:#fff; }
+    .live-panel { display:grid; gap:8px; padding:11px; background:#202020; border:1px solid #3d3d3d; border-radius:9px; }
+    .live-panel label { color:#aaa; font-size:.72rem; }
+    .live-panel input,.live-panel select { width:100%; padding:7px 8px; color:#eee; background:#2b2b2b; border:1px solid #4b4b4b; border-radius:6px; font-size:.75rem; }
+    .live-panel button { padding:8px 9px; color:#092219; background:var(--green); border:0; border-radius:6px; font-size:.75rem; font-weight:700; }
+    .live-panel button:disabled { opacity:.45; cursor:wait; }
     .upload-button input { display:none; }
     .side-label { padding:0 9px; color:#777; font-size:.7rem; font-weight:700; letter-spacing:.08em; }
     .chat-item { padding:10px 11px; border-radius:8px; color:#d1d1d1; font-size:.88rem; }
@@ -105,6 +110,18 @@
       <div class="chat-item active">Shield&nbsp;&nbsp; Inspector to SSM</div>
       <div class="side-spacer"></div>
       <label class="upload-button" for="evidence-upload"><span>↑</span><span>Upload read-only evidence</span><input id="evidence-upload" type="file" accept="application/json,.json"></label>
+      <div class="live-panel">
+        <div class="side-label" style="padding:0">LIVE SECOP COMPARISON</div>
+        <label for="csv-upload">AWS Inspector CSV</label>
+        <input id="csv-upload" type="file" accept="text/csv,.csv">
+        <label for="instance-id">EC2 instance ID</label>
+        <input id="instance-id" type="text" autocomplete="off" placeholder="i-...">
+        <label for="live-cve">CVE from CSV</label>
+        <input id="live-cve" type="text" autocomplete="off" placeholder="CVE-YYYY-NNNN">
+        <label for="aws-region">AWS region</label>
+        <select id="aws-region"><option value="ap-southeast-1">Singapore</option><option value="ap-south-1">Mumbai</option></select>
+        <button id="compare-live" type="button">Compare live target</button>
+      </div>
       <div class="side-footer"><span class="mode-dot"></span>Local synthetic mode<br>Live upload is sanitized and read-only</div>
     </aside>
 
@@ -145,6 +162,11 @@
     const labEnvEl = document.querySelector('#lab-env');
     const runButton = document.querySelector('#run');
     const uploadEl = document.querySelector('#evidence-upload');
+    const csvUploadEl = document.querySelector('#csv-upload');
+    const instanceIdEl = document.querySelector('#instance-id');
+    const liveCveEl = document.querySelector('#live-cve');
+    const awsRegionEl = document.querySelector('#aws-region');
+    const compareLiveButton = document.querySelector('#compare-live');
     const welcome = document.querySelector('#welcome');
     const messages = document.querySelector('#messages');
     const newChat = document.querySelector('#new-chat');
@@ -220,6 +242,8 @@
         if (evidence.patch_summary) {
           evidenceCell(grid, 'Missing patches', evidence.patch_summary.missing_count);
           evidenceCell(grid, 'Critical', evidence.patch_summary.critical_non_compliant_count);
+          evidenceCell(grid, 'Pending reboot', evidence.patch_summary.installed_pending_reboot_count);
+          evidenceCell(grid, 'Patch operation', evidence.patch_summary.operation);
         } else {
           evidenceCell(grid, 'Patch', evidence.patch_state || 'Not collected');
           evidenceCell(grid, 'Reboot', evidence.reboot_required ? 'Required' : 'Not required');
@@ -257,6 +281,31 @@
       const body = addMessage('assistant', payload.result ? payload.result.message : 'No result returned.');
       if (payload.events) renderActivity(body, payload.events);
       if (payload.result) renderResult(body, payload.result);
+    }
+
+    function renderLiveComparison(payload) {
+      const result = payload.result || {};
+      const body = addMessage('assistant', result.message || 'No comparison result returned.');
+      const card = node('div', 'result-card');
+      const head = node('div', 'result-head');
+      head.appendChild(node('div', 'result-title', 'SecCop live comparison'));
+      head.appendChild(node('span', 'badge', result.reason_code || result.status || 'BLOCKED'));
+      card.appendChild(head);
+      const grid = node('div', 'evidence-grid');
+      evidenceCell(grid, 'CVE', result.cve_id);
+      evidenceCell(grid, 'CSV rows', result.csv_row_count);
+      evidenceCell(grid, 'CSV matches', result.csv_match_count);
+      evidenceCell(grid, 'Target', result.resource_alias);
+      const live = result.live_result;
+      evidenceCell(grid, 'AWS status', live ? live.status : 'NOT COLLECTED');
+      evidenceCell(grid, 'AWS reason', live ? live.reason_code : '-');
+      card.appendChild(grid);
+      if (live && live.evidence) {
+        evidenceCell(grid, 'Severity', live.evidence.finding_severity);
+        evidenceCell(grid, 'Packages', live.evidence.packages ? live.evidence.packages.length : 0);
+        evidenceCell(grid, 'SSM', live.evidence.ssm_readiness);
+      }
+      body.appendChild(card);
     }
 
     function extractCve(prompt) {
@@ -309,6 +358,33 @@
       } catch (error) {
         const body = addMessage('assistant', 'The evidence upload was blocked.');
         body.lastChild.classList.add('error-copy');
+      }
+    });
+
+    compareLiveButton.addEventListener('click', async () => {
+      const file = csvUploadEl.files && csvUploadEl.files[0];
+      const instanceId = instanceIdEl.value.trim();
+      const cveId = liveCveEl.value.trim().toUpperCase();
+      if (!file || !instanceId || !/^i-[0-9a-f]{8,17}$/.test(instanceId) || !/^CVE-[0-9]{4}-[0-9]{4,}$/.test(cveId)) {
+        const body = addMessage('assistant', 'Provide an Inspector CSV, an EC2 instance ID, and a valid CVE from that CSV.');
+        body.lastChild.classList.add('error-copy');
+        return;
+      }
+      compareLiveButton.disabled = true;
+      addMessage('user', 'Compare Inspector CSV with the selected live EC2 target');
+      try {
+        const payload = await post('/api/live-csv', {
+          csv_text: await file.text(),
+          instance_id: instanceId,
+          cve_id: cveId,
+          region: awsRegionEl.value
+        });
+        renderLiveComparison(payload);
+      } catch (error) {
+        const body = addMessage('assistant', 'The live comparison was blocked.');
+        body.lastChild.classList.add('error-copy');
+      } finally {
+        compareLiveButton.disabled = false;
       }
     });
   </script>

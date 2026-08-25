@@ -122,3 +122,33 @@ def test_live_evidence_upload_validates_without_echoing_untrusted_payload() -> N
         server.shutdown()
         server.server_close()
         thread.join(timeout=2)
+
+
+def test_live_csv_blocks_target_mismatch_without_calling_aws() -> None:
+    server = ThreadingHTTPServer(("127.0.0.1", 0), _Handler)
+    thread = Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    try:
+        request = Request(
+            f"http://127.0.0.1:{server.server_port}/api/live-csv",
+            data=json.dumps(
+                {
+                    "csv_text": (
+                        "instance_id,cve_id,severity,package_name,installed_version,fixed_version,status\n"
+                        "i-0123456789abcdef0,CVE-2026-0001,HIGH,kernel,1.0,1.1,ACTIVE\n"
+                    ),
+                    "instance_id": "i-aaaaaaaaaaaaaaaaa",
+                    "cve_id": "CVE-2026-0001",
+                    "region": "ap-southeast-1",
+                }
+            ).encode(),
+            headers={"Content-Type": "application/json"},
+            method="POST",
+        )
+        payload = json.loads(urlopen(request).read().decode())
+        assert payload["result"]["status"] == "BLOCKED"
+        assert payload["result"]["reason_code"] == "CSV_TARGET_MISMATCH"
+    finally:
+        server.shutdown()
+        server.server_close()
+        thread.join(timeout=2)

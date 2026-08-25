@@ -8,8 +8,10 @@ from typing import Any
 
 from pydantic import ValidationError
 
-from .contracts import AwsReadOnlyResult, PocRequest
+from .aws_live import AwsLiveBackendError, collect_live_evidence
+from .contracts import AwsReadOnlyResult, PocRequest, SecCopComparison, SecCopCsvRequest
 from .poc import PocEngine
+from .seccop_csv import SecCopCsvError, parse_csv
 
 
 _HTML_PATH = Path(__file__).resolve().parents[2] / "web" / "poc_chat.html"
@@ -41,7 +43,9 @@ class _Handler(BaseHTTPRequestHandler):
             length = int(length_header)
         except ValueError:
             return None
-        if length < 0 or length > 16_384:
+        # CSV uploads are bounded by SecCopCsvRequest at 500 KiB. Keep the
+        # transport cap slightly above that contract while rejecting floods.
+        if length < 0 or length > 600_000:
             return None
         try:
             payload = json.loads(self.rfile.read(length))
@@ -94,6 +98,69 @@ class _Handler(BaseHTTPRequestHandler):
                 200,
                 {"result": result.model_dump(mode="json"), "events": []},
             )
+            return
+
+        if self.path == "/api/live-csv":
+            try:
+                request = SecCopCsvRequest.model_validate(payload)
+            except ValidationError:
+                self._send_json(400, {"status": "BLOCKED", "reason_code": "REQUEST_REJECTED"})
+                return
+            try:
+                document = parse_csv(
+                    request.csv_text,
+                    instance_id=request.instance_id,
+                    cve_id=request.cve_id,
+                )
+            except SecCopCsvError as error:
+                result = SecCopComparison(
+                    status="BLOCKED",
+                    reason_code=error.reason_code,
+                    cve_id=request.cve_id,
+                    resource_alias="EC2_RESOURCE_01",
+                    csv_row_count=0,
+                    csv_match_count=0,
+                    message="CSV evidence was blocked by the SecCop input contract.",
+                )
+                self._send_json(200, {"result": result.model_dump(mode="json"), "events": []})
+                return
+            try:
+                live_result = collect_live_evidence(
+                    region=request.region,
+                    instance_id=request.instance_id,
+                    cve_id=request.cve_id,
+                )
+            except (AwsLiveBackendError, OSError, TimeoutError):
+                result = SecCopComparison(
+                    status="BLOCKED",
+                    reason_code="AWS_BACKEND_UNAVAILABLE",
+                    cve_id=request.cve_id,
+                    resource_alias="EC2_RESOURCE_01",
+                    csv_row_count=document.row_count,
+                    csv_match_count=document.match_count,
+                    message="The live AWS comparison could not be completed.",
+                )
+                self._send_json(200, {"result": result.model_dump(mode="json"), "events": []})
+                return
+            result = SecCopComparison(
+                status="READY" if live_result.status == "READY" else "BLOCKED",
+                reason_code=(
+                    "SECCOP_COMPARISON_READY"
+                    if live_result.status == "READY"
+                    else "AWS_READ_ONLY_BLOCKED"
+                ),
+                cve_id=request.cve_id,
+                resource_alias="EC2_RESOURCE_01",
+                csv_row_count=document.row_count,
+                csv_match_count=document.match_count,
+                live_result=live_result,
+                message=(
+                    "CSV evidence matched the exact live AWS target."
+                    if live_result.status == "READY"
+                    else "The live AWS evidence gate blocked this comparison."
+                ),
+            )
+            self._send_json(200, {"result": result.model_dump(mode="json"), "events": []})
             return
 
         if self.path == "/api/decision":

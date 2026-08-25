@@ -98,8 +98,17 @@ uv run python scripts/issue5_live_lab.py cleanup --confirm
 
 `plan` refuses public networking, requires a private SSM path, an existing
 no-ingress security group, an existing instance profile, an available AMI,
-and enabled Inspector EC2 coverage. Current account discovery found no
-complete launch plan, so no live instance or AWS mutation has been performed.
+and enabled Inspector EC2 coverage. The persistent SecCop lane uses that
+preflight before holding one private demo target; cleanup is explicit and is
+not run automatically.
+
+The persistent **SecCop** demo lane is documented in
+[docs/SECCOP_LIVE_DEMO.md](docs/SECCOP_LIVE_DEMO.md). It adds a strict AWS
+Inspector CSV export and GUI inputs for an exact EC2 instance ID, selected CVE,
+and region. The comparison remains read-only; remediation is a separate
+approval-gated milestone. The GovTech PlatformAI handoff is consumed through
+the sibling `govtechai` repository's `gtx` launcher, never through a key in
+this repository.
 
 ## Learning vocabulary
 

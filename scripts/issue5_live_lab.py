@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import re
 import subprocess
 import sys
 import tempfile
@@ -19,6 +20,7 @@ from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
+from zoneinfo import ZoneInfo
 
 # Keep the operator runnable from a clean checkout without requiring an
 # editable install.
@@ -29,8 +31,8 @@ from secure_agent_harness.contracts import ReadOnlyTarget
 
 
 REPO_NAME = "agentic-ai-cybersecurity-lab"
-PROJECT_TAG = "agentcore-inspector-ssm-poc"
-ENVIRONMENT_TAG = "lab"
+PROJECT_TAG = "Security Copilot"
+ENVIRONMENT_TAG = "seccop-demo"
 DEFAULT_ALIAS = "EC2_RESOURCE_01"
 DEFAULT_INSTANCE_TYPE = "t3.small"
 DEFAULT_VOLUME_SIZE = 20
@@ -71,6 +73,8 @@ class AwsCli:
             )
         if completed.returncode != 0:
             raise BackendFailure("AWS read failed.")
+        if not completed.stdout.strip():
+            return {}
         try:
             value = json.loads(completed.stdout)
         except json.JSONDecodeError as exc:
@@ -138,6 +142,9 @@ class SsmClient:
 
     def list_inventory_entries(self, **kwargs: Any) -> dict[str, Any]:
         return self.aws.call("ssm", "list-inventory-entries", kwargs)
+
+    def describe_instance_patch_states(self, **kwargs: Any) -> dict[str, Any]:
+        return self.aws.call("ssm", "describe-instance-patch-states", kwargs)
 
 
 @dataclass(frozen=True)
@@ -310,15 +317,24 @@ def print_plan(plan: LaunchPlan) -> None:
 
 def _tags(args: argparse.Namespace) -> list[dict[str, str]]:
     expires = datetime.now(timezone.utc) + timedelta(hours=args.ttl_hours)
+    created = datetime.now(ZoneInfo("Asia/Singapore")).date().isoformat()
     return [
         {"Key": "Name", "Value": args.name},
+        {"Key": "dev", "Value": "amit"},
+        {"Key": "project", "Value": REPO_NAME},
+        {"Key": "created", "Value": created},
+        {"Key": "tools", "Value": "cdx"},
+        {"Key": "environment", "Value": "dev"},
+        {"Key": "owner", "Value": args.owner},
+        {"Key": "version", "Value": args.revision},
+        {"Key": "TTL", "Value": args.ttl},
+        {"Key": "phase", "Value": "seccop-live-demo"},
+        {"Key": "purpose", "Value": "inspector-ssm-vulnerability-lab"},
         {"Key": "Project", "Value": PROJECT_TAG},
         {"Key": "Environment", "Value": ENVIRONMENT_TAG},
-        {"Key": "Owner", "Value": args.owner},
         {"Key": "Purpose", "Value": "inspector-ssm-vulnerability-lab"},
         {"Key": "Issue", "Value": "5"},
         {"Key": "Repo", "Value": REPO_NAME},
-        {"Key": "TTLHours", "Value": str(args.ttl_hours)},
         {"Key": "ExpiresAt", "Value": expires.isoformat()},
         {"Key": "Cleanup", "Value": "terminate-after-demo"},
     ]
@@ -406,7 +422,11 @@ def collect(args: argparse.Namespace, aws: AwsCli) -> int:
             return 2
     target = ReadOnlyTarget(resource_alias=args.resource_alias, instance_id=instance_id)
     source = AwsReadOnlyEvidenceSource(InspectorClient(aws), Ec2Client(aws), SsmClient(aws))
-    result = source.collect(args.cve_id, target, include_patch_summary=True)
+    result = source.collect(
+        args.cve_id,
+        target,
+        include_patch_summary=not args.skip_patch_summary,
+    )
     output = args.output or (DEFAULT_EVIDENCE_DIR / "sanitized-evidence.json")
     output_path = Path(output)
     output_path.parent.mkdir(parents=True, exist_ok=True)
@@ -452,6 +472,40 @@ def cleanup(args: argparse.Namespace, aws: AwsCli) -> int:
     return 0
 
 
+def retag(args: argparse.Namespace, aws: AwsCli) -> int:
+    if not args.confirm:
+        print("BLOCKED CONFIRMATION_REQUIRED")
+        return 2
+    instance_id = args.instance_id
+    if not instance_id:
+        target_file = args.target_file or (DEFAULT_EVIDENCE_DIR / "target.json")
+        try:
+            instance_id = str(json.loads(Path(target_file).read_text(encoding="utf-8"))["instance_id"])
+        except (OSError, KeyError, TypeError, json.JSONDecodeError):
+            print("BLOCKED TARGET_NOT_FOUND")
+            return 2
+    response = aws.call("ec2", "describe-instances", {"InstanceIds": [instance_id]})
+    instance = _single(
+        [
+            item
+            for reservation in response.get("Reservations", [])
+            if isinstance(reservation, dict)
+            for item in reservation.get("Instances", [])
+            if isinstance(item, dict) and item.get("InstanceId") == instance_id
+        ]
+    )
+    if not instance:
+        print("BLOCKED TARGET_NOT_FOUND")
+        return 2
+    current = {tag.get("Key"): tag.get("Value") for tag in instance.get("Tags", []) if isinstance(tag, dict)}
+    if current.get("Project") != PROJECT_TAG or current.get("Environment") != ENVIRONMENT_TAG:
+        print("BLOCKED TARGET_TAGS_MISMATCH")
+        return 2
+    aws.call("ec2", "create-tags", {"Resources": [instance_id], "Tags": _tags(args)})
+    print("TAGS_RECONCILED")
+    return 0
+
+
 def parser() -> argparse.ArgumentParser:
     root = argparse.ArgumentParser(description=__doc__)
     root.add_argument("--profile", default="amit")
@@ -465,9 +519,11 @@ def parser() -> argparse.ArgumentParser:
         item.add_argument("--security-group-id", required=True)
         item.add_argument("--iam-instance-profile", required=True)
         item.add_argument("--instance-type", default=DEFAULT_INSTANCE_TYPE)
-        item.add_argument("--name", default="issue5-inspector-ssm-lab")
+        item.add_argument("--name", default="seccop-demo-inspector-host-r01")
         item.add_argument("--owner", default="amit")
-        item.add_argument("--ttl-hours", type=int, choices=range(1, 25), default=24)
+        item.add_argument("--ttl-hours", type=int, choices=range(1, 24 * 31 + 1), default=168)
+        item.add_argument("--ttl", default="01-09-26", type=_ttl_value)
+        item.add_argument("--revision", default="seccop-demo-r01")
         if command == "apply":
             item.add_argument("--confirm", action="store_true")
     collect_parser = sub.add_parser("collect")
@@ -476,11 +532,31 @@ def parser() -> argparse.ArgumentParser:
     collect_parser.add_argument("--target-file", type=Path)
     collect_parser.add_argument("--resource-alias", default=DEFAULT_ALIAS)
     collect_parser.add_argument("--output", type=Path)
+    collect_parser.add_argument(
+        "--skip-patch-summary",
+        action="store_true",
+        help="Collect successful Inspector/EC2/SSM evidence while keeping patch compliance explicitly uncollected.",
+    )
     cleanup_parser = sub.add_parser("cleanup")
     cleanup_parser.add_argument("--instance-id")
     cleanup_parser.add_argument("--target-file", type=Path)
     cleanup_parser.add_argument("--confirm", action="store_true")
+    retag_parser = sub.add_parser("retag")
+    retag_parser.add_argument("--instance-id")
+    retag_parser.add_argument("--target-file", type=Path)
+    retag_parser.add_argument("--name", default="seccop-demo-inspector-host-r01")
+    retag_parser.add_argument("--owner", default="amit")
+    retag_parser.add_argument("--ttl-hours", type=int, choices=range(1, 24 * 31 + 1), default=168)
+    retag_parser.add_argument("--ttl", default="01-09-26", type=_ttl_value)
+    retag_parser.add_argument("--revision", default="seccop-demo-r01")
+    retag_parser.add_argument("--confirm", action="store_true")
     return root
+
+
+def _ttl_value(value: str) -> str:
+    if not re.fullmatch(r"[0-9]{2}-[0-9]{2}-[0-9]{2}", value):
+        raise argparse.ArgumentTypeError("TTL must use DD-MM-YY format.")
+    return value
 
 
 def main() -> int:
@@ -497,6 +573,8 @@ def main() -> int:
             return collect(args, aws)
         if args.command == "cleanup":
             return cleanup(args, aws)
+        if args.command == "retag":
+            return retag(args, aws)
     except (BackendFailure, ValueError):
         print("BLOCKED READ_BACKEND_FAILED")
         return 2

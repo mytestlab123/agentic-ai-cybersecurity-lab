@@ -64,6 +64,8 @@ def args() -> argparse.Namespace:
         name="issue5-lab",
         owner="amit",
         ttl_hours=24,
+        ttl="25-08-26",
+        revision="2ab0e2c",
         confirm=False,
     )
 

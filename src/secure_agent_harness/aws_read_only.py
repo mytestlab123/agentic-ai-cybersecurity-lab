@@ -33,11 +33,13 @@ class SsmReadClient(Protocol):
 
     def list_inventory_entries(self, **kwargs: Any) -> Mapping[str, Any]: ...
 
+    def describe_instance_patch_states(self, **kwargs: Any) -> Mapping[str, Any]: ...
+
 
 _CVE_RE = re.compile(r"^CVE-[0-9]{4}-[0-9]{4,}$")
 _DEFAULT_REQUIRED_TAGS = {
-    "Project": "agentcore-inspector-ssm-poc",
-    "Environment": "lab",
+    "Project": "Security Copilot",
+    "Environment": "seccop-demo",
 }
 
 
@@ -69,7 +71,7 @@ class AwsReadOnlyEvidenceSource:
             raise ValueError("cve_id must match the CVE contract.")
 
         self._executed_calls = []
-        findings = self._list_findings(normalized_cve)
+        findings = self._list_findings(normalized_cve, target.instance_id)
         if findings is None:
             return self._blocked(normalized_cve, target.resource_alias, "READ_BACKEND_FAILED")
         if not findings:
@@ -98,8 +100,12 @@ class AwsReadOnlyEvidenceSource:
             return self._blocked(normalized_cve, target.resource_alias, "SSM_NODE_NOT_READY")
 
         patch_summary = None
+        patch_check_reason = "SSM_PATCH_SUMMARY_READY"
         if include_patch_summary:
             patch_state, patch_summary = self._read_patch_summary(target.instance_id)
+            if patch_state == "NOT_FOUND":
+                patch_state, patch_summary = self._read_patch_states(target.instance_id)
+                patch_check_reason = "SSM_PATCH_STATE_READY"
             if patch_state == "NOT_FOUND":
                 return self._blocked(
                     normalized_cve,
@@ -151,7 +157,7 @@ class AwsReadOnlyEvidenceSource:
                 ReadOnlyCheck(
                     check_name="SSM_PATCH_SUMMARY",
                     outcome="PASS",
-                    reason_code="SSM_PATCH_SUMMARY_READY",
+                    reason_code=patch_check_reason,
                 ),
             )
         evidence = AwsReadOnlyEvidence(
@@ -211,6 +217,46 @@ class AwsReadOnlyEvidenceSource:
             return "INVALID", None
         return "READY", AwsPatchSummary(**fields)
 
+    def _read_patch_states(
+        self,
+        instance_id: str,
+    ) -> tuple[str, AwsPatchSummary | None]:
+        operation = getattr(self._ssm, "describe_instance_patch_states", None)
+        if operation is None:
+            return "NOT_FOUND", None
+        response = self._call(
+            "ssm.describe_instance_patch_states",
+            operation,
+            InstanceIds=[instance_id],
+            MaxResults=50,
+        )
+        if response is None:
+            return "FAILED", None
+        states = response.get("InstancePatchStates")
+        if not isinstance(states, list):
+            return "INVALID", None
+        matches = [
+            state
+            for state in states
+            if isinstance(state, Mapping) and state.get("InstanceId") == instance_id
+        ]
+        if len(matches) != 1:
+            return "NOT_FOUND" if not matches else "INVALID", None
+        state = matches[0]
+        fields = {
+            "installed_count": state.get("InstalledCount", 0),
+            "missing_count": state.get("MissingCount", 0),
+            "failed_count": state.get("FailedCount", 0),
+            "security_non_compliant_count": state.get("SecurityNonCompliantCount", 0),
+            "critical_non_compliant_count": state.get("CriticalNonCompliantCount", 0),
+            "installed_pending_reboot_count": state.get("InstalledPendingRebootCount", 0),
+        }
+        if not all(isinstance(value, int) and value >= 0 for value in fields.values()):
+            return "INVALID", None
+        operation_name = state.get("Operation", "Unknown")
+        fields["operation"] = operation_name if operation_name in {"Scan", "Install"} else "Unknown"
+        return "READY", AwsPatchSummary(**fields)
+
     @staticmethod
     def _packages(finding: Mapping[str, Any]) -> tuple[AwsVulnerablePackage, ...]:
         details = finding.get("packageVulnerabilityDetails")
@@ -246,10 +292,11 @@ class AwsReadOnlyEvidenceSource:
             return None
         return value if re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._+:/@~-]{0,79}", value) else None
 
-    def _list_findings(self, cve_id: str) -> list[Mapping[str, Any]] | None:
+    def _list_findings(self, cve_id: str, instance_id: str) -> list[Mapping[str, Any]] | None:
         request: dict[str, Any] = {
             "filterCriteria": {
                 "vulnerabilityId": [{"comparison": "EQUALS", "value": cve_id}],
+                "resourceId": [{"comparison": "EQUALS", "value": instance_id}],
             },
             "maxResults": 100,
         }
