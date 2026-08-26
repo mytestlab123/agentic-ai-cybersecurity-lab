@@ -103,12 +103,13 @@ existing shared public VPC, keeps one SSM profile, and holds one tagged demo
 target. Cleanup destroys only the EC2 stack; the shared VPC and profile remain.
 
 The persistent **SecCop** demo lane is documented in
-[docs/SECCOP_LIVE_DEMO.md](docs/SECCOP_LIVE_DEMO.md). It adds a strict AWS
-Inspector CSV export and GUI inputs for an exact EC2 instance ID, selected CVE,
-and region. The comparison remains read-only; remediation is a separate
-approval-gated milestone. The GovTech PlatformAI handoff is consumed through
-the sibling `govtechai` repository's `gtx` launcher, never through a key in
-this repository.
+[docs/SECCOP_LIVE_DEMO.md](docs/SECCOP_LIVE_DEMO.md). Its simple GUI accepts
+one typed package advisory, discovers the tagged lab server without asking for
+an EC2 ID, checks the package through SSM, and waits for explicit approval
+before the one-package update. No reboot is requested. The older Inspector CSV
+route remains available under the technical panel. The GovTech PlatformAI
+handoff is consumed through the sibling `govtechai` repository's `gtx`
+launcher, never through a key in this repository.
 
 ## Learning vocabulary
 

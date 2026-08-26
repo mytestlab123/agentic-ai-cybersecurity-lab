@@ -11,13 +11,21 @@ from typing import Any
 
 from pydantic import ValidationError
 
-from .aws_live import AwsLiveBackendError, collect_live_evidence
-from .aws_remediation import execute_package_remediation
+from .aws_live import (
+    AwsLiveBackendError,
+    AwsLiveTargetError,
+    collect_live_evidence,
+    collect_target_readiness,
+    resolve_demo_target,
+)
+from .aws_remediation import collect_package_advisory, execute_package_remediation
 from .contracts import (
     AwsReadOnlyResult,
     PocRequest,
     SecCopApprovalResult,
     SecCopComparison,
+    SecCopAdvisoryComparison,
+    SecCopAdvisoryRequest,
     SecCopCsvRequest,
     SecCopRemediationRequest,
     SecCopRemediationProposal,
@@ -31,6 +39,8 @@ _HTML_PATH = Path(__file__).resolve().parents[2] / "web" / "poc_chat.html"
 _ENGINE = PocEngine()
 _SECCOP_PROPOSALS: dict[str, SecCopRemediationProposal] = {}
 _SECCOP_REQUESTS: dict[str, SecCopCsvRequest] = {}
+_SECCOP_ADVISORIES: dict[str, SecCopAdvisoryRequest] = {}
+_SECCOP_TARGET_IDS: dict[str, str] = {}
 
 
 @dataclass(frozen=True)
@@ -43,6 +53,20 @@ class _ApprovalRecord:
 _SECCOP_APPROVALS: dict[str, _ApprovalRecord] = {}
 _NEXT_PROPOSAL_ID = 1
 _APPROVAL_TTL = timedelta(minutes=15)
+_ADVISORY_REASON_CODES = {
+    "SECCOP_ADVISORY_READY",
+    "ADVISORY_INPUT_INVALID",
+    "ADVISORY_VERSION_MISMATCH",
+    "EC2_TARGET_NOT_FOUND",
+    "EC2_TARGET_AMBIGUOUS",
+    "EC2_TARGET_NOT_READY",
+    "EC2_TAGS_MISMATCH",
+    "SSM_NODE_NOT_FOUND",
+    "SSM_NODE_NOT_READY",
+    "SSM_ADVISORY_NOT_FOUND",
+    "SSM_COMMAND_TIMEOUT",
+    "AWS_BACKEND_UNAVAILABLE",
+}
 
 
 def _session_payload(session: Any) -> dict[str, object]:
@@ -66,7 +90,8 @@ def _approval_expiry() -> datetime:
 def _proposal_hash(
     *,
     proposal_id: str,
-    request: SecCopCsvRequest,
+    request: SecCopCsvRequest | SecCopAdvisoryRequest,
+    instance_id: str | None = None,
     cve_id: str,
     resource_alias: str,
     package_name: str | None,
@@ -78,7 +103,7 @@ def _proposal_hash(
     binding = {
         "proposal_id": proposal_id,
         "region": request.region,
-        "instance_id": request.instance_id,
+        "instance_id": instance_id or "TARGET_RESOLVED_SERVER_SIDE",
         "cve_id": cve_id,
         "resource_alias": resource_alias,
         "package_name": package_name,
@@ -226,6 +251,165 @@ def _live_proposal(request: SecCopCsvRequest) -> SecCopRemediationProposal:
     return proposal
 
 
+def _advisory_comparison(request: SecCopAdvisoryRequest) -> SecCopAdvisoryComparison:
+    """Run the simple, no-instance-ID read-only journey."""
+
+    fields = {
+        "advisory_id": request.advisory_id,
+        "cve_id": request.cve_id,
+        "target_alias": request.target_alias,
+        "package_name": request.package_name,
+        "installed_version": request.installed_version,
+        "fixed_version": request.fixed_version,
+        "severity": request.severity,
+        "ssm_readiness": "UNKNOWN",
+        "executed_calls": (),
+    }
+    try:
+        target = resolve_demo_target(region=request.region)
+    except AwsLiveTargetError as error:
+        return SecCopAdvisoryComparison(
+            status="BLOCKED",
+            reason_code=error.reason_code,
+            message="SecCop could not select exactly one live demo server.",
+            **fields,
+        )
+    except (AwsLiveBackendError, OSError, TimeoutError):
+        return SecCopAdvisoryComparison(
+            status="BLOCKED",
+            reason_code="AWS_BACKEND_UNAVAILABLE",
+            message="The live AWS check could not be completed.",
+            **fields,
+        )
+
+    readiness = collect_target_readiness(region=request.region, target=target)
+    fields["executed_calls"] = readiness.executed_calls
+    fields["ssm_readiness"] = readiness.ssm_readiness
+    if readiness.status != "READY":
+        reason = readiness.reason_code
+        if reason not in _ADVISORY_REASON_CODES:
+            reason = "AWS_BACKEND_UNAVAILABLE"
+        return SecCopAdvisoryComparison(
+            status="BLOCKED",
+            reason_code=reason,
+            message="The server is not ready for a safe read-only check.",
+            **fields,
+        )
+
+    advisory = collect_package_advisory(
+        region=request.region,
+        instance_id=target.instance_id,
+        advisory_id=request.advisory_id,
+        package_name=request.package_name,
+    )
+    fields["executed_calls"] = tuple(fields["executed_calls"]) + tuple(
+        str(item) for item in advisory.get("executed_calls", ())
+    )
+    advisory_reason = str(advisory.get("reason_code", "AWS_BACKEND_UNAVAILABLE"))
+    if advisory.get("status") != "READY":
+        if advisory_reason not in _ADVISORY_REASON_CODES:
+            advisory_reason = "AWS_BACKEND_UNAVAILABLE"
+        return SecCopAdvisoryComparison(
+            status="BLOCKED",
+            reason_code=advisory_reason,
+            message="The package advisory could not be confirmed on the selected server.",
+            **fields,
+        )
+
+    actual_version = str(advisory.get("before_version", ""))
+    if not actual_version.startswith(request.installed_version):
+        return SecCopAdvisoryComparison(
+            status="BLOCKED",
+            reason_code="ADVISORY_VERSION_MISMATCH",
+            message="The uploaded package version does not match the selected server.",
+            **fields,
+        )
+    return SecCopAdvisoryComparison(
+        status="READY",
+        reason_code="SECCOP_ADVISORY_READY",
+        message="The server and one small package advisory are ready for review.",
+        **fields,
+    )
+
+
+def _advisory_proposal(request: SecCopAdvisoryRequest) -> SecCopRemediationProposal:
+    comparison = _advisory_comparison(request)
+    proposal_id = _next_proposal_id()
+    if comparison.status != "READY":
+        proposal = SecCopRemediationProposal(
+            proposal_id=proposal_id,
+            status="BLOCKED",
+            reason_code=comparison.reason_code,
+            cve_id=request.cve_id,
+            resource_alias="EC2_RESOURCE_01",
+            severity=comparison.severity,
+            package_name=request.package_name,
+            installed_version=request.installed_version,
+            fixed_version=request.fixed_version,
+            action="NONE",
+            reboot_policy="UNKNOWN",
+            requires_approval=False,
+            mutation_performed=False,
+            message="The live package proposal was blocked by a read-only safety check.",
+        )
+        return proposal
+    try:
+        target = resolve_demo_target(region=request.region)
+    except (AwsLiveBackendError, AwsLiveTargetError, OSError, TimeoutError):
+        return SecCopRemediationProposal(
+            proposal_id=proposal_id,
+            status="BLOCKED",
+            reason_code="AWS_BACKEND_UNAVAILABLE",
+            cve_id=request.cve_id,
+            resource_alias="EC2_RESOURCE_01",
+            severity=request.severity,
+            package_name=request.package_name,
+            installed_version=request.installed_version,
+            fixed_version=request.fixed_version,
+            action="NONE",
+            reboot_policy="UNKNOWN",
+            requires_approval=False,
+            mutation_performed=False,
+            message="The live target could not be reselected safely.",
+        )
+    expires_at = _approval_expiry()
+    proposal_hash = _proposal_hash(
+        proposal_id=proposal_id,
+        request=request,
+        instance_id=target.instance_id,
+        cve_id=request.cve_id,
+        resource_alias="EC2_RESOURCE_01",
+        package_name=request.package_name,
+        fixed_version=request.fixed_version,
+        action="SSM_INSTALL_SECURITY_UPDATE",
+        reboot_policy="EXPLICIT_APPROVAL_REQUIRED",
+        expires_at=expires_at,
+    )
+    proposal = SecCopRemediationProposal(
+        proposal_id=proposal_id,
+        status="READY",
+        reason_code="SECCOP_ADVISORY_READY",
+        cve_id=request.cve_id,
+        resource_alias="EC2_RESOURCE_01",
+        severity=request.severity,
+        package_name=request.package_name,
+        installed_version=request.installed_version,
+        fixed_version=request.fixed_version,
+        action="SSM_INSTALL_SECURITY_UPDATE",
+        reboot_policy="EXPLICIT_APPROVAL_REQUIRED",
+        requires_approval=True,
+        mutation_performed=False,
+        proposal_hash=proposal_hash,
+        approval_expires_at=expires_at,
+        read_executed_calls=comparison.executed_calls,
+        message="A one-package fix is ready. Approve once to update the server; no reboot will be requested.",
+    )
+    _SECCOP_PROPOSALS[proposal_id] = proposal
+    _SECCOP_ADVISORIES[proposal_id] = request
+    _SECCOP_TARGET_IDS[proposal_id] = target.instance_id
+    return proposal
+
+
 class _Handler(BaseHTTPRequestHandler):
     server_version = "secure-agent-poc/1.0"
 
@@ -299,6 +483,16 @@ class _Handler(BaseHTTPRequestHandler):
                 200,
                 {"result": result.model_dump(mode="json"), "events": []},
             )
+            return
+
+        if self.path == "/api/live-advisory":
+            try:
+                request = SecCopAdvisoryRequest.model_validate(payload)
+            except ValidationError:
+                self._send_json(400, {"status": "BLOCKED", "reason_code": "REQUEST_REJECTED"})
+                return
+            comparison = _advisory_comparison(request)
+            self._send_json(200, {"result": comparison.model_dump(mode="json"), "events": []})
             return
 
         if self.path == "/api/live-csv":
@@ -375,6 +569,16 @@ class _Handler(BaseHTTPRequestHandler):
             self._send_json(200, {"result": proposal.model_dump(mode="json"), "events": []})
             return
 
+        if self.path == "/api/live-advisory-proposal":
+            try:
+                request = SecCopAdvisoryRequest.model_validate(payload)
+            except ValidationError:
+                self._send_json(400, {"status": "BLOCKED", "reason_code": "REQUEST_REJECTED"})
+                return
+            proposal = _advisory_proposal(request)
+            self._send_json(200, {"result": proposal.model_dump(mode="json"), "events": []})
+            return
+
         if self.path == "/api/live-decision":
             proposal_id = payload.get("proposal_id")
             decision = payload.get("decision")
@@ -438,7 +642,11 @@ class _Handler(BaseHTTPRequestHandler):
                 return
             proposal = _SECCOP_PROPOSALS.get(remediation_request.proposal_id)
             request = _SECCOP_REQUESTS.get(remediation_request.proposal_id)
-            if proposal is None or request is None:
+            advisory_request = _SECCOP_ADVISORIES.get(remediation_request.proposal_id)
+            instance_id = _SECCOP_TARGET_IDS.get(remediation_request.proposal_id)
+            if request is not None:
+                instance_id = request.instance_id
+            if proposal is None or (request is None and advisory_request is None) or instance_id is None:
                 result = SecCopRemediationResult(
                     status="BLOCKED",
                     reason_code="PROPOSAL_NOT_FOUND",
@@ -538,8 +746,8 @@ class _Handler(BaseHTTPRequestHandler):
             _SECCOP_APPROVALS[remediation_request.proposal_id] = replace(approval, consumed=True)
 
             execution = execute_package_remediation(
-                region=request.region,
-                instance_id=request.instance_id,
+                region=request.region if request is not None else advisory_request.region,
+                instance_id=instance_id,
                 cve_id=proposal.cve_id,
                 package_name=proposal.package_name,
                 fixed_version=proposal.fixed_version,
@@ -579,8 +787,8 @@ class _Handler(BaseHTTPRequestHandler):
 
             try:
                 verification = collect_live_evidence(
-                    region=request.region,
-                    instance_id=request.instance_id,
+                    region=request.region if request is not None else advisory_request.region,
+                    instance_id=instance_id,
                     cve_id=proposal.cve_id,
                 )
             except (AwsLiveBackendError, OSError, TimeoutError):

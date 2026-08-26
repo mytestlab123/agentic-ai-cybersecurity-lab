@@ -67,6 +67,7 @@ class _AwsCli:
 
 _PACKAGE_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._+:/@-]{0,79}$")
 _VERSION_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._+:/@~-]{0,63}$")
+_ADVISORY_RE = re.compile(r"^ALAS[0-9]{1,2}-[0-9]{4}-[0-9]{4,}$")
 _TERMINAL = {"Success", "Cancelled", "TimedOut", "Failed", "Cancelling"}
 
 
@@ -383,5 +384,96 @@ def execute_package_remediation(
             "ssm.get_command_invocation",
         ),
         "after_version": after_version,
+        "evidence_path": str(evidence),
+    }
+
+
+def collect_package_advisory(
+    *,
+    region: str,
+    instance_id: str,
+    advisory_id: str,
+    package_name: str,
+) -> dict[str, object]:
+    """Read one RPM version and Amazon Linux advisory through SSM.
+
+    The command is deliberately limited to ``rpm -q`` and ``yum updateinfo``;
+    it does not install, update, reboot, or accept arbitrary shell text.
+    """
+
+    if not _ADVISORY_RE.fullmatch(advisory_id) or not _PACKAGE_RE.fullmatch(package_name):
+        return {
+            "status": "BLOCKED",
+            "reason_code": "ADVISORY_INPUT_INVALID",
+            "executed_calls": (),
+        }
+    evidence = _evidence_dir()
+    command = "\n".join(
+        [
+            "set -eu",
+            "printf 'SECCOP_ADVISORY=START\\n'",
+            f"rpm -q --qf '%{{NAME}}-%{{VERSION}}-%{{RELEASE}}.%{{ARCH}}\\n' {shlex.quote(package_name)}",
+            f"yum -q updateinfo info {shlex.quote(advisory_id)}",
+            "printf 'SECCOP_ADVISORY=SUCCESS\\n'",
+        ]
+    )
+    _write_json(
+        evidence,
+        "advisory-request.json",
+        {
+            "region": region,
+            "instance_id": instance_id,
+            "advisory_id": advisory_id,
+            "package_name": package_name,
+            "operation": "read-only-rpm-advisory-check",
+        },
+    )
+    _write_json(evidence, "advisory-command.json", {"document": "AWS-RunShellScript", "command": command})
+    cli = _AwsCli(region=region)
+    try:
+        command_id = _send(cli, instance_id=instance_id, command=command, comment="Security Copilot advisory check")
+        _write_json(evidence, "advisory-dispatch.json", {"command_id": command_id})
+        response = _wait(cli, command_id=command_id, instance_id=instance_id, timeout_seconds=120)
+    except AwsRemediationTimeout:
+        _write_json(evidence, "summary.json", {"status": "TIMEOUT"})
+        return {
+            "status": "BLOCKED",
+            "reason_code": "SSM_COMMAND_TIMEOUT",
+            "executed_calls": ("ssm.send_command", "ssm.get_command_invocation"),
+            "evidence_path": str(evidence),
+        }
+    except AwsRemediationBackendError:
+        return {
+            "status": "BLOCKED",
+            "reason_code": "AWS_BACKEND_UNAVAILABLE",
+            "executed_calls": ("ssm.send_command",),
+            "evidence_path": str(evidence),
+        }
+    _write_json(evidence, "advisory-response.json", response)
+    executed_calls = ("ssm.send_command", "ssm.get_command_invocation")
+    if response.get("Status") != "Success":
+        _write_json(evidence, "summary.json", {"status": response.get("Status", "UNKNOWN")})
+        return {
+            "status": "BLOCKED",
+            "reason_code": "SSM_ADVISORY_NOT_FOUND",
+            "executed_calls": executed_calls,
+            "evidence_path": str(evidence),
+        }
+    stdout = response.get("StandardOutputContent")
+    before_version = _verified_version(stdout, package_name)
+    if before_version is None or not isinstance(stdout, str) or advisory_id not in stdout:
+        _write_json(evidence, "summary.json", {"status": "NOT_FOUND", "before_version": before_version})
+        return {
+            "status": "BLOCKED",
+            "reason_code": "SSM_ADVISORY_NOT_FOUND",
+            "executed_calls": executed_calls,
+            "evidence_path": str(evidence),
+        }
+    _write_json(evidence, "summary.json", {"status": "READY", "before_version": before_version})
+    return {
+        "status": "READY",
+        "reason_code": "SSM_ADVISORY_READY",
+        "before_version": before_version,
+        "executed_calls": executed_calls,
         "evidence_path": str(evidence),
     }

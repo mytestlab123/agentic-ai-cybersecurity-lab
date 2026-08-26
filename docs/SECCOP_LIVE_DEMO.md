@@ -17,21 +17,40 @@ the exporter can produce a real finding CSV. If the AWS API returns
 `SubscriptionRequiredException`, activate Inspector from the account's
 Inspector console and then rerun the exporter.
 
-## GUI inputs
+## Simple GUI journey
 
-Open the local server and use the **LIVE SECOP COMPARISON** panel:
+Open the local server and use the **LIVE SECOP CHECK** panel. Upload one typed
+advisory JSON file, choose Singapore, and click **Check live server**. The
+server selects the one tagged `LAB_SERVER_01` target; the browser never asks
+for an EC2 instance ID.
 
-1. **AWS Inspector CSV** - a CSV with the canonical header below.
-2. **EC2 instance ID** - the exact target, for example `i-...`.
-3. **CVE from CSV** - one CVE to compare.
-4. **AWS region** - Singapore or Mumbai.
-5. Click **Compare live target**.
+The small input shape is:
 
-The browser sends the CSV and target request to `/api/live-csv`. The server
-validates the CSV, binds the selected CVE to the exact instance, then runs
-the existing fail-closed Inspector/EC2/SSM read adapter. It returns only a
-resource alias, counts, severity, package projections, check outcomes, and
-stable reason codes.
+```json
+{
+  "advisory_id": "ALAS2-YYYY-NNNN",
+  "cve_id": "CVE-YYYY-NNNN",
+  "severity": "MEDIUM",
+  "package_name": "example-package",
+  "installed_version": "old-version",
+  "fixed_version": "new-version"
+}
+```
+
+SecCop performs only these read checks first: exactly one tagged running
+server, SSM online, and the advisory present in `yum updateinfo`. It then
+shows a plain-language one-package proposal. **Prepare update** rechecks the
+same target, and **Approve and run fix** is the only path that can call SSM to
+update that exact package. No reboot is requested. The final result reports
+the before and after package versions; Inspector refresh remains a separate
+follow-up because its finding cache is not immediate.
+
+The server-side target name can be changed for a different disposable lab
+host with `SECCOP_TARGET_NAME`; the browser contract stays alias-only.
+
+The older technical Inspector CSV route remains under **Technical Inspector
+CSV path** for comparison work. It still requires an exact instance ID and is
+not needed for the simple one-package demo.
 
 ## Canonical CSV
 
@@ -59,8 +78,7 @@ uv run python -m secure_agent_harness.poc_server
 ```
 
 Open `http://127.0.0.1:8765`. The local synthetic flow remains available, and
-the SecCop live panel is read-only until a separate mutation milestone is
-approved.
+the SecCop live panel is read-only until the human approval button is used.
 
 ## GovTech model boundary
 

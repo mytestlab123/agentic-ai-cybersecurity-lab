@@ -299,6 +299,48 @@ class SecCopCsvRequest(Contract):
     region: Literal["ap-southeast-1", "ap-south-1"] = "ap-southeast-1"
 
 
+class SecCopAdvisoryRequest(Contract):
+    """Typed one-package advisory input for the simple live demo path."""
+
+    target_alias: Literal["LAB_SERVER_01"] = "LAB_SERVER_01"
+    advisory_id: str = Field(pattern=r"^ALAS[0-9]{1,2}-[0-9]{4}-[0-9]{4,}$")
+    cve_id: str = Field(pattern=r"^CVE-[0-9]{4}-[0-9]{4,}$")
+    severity: Literal["LOW", "MEDIUM", "HIGH", "CRITICAL"]
+    package_name: str = Field(pattern=r"^[A-Za-z0-9][A-Za-z0-9._+:/@-]{0,79}$")
+    installed_version: str = Field(pattern=r"^[A-Za-z0-9][A-Za-z0-9._+:/@~-]{0,63}$")
+    fixed_version: str = Field(pattern=r"^[A-Za-z0-9][A-Za-z0-9._+:/@~-]{0,63}$")
+    region: Literal["ap-southeast-1", "ap-south-1"] = "ap-southeast-1"
+
+
+class SecCopAdvisoryComparison(Contract):
+    """Sanitized result for the no-instance-ID advisory journey."""
+
+    status: Literal["READY", "BLOCKED"]
+    reason_code: Literal[
+        "SECCOP_ADVISORY_READY",
+        "ADVISORY_INPUT_INVALID",
+        "EC2_TARGET_NOT_FOUND",
+        "EC2_TARGET_AMBIGUOUS",
+        "EC2_TARGET_NOT_READY",
+        "EC2_TAGS_MISMATCH",
+        "SSM_NODE_NOT_FOUND",
+        "SSM_NODE_NOT_READY",
+        "SSM_ADVISORY_NOT_FOUND",
+        "SSM_COMMAND_TIMEOUT",
+        "AWS_BACKEND_UNAVAILABLE",
+    ]
+    advisory_id: str = Field(pattern=r"^ALAS[0-9]{1,2}-[0-9]{4}-[0-9]{4,}$")
+    cve_id: str = Field(pattern=r"^CVE-[0-9]{4}-[0-9]{4,}$")
+    target_alias: Literal["LAB_SERVER_01"]
+    package_name: str | None = Field(default=None, pattern=r"^[A-Za-z0-9][A-Za-z0-9._+:/@-]{0,79}$")
+    installed_version: str | None = Field(default=None, pattern=r"^[A-Za-z0-9][A-Za-z0-9._+:/@~-]{0,63}$")
+    fixed_version: str | None = Field(default=None, pattern=r"^[A-Za-z0-9][A-Za-z0-9._+:/@~-]{0,63}$")
+    severity: Literal["LOW", "MEDIUM", "HIGH", "CRITICAL", "UNKNOWN"]
+    ssm_readiness: Literal["READY", "NOT_READY", "UNKNOWN"]
+    message: str = Field(min_length=1, max_length=220)
+    executed_calls: tuple[str, ...] = ()
+
+
 class SecCopComparison(Contract):
     """Sanitized CSV-to-live comparison returned to the browser."""
 
@@ -327,12 +369,23 @@ class SecCopRemediationProposal(Contract):
     status: Literal["READY", "BLOCKED"]
     reason_code: Literal[
         "SECCOP_REMEDIATION_PROPOSAL_READY",
+        "SECCOP_ADVISORY_READY",
+        "ADVISORY_INPUT_INVALID",
+        "ADVISORY_VERSION_MISMATCH",
         "CSV_SCHEMA_INVALID",
         "CSV_TARGET_MISMATCH",
         "CSV_CVE_NOT_FOUND",
         "CSV_MATCH_AMBIGUOUS",
         "CSV_PACKAGE_NOT_FOUND",
         "NO_FIXED_VERSION",
+        "EC2_TARGET_NOT_FOUND",
+        "EC2_TARGET_AMBIGUOUS",
+        "EC2_TARGET_NOT_READY",
+        "EC2_TAGS_MISMATCH",
+        "SSM_NODE_NOT_FOUND",
+        "SSM_NODE_NOT_READY",
+        "SSM_ADVISORY_NOT_FOUND",
+        "SSM_COMMAND_TIMEOUT",
         "AWS_READ_ONLY_BLOCKED",
         "AWS_BACKEND_UNAVAILABLE",
     ]

@@ -115,18 +115,25 @@
       <div class="side-spacer"></div>
       <label class="upload-button" for="evidence-upload"><span>↑</span><span>Upload read-only evidence</span><input id="evidence-upload" type="file" accept="application/json,.json"></label>
       <div class="live-panel">
-        <div class="side-label" style="padding:0">LIVE SECOP COMPARISON</div>
-        <label for="csv-upload">AWS Inspector CSV</label>
-        <input id="csv-upload" type="file" accept="text/csv,.csv">
-        <label for="instance-id">EC2 instance ID</label>
-        <input id="instance-id" type="text" autocomplete="off" placeholder="i-...">
-        <label for="live-cve">CVE from CSV</label>
-        <input id="live-cve" type="text" autocomplete="off" placeholder="CVE-YYYY-NNNN">
-        <label for="live-package">Package (only if the CVE lists several)</label>
-        <input id="live-package" type="text" autocomplete="off" placeholder="for example: python">
+        <div class="side-label" style="padding:0">LIVE SECOP CHECK</div>
+        <label for="advisory-upload">One advisory file (JSON)</label>
+        <input id="advisory-upload" type="file" accept="application/json,.json">
+        <div class="usage-note">The server selects LAB_SERVER_01. No EC2 ID is needed.</div>
         <label for="aws-region">AWS region</label>
         <select id="aws-region"><option value="ap-southeast-1">Singapore</option><option value="ap-south-1">Mumbai</option></select>
-        <button id="compare-live" type="button">Compare live target</button>
+        <button id="compare-live" type="button">Check live server</button>
+        <details class="technical-path">
+          <summary>Technical Inspector CSV path</summary>
+          <label for="csv-upload">AWS Inspector CSV</label>
+          <input id="csv-upload" type="file" accept="text/csv,.csv">
+          <label for="instance-id">EC2 instance ID</label>
+          <input id="instance-id" type="text" autocomplete="off" placeholder="i-...">
+          <label for="live-cve">CVE from CSV</label>
+          <input id="live-cve" type="text" autocomplete="off" placeholder="CVE-YYYY-NNNN">
+          <label for="live-package">Package (only if the CVE lists several)</label>
+          <input id="live-package" type="text" autocomplete="off" placeholder="for example: python">
+          <button id="compare-csv" type="button">Compare Inspector CSV</button>
+        </details>
       </div>
       <div class="usage-panel" aria-label="AI usage">
         <div class="side-label" style="padding:0">AI USAGE</div>
@@ -141,13 +148,13 @@
         <div><div class="eyebrow">SECURITY WORKSPACE</div><h1>Inspector to SSM</h1></div>
         <div id="mode-status" class="status-pill"><span class="mode-dot"></span>Offline demo</div>
       </header>
-      <div class="safety-banner"><strong>Safe demo boundary.</strong> Local runs use synthetic fixtures. Uploaded live results must be typed, sanitized, and read-only.</div>
+      <div class="safety-banner"><strong>Safe demo boundary.</strong> The live check reads one tagged server, confirms one package advisory, then waits for your approval before any change. Uploaded live results must be typed, sanitized, and read-only.</div>
 
       <section class="chat" aria-live="polite">
         <div id="welcome" class="welcome">
           <div class="welcome-mark">S</div>
           <h2>How can I help with your security review?</h2>
-          <p>Ask me to inspect a synthetic CVE. I will correlate the finding, instance, SSM readiness, and patch state before asking for approval.</p>
+          <p>Upload one package advisory. I will check the server, explain the small update, and ask before changing anything.</p>
         </div>
         <div id="messages" class="messages"></div>
       </section>
@@ -162,7 +169,7 @@
             </div>
           </div>
         </form>
-        <div class="composer-hint">Synthetic evidence only. Approval records a no-op mock remediation.</div>
+        <div class="composer-hint">Live checks are read-only until you approve one package update. No reboot is requested.</div>
       </div>
     </main>
   </div>
@@ -173,12 +180,14 @@
     const labEnvEl = document.querySelector('#lab-env');
     const runButton = document.querySelector('#run');
     const uploadEl = document.querySelector('#evidence-upload');
+    const advisoryUploadEl = document.querySelector('#advisory-upload');
     const csvUploadEl = document.querySelector('#csv-upload');
     const instanceIdEl = document.querySelector('#instance-id');
     const liveCveEl = document.querySelector('#live-cve');
     const livePackageEl = document.querySelector('#live-package');
     const awsRegionEl = document.querySelector('#aws-region');
     const compareLiveButton = document.querySelector('#compare-live');
+    const compareCsvButton = document.querySelector('#compare-csv');
     const modeStatus = document.querySelector('#mode-status');
     const welcome = document.querySelector('#welcome');
     const messages = document.querySelector('#messages');
@@ -351,6 +360,41 @@
       }
     }
 
+    function renderAdvisoryComparison(payload, request) {
+      const result = payload.result || {};
+      const body = addMessage('assistant', result.message || 'No live check result returned.');
+      const card = node('div', 'result-card');
+      const head = node('div', 'result-head');
+      head.appendChild(node('div', 'result-title', 'Live package check'));
+      head.appendChild(node('span', 'badge', result.reason_code || result.status || 'BLOCKED'));
+      card.appendChild(head);
+      const grid = node('div', 'evidence-grid');
+      evidenceCell(grid, 'Finding', result.cve_id);
+      evidenceCell(grid, 'Severity', result.severity);
+      evidenceCell(grid, 'Server', result.target_alias);
+      evidenceCell(grid, 'Package', result.package_name);
+      evidenceCell(grid, 'Installed', result.installed_version);
+      evidenceCell(grid, 'Available', result.fixed_version);
+      evidenceCell(grid, 'SSM', result.ssm_readiness);
+      evidenceCell(grid, 'GovTech', 'Inference not used');
+      card.appendChild(grid);
+      if (result.executed_calls) {
+        const calls = node('div', 'message-time', 'Recorded checks: ' + result.executed_calls.join(', '));
+        calls.style.marginTop = '10px';
+        card.appendChild(calls);
+      }
+      if (result.status === 'READY') {
+        const actionCard = node('div', 'approval-card');
+        actionCard.appendChild(node('div', 'approval-copy', 'The server is ready. Prepare the one-package change for your approval.'));
+        const actionButton = node('button', 'btn primary', 'Prepare update');
+        actionButton.type = 'button';
+        actionButton.addEventListener('click', () => generateAdvisoryProposal(request, actionButton));
+        actionCard.appendChild(actionButton);
+        card.appendChild(actionCard);
+      }
+      body.appendChild(card);
+    }
+
     function renderLiveProposal(payload) {
       const result = payload.result || {};
       const body = addMessage('assistant', result.message || 'No proposal returned.');
@@ -474,6 +518,20 @@
       }
     }
 
+    async function generateAdvisoryProposal(request, actionButton) {
+      actionButton.disabled = true;
+      addMessage('user', 'Prepare the package update');
+      const thinking = addMessage('assistant', 'Checking the server one more time and preparing a clear update proposal...');
+      try {
+        const payload = await post('/api/live-advisory-proposal', request);
+        thinking.parentElement.remove();
+        renderLiveProposal(payload);
+      } catch (error) {
+        thinking.textContent = 'The package proposal was blocked.';
+        thinking.classList.add('error-copy');
+      }
+    }
+
     async function decideLive(decision, approveButton, rejectButton) {
       approveButton.disabled = true;
       rejectButton.disabled = true;
@@ -534,6 +592,29 @@
     });
 
     compareLiveButton.addEventListener('click', async () => {
+      const file = advisoryUploadEl.files && advisoryUploadEl.files[0];
+      if (!file) {
+        const body = addMessage('assistant', 'Choose the one advisory JSON file first.');
+        body.lastChild.classList.add('error-copy');
+        return;
+      }
+      compareLiveButton.disabled = true;
+      setMode('Live read-only', true);
+      addMessage('user', 'Check the live server for this package advisory');
+      try {
+        const advisory = JSON.parse(await file.text());
+        const request = { ...advisory, region: awsRegionEl.value, target_alias: 'LAB_SERVER_01' };
+        lastLiveRequest = request;
+        renderAdvisoryComparison(await post('/api/live-advisory', request), request);
+      } catch (error) {
+        const body = addMessage('assistant', 'The advisory check was blocked. Use a typed advisory JSON file.');
+        body.lastChild.classList.add('error-copy');
+      } finally {
+        compareLiveButton.disabled = false;
+      }
+    });
+
+    compareCsvButton.addEventListener('click', async () => {
       const file = csvUploadEl.files && csvUploadEl.files[0];
       const instanceId = instanceIdEl.value.trim();
       const cveId = liveCveEl.value.trim().toUpperCase();
@@ -543,7 +624,7 @@
         body.lastChild.classList.add('error-copy');
         return;
       }
-      compareLiveButton.disabled = true;
+      compareCsvButton.disabled = true;
       setMode('Live read-only', true);
       addMessage('user', 'Compare Inspector CSV with the selected live EC2 target');
       try {
@@ -561,7 +642,7 @@
         const body = addMessage('assistant', 'The live comparison was blocked.');
         body.lastChild.classList.add('error-copy');
       } finally {
-        compareLiveButton.disabled = false;
+        compareCsvButton.disabled = false;
       }
     });
   </script>
