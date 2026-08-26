@@ -93,13 +93,8 @@ The person stays in control of the sensitive step. The system checks the result 
 <tr><td style="border:1px solid #334155;padding:12px 14px;background:#0f1c2f;color:#f4f7fb;vertical-align:top;">Small AWS rehearsal</td><td style="border:1px solid #334155;padding:12px 14px;background:#0f1c2f;color:#f4f7fb;vertical-align:top;"><code>TEST-PROVEN</code></td><td style="border:1px solid #334155;padding:12px 14px;background:#0f1c2f;color:#f4f7fb;vertical-align:top;">S3 and ECR replacement paths were exercised and rescanned.</td></tr>
 </tbody></table>
 
-**Current AWS position:** `READ-ONLY PROVEN` for a disposable old-AMI EC2
-target with SSM Online; `TEST-PROVEN` for the small S3/ECR scan, approval,
-replacement, and rescan path. The EC2 before/after package demonstration is
-`PLANNED`.
-
-GuardDuty, real malware, AgentCore, and new networking remain outside this
-KISS POC; the shared VPC and SSM profile are unchanged.
+**Status:** `READ-ONLY PROVEN` for the EC2 rehearsal; `TEST-PROVEN` for the
+S3/ECR replace-and-rescan path; EC2 package fix `PLANNED`.
 
 ---
 
@@ -143,17 +138,13 @@ The current POC uses a deterministic Python path. GovTech inference is not requi
 
 ## Value and one next decision
 
-**Value today**
+**Value:** Faster review, a smaller explainable change, and a clear approval record.
 
-- Faster review of a finding.
-- Smaller, explainable changes.
-- A human approval record and a follow-up check.
+**Limitations:** Demo fixtures; GuardDuty, real malware, AgentCore, and new networking are outside this POC.
 
-**Next decision**
+**Next:** Approve one exact package update on the disposable old-AMI server so the DEMO can show:
 
-Approve one exact package update on the disposable old-AMI server so the DEMO can show:
-
-`old package &rarr; approved fix &rarr; verified clean`
+**Old package** &rarr; **approved fix** &rarr; **verified clean**
 
 This remains a learning POC, not an enterprise remediation platform.
 
