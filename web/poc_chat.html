@@ -25,6 +25,9 @@
     .live-panel input,.live-panel select { width:100%; padding:7px 8px; color:#eee; background:#2b2b2b; border:1px solid #4b4b4b; border-radius:6px; font-size:.75rem; }
     .live-panel button { padding:8px 9px; color:#092219; background:var(--green); border:0; border-radius:6px; font-size:.75rem; font-weight:700; }
     .live-panel button:disabled { opacity:.45; cursor:wait; }
+    .usage-panel { padding:11px 12px; background:#202020; border:1px solid #3d3d3d; border-radius:9px; }
+    .usage-value { margin-top:7px; color:#d9f8e9; font-size:.78rem; }
+    .usage-note { margin-top:4px; color:#777; font-size:.68rem; line-height:1.35; }
     .upload-button input { display:none; }
     .side-label { padding:0 9px; color:#777; font-size:.7rem; font-weight:700; letter-spacing:.08em; }
     .chat-item { padding:10px 11px; border-radius:8px; color:#d1d1d1; font-size:.88rem; }
@@ -73,6 +76,7 @@
     .approval-actions { display:flex; gap:8px; flex-shrink:0; }
     .btn { border:1px solid transparent; border-radius:7px; padding:8px 12px; font-size:.78rem; font-weight:650; }
     .btn.approve { color:#082218; background:var(--green); }
+    .btn.primary { color:#dceaff; background:#24436b; border-color:#3b6da8; }
     .btn.reject { color:#f0c3c3; background:transparent; border-color:#684040; }
     .btn:disabled,.send:disabled { opacity:.45; cursor:wait; }
     .composer-wrap { position:fixed; bottom:0; left:260px; right:0; padding:16px 24px 20px; background:linear-gradient(transparent,var(--bg) 22%); }
@@ -111,16 +115,30 @@
       <div class="side-spacer"></div>
       <label class="upload-button" for="evidence-upload"><span>↑</span><span>Upload read-only evidence</span><input id="evidence-upload" type="file" accept="application/json,.json"></label>
       <div class="live-panel">
-        <div class="side-label" style="padding:0">LIVE SECOP COMPARISON</div>
-        <label for="csv-upload">AWS Inspector CSV</label>
-        <input id="csv-upload" type="file" accept="text/csv,.csv">
-        <label for="instance-id">EC2 instance ID</label>
-        <input id="instance-id" type="text" autocomplete="off" placeholder="i-...">
-        <label for="live-cve">CVE from CSV</label>
-        <input id="live-cve" type="text" autocomplete="off" placeholder="CVE-YYYY-NNNN">
+        <div class="side-label" style="padding:0">LIVE SECOP CHECK</div>
+        <label for="advisory-upload">One advisory file (JSON)</label>
+        <input id="advisory-upload" type="file" accept="application/json,.json">
+        <div class="usage-note">The server selects LAB_SERVER_01. No EC2 ID is needed.</div>
         <label for="aws-region">AWS region</label>
         <select id="aws-region"><option value="ap-southeast-1">Singapore</option><option value="ap-south-1">Mumbai</option></select>
-        <button id="compare-live" type="button">Compare live target</button>
+        <button id="compare-live" type="button">Check live server</button>
+        <details class="technical-path">
+          <summary>Technical Inspector CSV path</summary>
+          <label for="csv-upload">AWS Inspector CSV</label>
+          <input id="csv-upload" type="file" accept="text/csv,.csv">
+          <label for="instance-id">EC2 instance ID</label>
+          <input id="instance-id" type="text" autocomplete="off" placeholder="i-...">
+          <label for="live-cve">CVE from CSV</label>
+          <input id="live-cve" type="text" autocomplete="off" placeholder="CVE-YYYY-NNNN">
+          <label for="live-package">Package (only if the CVE lists several)</label>
+          <input id="live-package" type="text" autocomplete="off" placeholder="for example: python">
+          <button id="compare-csv" type="button">Compare Inspector CSV</button>
+        </details>
+      </div>
+      <div class="usage-panel" aria-label="AI usage">
+        <div class="side-label" style="padding:0">AI USAGE</div>
+        <div id="govtech-usage" class="usage-value">GovTech inference: not used</div>
+        <div class="usage-note">This deterministic path uses no model credits. Billing remains portal-authoritative.</div>
       </div>
       <div class="side-footer"><span class="mode-dot"></span>Local synthetic mode<br>Live upload is sanitized and read-only</div>
     </aside>
@@ -128,15 +146,15 @@
     <main class="main">
       <header class="topbar">
         <div><div class="eyebrow">SECURITY WORKSPACE</div><h1>Inspector to SSM</h1></div>
-        <div class="status-pill"><span class="mode-dot"></span>Offline demo</div>
+        <div id="mode-status" class="status-pill"><span class="mode-dot"></span>Offline demo</div>
       </header>
-      <div class="safety-banner"><strong>Safe demo boundary.</strong> Local runs use synthetic fixtures. Uploaded live results must be typed, sanitized, and read-only.</div>
+      <div class="safety-banner"><strong>Safe demo boundary.</strong> The live check reads one tagged server, confirms one package advisory, then waits for your approval before any change. Uploaded live results must be typed, sanitized, and read-only.</div>
 
       <section class="chat" aria-live="polite">
         <div id="welcome" class="welcome">
           <div class="welcome-mark">S</div>
           <h2>How can I help with your security review?</h2>
-          <p>Ask me to inspect a synthetic CVE. I will correlate the finding, instance, SSM readiness, and patch state before asking for approval.</p>
+          <p>Upload one package advisory. I will check the server, explain the small update, and ask before changing anything.</p>
         </div>
         <div id="messages" class="messages"></div>
       </section>
@@ -151,7 +169,7 @@
             </div>
           </div>
         </form>
-        <div class="composer-hint">Synthetic evidence only. Approval records a no-op mock remediation.</div>
+        <div class="composer-hint">Live checks are read-only until you approve one package update. No reboot is requested.</div>
       </div>
     </main>
   </div>
@@ -162,15 +180,22 @@
     const labEnvEl = document.querySelector('#lab-env');
     const runButton = document.querySelector('#run');
     const uploadEl = document.querySelector('#evidence-upload');
+    const advisoryUploadEl = document.querySelector('#advisory-upload');
     const csvUploadEl = document.querySelector('#csv-upload');
     const instanceIdEl = document.querySelector('#instance-id');
     const liveCveEl = document.querySelector('#live-cve');
+    const livePackageEl = document.querySelector('#live-package');
     const awsRegionEl = document.querySelector('#aws-region');
     const compareLiveButton = document.querySelector('#compare-live');
+    const compareCsvButton = document.querySelector('#compare-csv');
+    const modeStatus = document.querySelector('#mode-status');
     const welcome = document.querySelector('#welcome');
     const messages = document.querySelector('#messages');
     const newChat = document.querySelector('#new-chat');
     let runId = null;
+    let lastLiveRequest = null;
+    let lastLiveProposalId = null;
+    let lastLiveProposalHash = null;
     const labels = {
       mock_inspector_finding: 'Inspector finding lookup',
       mock_instance_context: 'EC2 instance context',
@@ -183,6 +208,13 @@
       if (className) item.className = className;
       if (text !== undefined) item.textContent = text;
       return item;
+    }
+
+    function setMode(label, live) {
+      modeStatus.replaceChildren();
+      modeStatus.appendChild(node('span', 'mode-dot'));
+      modeStatus.appendChild(document.createTextNode(label));
+      if (live) modeStatus.style.color = '#c9e3ff';
     }
 
     function addMessage(role, text) {
@@ -283,7 +315,7 @@
       if (payload.result) renderResult(body, payload.result);
     }
 
-    function renderLiveComparison(payload) {
+    function renderLiveComparison(payload, request) {
       const result = payload.result || {};
       const body = addMessage('assistant', result.message || 'No comparison result returned.');
       const card = node('div', 'result-card');
@@ -304,6 +336,150 @@
         evidenceCell(grid, 'Severity', live.evidence.finding_severity);
         evidenceCell(grid, 'Packages', live.evidence.packages ? live.evidence.packages.length : 0);
         evidenceCell(grid, 'SSM', live.evidence.ssm_readiness);
+      }
+      evidenceCell(grid, 'GovTech', 'Inference not used');
+      body.appendChild(card);
+      if (result.status === 'READY' && live && live.status === 'READY') {
+        const actionCard = node('div', 'approval-card');
+        if (result.csv_match_count === 1) {
+          actionCard.appendChild(node('div', 'approval-copy', 'Read-only evidence is ready. Generate the proposed package change for review.'));
+          const actionButton = node('button', 'btn primary', 'Generate remediation suggestion');
+          actionButton.type = 'button';
+          actionButton.addEventListener('click', () => generateLiveProposal(request, actionButton));
+          actionCard.appendChild(actionButton);
+        } else {
+          const packageNames = live.evidence && live.evidence.packages
+            ? live.evidence.packages.map((item) => item.name).join(', ')
+            : '';
+          const packageHint = packageNames
+            ? `This CVE appears on several packages (${packageNames}). Enter one package name on the left and compare again.`
+            : 'This CVE appears on several packages. Enter one package name on the left and compare again.';
+          actionCard.appendChild(node('div', 'approval-copy', packageHint));
+        }
+        card.appendChild(actionCard);
+      }
+    }
+
+    function renderAdvisoryComparison(payload, request) {
+      const result = payload.result || {};
+      const body = addMessage('assistant', result.message || 'No live check result returned.');
+      const card = node('div', 'result-card');
+      const head = node('div', 'result-head');
+      head.appendChild(node('div', 'result-title', 'Live package check'));
+      head.appendChild(node('span', 'badge', result.reason_code || result.status || 'BLOCKED'));
+      card.appendChild(head);
+      const grid = node('div', 'evidence-grid');
+      evidenceCell(grid, 'Finding', result.cve_id);
+      evidenceCell(grid, 'Severity', result.severity);
+      evidenceCell(grid, 'Server', result.target_alias);
+      evidenceCell(grid, 'Package', result.package_name);
+      evidenceCell(grid, 'Installed', result.installed_version);
+      evidenceCell(grid, 'Available', result.fixed_version);
+      evidenceCell(grid, 'SSM', result.ssm_readiness);
+      evidenceCell(grid, 'GovTech', 'Inference not used');
+      card.appendChild(grid);
+      if (result.executed_calls) {
+        const calls = node('div', 'message-time', 'Recorded checks: ' + result.executed_calls.join(', '));
+        calls.style.marginTop = '10px';
+        card.appendChild(calls);
+      }
+      if (result.status === 'READY') {
+        const actionCard = node('div', 'approval-card');
+        actionCard.appendChild(node('div', 'approval-copy', 'The server is ready. Prepare the one-package change for your approval.'));
+        const actionButton = node('button', 'btn primary', 'Prepare update');
+        actionButton.type = 'button';
+        actionButton.addEventListener('click', () => generateAdvisoryProposal(request, actionButton));
+        actionCard.appendChild(actionButton);
+        card.appendChild(actionCard);
+      }
+      body.appendChild(card);
+    }
+
+    function renderLiveProposal(payload) {
+      const result = payload.result || {};
+      const body = addMessage('assistant', result.message || 'No proposal returned.');
+      const card = node('div', 'result-card');
+      const head = node('div', 'result-head');
+      head.appendChild(node('div', 'result-title', 'SecCop remediation proposal'));
+      head.appendChild(node('span', 'badge', result.reason_code || result.status || 'BLOCKED'));
+      card.appendChild(head);
+      const grid = node('div', 'evidence-grid');
+      evidenceCell(grid, 'CVE', result.cve_id);
+      evidenceCell(grid, 'Severity', result.severity);
+      evidenceCell(grid, 'Target', result.resource_alias);
+      evidenceCell(grid, 'Package', result.package_name);
+      evidenceCell(grid, 'Installed', result.installed_version);
+      evidenceCell(grid, 'Fixed', result.fixed_version);
+      evidenceCell(grid, 'Action', result.action);
+      evidenceCell(grid, 'Reboot', result.reboot_policy);
+      evidenceCell(grid, 'Proposal', result.proposal_id);
+      evidenceCell(grid, 'Approval expires', result.approval_expires_at);
+      evidenceCell(grid, 'GovTech', 'Inference not used');
+      card.appendChild(grid);
+      if (result.read_executed_calls) {
+        const calls = node('div', 'message-time', 'Read-only calls: ' + result.read_executed_calls.join(', '));
+        calls.style.marginTop = '10px';
+        card.appendChild(calls);
+      }
+      if (result.status === 'READY' && result.requires_approval) {
+        lastLiveProposalId = result.proposal_id;
+        lastLiveProposalHash = result.proposal_hash;
+        const approval = node('div', 'approval-card');
+        approval.appendChild(node('div', 'approval-copy', 'Approval starts this one-package fix. No reboot is included.'));
+        const actions = node('div', 'approval-actions');
+        const approve = node('button', 'btn approve', 'Approve and run fix');
+        const reject = node('button', 'btn reject', 'Reject proposal');
+        approve.type = 'button';
+        reject.type = 'button';
+        approve.addEventListener('click', () => decideLive('APPROVE', approve, reject));
+        reject.addEventListener('click', () => decideLive('REJECT', approve, reject));
+        actions.appendChild(approve);
+        actions.appendChild(reject);
+        approval.appendChild(actions);
+        card.appendChild(approval);
+      }
+      body.appendChild(card);
+    }
+
+    function renderLiveDecision(payload) {
+      const result = payload.result || {};
+      const body = addMessage('assistant', result.message || 'Decision recorded.');
+      const card = node('div', 'result-card');
+      const head = node('div', 'result-head');
+      head.appendChild(node('div', 'result-title', 'Approval record'));
+      head.appendChild(node('span', 'badge', result.reason_code || result.status || 'BLOCKED'));
+      card.appendChild(head);
+      const grid = node('div', 'evidence-grid');
+      evidenceCell(grid, 'Proposal', result.proposal_id);
+      evidenceCell(grid, 'Mutation', result.mutation_performed ? 'Performed' : 'None');
+      evidenceCell(grid, 'Approval expires', result.approval_expires_at);
+      evidenceCell(grid, 'GovTech', 'Inference not used');
+      card.appendChild(grid);
+      body.appendChild(card);
+    }
+
+    function renderLiveRemediation(payload) {
+      const result = payload.result || {};
+      const body = addMessage('assistant', result.message || 'No remediation result returned.');
+      const card = node('div', 'result-card');
+      const head = node('div', 'result-head');
+      head.appendChild(node('div', 'result-title', 'Fix and follow-up result'));
+      head.appendChild(node('span', 'badge', result.reason_code || result.status || 'BLOCKED'));
+      card.appendChild(head);
+      const grid = node('div', 'evidence-grid');
+      evidenceCell(grid, 'Before', result.before_version || 'Not verified');
+      evidenceCell(grid, 'After', result.after_version || 'Awaiting check');
+      evidenceCell(grid, 'Package', result.package_name);
+      evidenceCell(grid, 'Target version', result.fixed_version);
+      evidenceCell(grid, 'Change', result.change_state);
+      evidenceCell(grid, 'Follow-up check', result.verification_status);
+      evidenceCell(grid, 'Reboot', result.reboot_approved ? 'Approved' : 'Not run');
+      evidenceCell(grid, 'GovTech', 'Inference not used');
+      card.appendChild(grid);
+      if (result.executed_calls) {
+        const calls = node('div', 'message-time', 'Recorded steps: ' + result.executed_calls.join(', '));
+        calls.style.marginTop = '10px';
+        card.appendChild(calls);
       }
       body.appendChild(card);
     }
@@ -328,6 +504,60 @@
       catch (error) { const body = addMessage('assistant', 'The decision could not be recorded.'); body.lastChild.classList.add('error-copy'); }
     }
 
+    async function generateLiveProposal(request, actionButton) {
+      actionButton.disabled = true;
+      addMessage('user', 'Generate deterministic remediation suggestion');
+      const thinking = addMessage('assistant', 'Rechecking read-only evidence and preparing a typed proposal...');
+      try {
+        const payload = await post('/api/live-proposal', request);
+        thinking.parentElement.remove();
+        renderLiveProposal(payload);
+      } catch (error) {
+        thinking.textContent = 'The remediation proposal was blocked.';
+        thinking.classList.add('error-copy');
+      }
+    }
+
+    async function generateAdvisoryProposal(request, actionButton) {
+      actionButton.disabled = true;
+      addMessage('user', 'Prepare the package update');
+      const thinking = addMessage('assistant', 'Checking the server one more time and preparing a clear update proposal...');
+      try {
+        const payload = await post('/api/live-advisory-proposal', request);
+        thinking.parentElement.remove();
+        renderLiveProposal(payload);
+      } catch (error) {
+        thinking.textContent = 'The package proposal was blocked.';
+        thinking.classList.add('error-copy');
+      }
+    }
+
+    async function decideLive(decision, approveButton, rejectButton) {
+      approveButton.disabled = true;
+      rejectButton.disabled = true;
+      addMessage('user', decision === 'APPROVE' ? 'Approve proposed remediation' : 'Reject proposed remediation');
+      try {
+        const decisionPayload = await post('/api/live-decision', { proposal_id:lastLiveProposalId, proposal_hash:lastLiveProposalHash, decision });
+        renderLiveDecision(decisionPayload);
+        if (decision === 'APPROVE' && decisionPayload.result && decisionPayload.result.reason_code === 'HUMAN_APPROVED_NO_MUTATION') {
+          await runLiveRemediation();
+        }
+      } catch (error) {
+        const body = addMessage('assistant', 'The proposal decision could not be recorded.');
+        body.lastChild.classList.add('error-copy');
+      }
+    }
+
+    async function runLiveRemediation() {
+      addMessage('assistant', 'Starting the approved one-package fix. No reboot will be requested.');
+      try {
+        renderLiveRemediation(await post('/api/live-remediation', { proposal_id:lastLiveProposalId, proposal_hash:lastLiveProposalHash, reboot_approved:false }));
+      } catch (error) {
+        const body = addMessage('assistant', 'The approved fix could not be started.');
+        body.lastChild.classList.add('error-copy');
+      }
+    }
+
     form.addEventListener('submit', async (event) => {
       event.preventDefault();
       const prompt = promptEl.value.trim();
@@ -345,7 +575,7 @@
       finally { runButton.disabled = false; }
     });
 
-    newChat.addEventListener('click', () => { messages.replaceChildren(); welcome.classList.remove('hidden'); promptEl.focus(); runId = null; });
+    newChat.addEventListener('click', () => { messages.replaceChildren(); welcome.classList.remove('hidden'); promptEl.focus(); runId = null; lastLiveProposalId = null; lastLiveProposalHash = null; });
 
     uploadEl.addEventListener('change', async () => {
       const file = uploadEl.files && uploadEl.files[0];
@@ -362,29 +592,57 @@
     });
 
     compareLiveButton.addEventListener('click', async () => {
+      const file = advisoryUploadEl.files && advisoryUploadEl.files[0];
+      if (!file) {
+        const body = addMessage('assistant', 'Choose the one advisory JSON file first.');
+        body.lastChild.classList.add('error-copy');
+        return;
+      }
+      compareLiveButton.disabled = true;
+      setMode('Live read-only', true);
+      addMessage('user', 'Check the live server for this package advisory');
+      try {
+        const advisory = JSON.parse(await file.text());
+        const request = { ...advisory, region: awsRegionEl.value, target_alias: 'LAB_SERVER_01' };
+        lastLiveRequest = request;
+        renderAdvisoryComparison(await post('/api/live-advisory', request), request);
+      } catch (error) {
+        const body = addMessage('assistant', 'The advisory check was blocked. Use a typed advisory JSON file.');
+        body.lastChild.classList.add('error-copy');
+      } finally {
+        compareLiveButton.disabled = false;
+      }
+    });
+
+    compareCsvButton.addEventListener('click', async () => {
       const file = csvUploadEl.files && csvUploadEl.files[0];
       const instanceId = instanceIdEl.value.trim();
       const cveId = liveCveEl.value.trim().toUpperCase();
+      const packageName = livePackageEl.value.trim();
       if (!file || !instanceId || !/^i-[0-9a-f]{8,17}$/.test(instanceId) || !/^CVE-[0-9]{4}-[0-9]{4,}$/.test(cveId)) {
         const body = addMessage('assistant', 'Provide an Inspector CSV, an EC2 instance ID, and a valid CVE from that CSV.');
         body.lastChild.classList.add('error-copy');
         return;
       }
-      compareLiveButton.disabled = true;
+      compareCsvButton.disabled = true;
+      setMode('Live read-only', true);
       addMessage('user', 'Compare Inspector CSV with the selected live EC2 target');
       try {
-        const payload = await post('/api/live-csv', {
+        const request = {
           csv_text: await file.text(),
           instance_id: instanceId,
           cve_id: cveId,
+          ...(packageName ? { package_name: packageName } : {}),
           region: awsRegionEl.value
-        });
-        renderLiveComparison(payload);
+        };
+        lastLiveRequest = request;
+        const payload = await post('/api/live-csv', request);
+        renderLiveComparison(payload, request);
       } catch (error) {
         const body = addMessage('assistant', 'The live comparison was blocked.');
         body.lastChild.classList.add('error-copy');
       } finally {
-        compareLiveButton.disabled = false;
+        compareCsvButton.disabled = false;
       }
     });
   </script>

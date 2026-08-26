@@ -1,5 +1,6 @@
 """Typed data crossing the model, policy, and tool boundaries."""
 
+from datetime import datetime
 from typing import Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field
@@ -294,7 +295,50 @@ class SecCopCsvRequest(Contract):
     csv_text: str = Field(min_length=1, max_length=500_000)
     instance_id: str = Field(pattern=r"^i-[0-9a-f]{8,17}$")
     cve_id: str = Field(pattern=r"^CVE-[0-9]{4}-[0-9]{4,}$")
+    package_name: str | None = Field(default=None, pattern=r"^[A-Za-z0-9][A-Za-z0-9._+:/@-]{0,79}$")
     region: Literal["ap-southeast-1", "ap-south-1"] = "ap-southeast-1"
+
+
+class SecCopAdvisoryRequest(Contract):
+    """Typed one-package advisory input for the simple live demo path."""
+
+    target_alias: Literal["LAB_SERVER_01"] = "LAB_SERVER_01"
+    advisory_id: str = Field(pattern=r"^ALAS[0-9]{1,2}-[0-9]{4}-[0-9]{4,}$")
+    cve_id: str = Field(pattern=r"^CVE-[0-9]{4}-[0-9]{4,}$")
+    severity: Literal["LOW", "MEDIUM", "HIGH", "CRITICAL"]
+    package_name: str = Field(pattern=r"^[A-Za-z0-9][A-Za-z0-9._+:/@-]{0,79}$")
+    installed_version: str = Field(pattern=r"^[A-Za-z0-9][A-Za-z0-9._+:/@~-]{0,63}$")
+    fixed_version: str = Field(pattern=r"^[A-Za-z0-9][A-Za-z0-9._+:/@~-]{0,63}$")
+    region: Literal["ap-southeast-1", "ap-south-1"] = "ap-southeast-1"
+
+
+class SecCopAdvisoryComparison(Contract):
+    """Sanitized result for the no-instance-ID advisory journey."""
+
+    status: Literal["READY", "BLOCKED"]
+    reason_code: Literal[
+        "SECCOP_ADVISORY_READY",
+        "ADVISORY_INPUT_INVALID",
+        "EC2_TARGET_NOT_FOUND",
+        "EC2_TARGET_AMBIGUOUS",
+        "EC2_TARGET_NOT_READY",
+        "EC2_TAGS_MISMATCH",
+        "SSM_NODE_NOT_FOUND",
+        "SSM_NODE_NOT_READY",
+        "SSM_ADVISORY_NOT_FOUND",
+        "SSM_COMMAND_TIMEOUT",
+        "AWS_BACKEND_UNAVAILABLE",
+    ]
+    advisory_id: str = Field(pattern=r"^ALAS[0-9]{1,2}-[0-9]{4}-[0-9]{4,}$")
+    cve_id: str = Field(pattern=r"^CVE-[0-9]{4}-[0-9]{4,}$")
+    target_alias: Literal["LAB_SERVER_01"]
+    package_name: str | None = Field(default=None, pattern=r"^[A-Za-z0-9][A-Za-z0-9._+:/@-]{0,79}$")
+    installed_version: str | None = Field(default=None, pattern=r"^[A-Za-z0-9][A-Za-z0-9._+:/@~-]{0,63}$")
+    fixed_version: str | None = Field(default=None, pattern=r"^[A-Za-z0-9][A-Za-z0-9._+:/@~-]{0,63}$")
+    severity: Literal["LOW", "MEDIUM", "HIGH", "CRITICAL", "UNKNOWN"]
+    ssm_readiness: Literal["READY", "NOT_READY", "UNKNOWN"]
+    message: str = Field(min_length=1, max_length=220)
+    executed_calls: tuple[str, ...] = ()
 
 
 class SecCopComparison(Contract):
@@ -306,6 +350,7 @@ class SecCopComparison(Contract):
         "CSV_SCHEMA_INVALID",
         "CSV_TARGET_MISMATCH",
         "CSV_CVE_NOT_FOUND",
+        "CSV_PACKAGE_NOT_FOUND",
         "AWS_READ_ONLY_BLOCKED",
         "AWS_BACKEND_UNAVAILABLE",
     ]
@@ -315,3 +360,101 @@ class SecCopComparison(Contract):
     csv_match_count: int = Field(ge=0)
     live_result: AwsReadOnlyResult | None = None
     message: str = Field(min_length=1, max_length=220)
+
+
+class SecCopRemediationProposal(Contract):
+    """Deterministic, approval-required proposal; never an AWS mutation."""
+
+    proposal_id: str = Field(pattern=r"^SECCOP_PROPOSAL_[0-9]{2}$")
+    status: Literal["READY", "BLOCKED"]
+    reason_code: Literal[
+        "SECCOP_REMEDIATION_PROPOSAL_READY",
+        "SECCOP_ADVISORY_READY",
+        "ADVISORY_INPUT_INVALID",
+        "ADVISORY_VERSION_MISMATCH",
+        "CSV_SCHEMA_INVALID",
+        "CSV_TARGET_MISMATCH",
+        "CSV_CVE_NOT_FOUND",
+        "CSV_MATCH_AMBIGUOUS",
+        "CSV_PACKAGE_NOT_FOUND",
+        "NO_FIXED_VERSION",
+        "EC2_TARGET_NOT_FOUND",
+        "EC2_TARGET_AMBIGUOUS",
+        "EC2_TARGET_NOT_READY",
+        "EC2_TAGS_MISMATCH",
+        "SSM_NODE_NOT_FOUND",
+        "SSM_NODE_NOT_READY",
+        "SSM_ADVISORY_NOT_FOUND",
+        "SSM_COMMAND_TIMEOUT",
+        "AWS_READ_ONLY_BLOCKED",
+        "AWS_BACKEND_UNAVAILABLE",
+    ]
+    cve_id: str = Field(pattern=r"^CVE-[0-9]{4}-[0-9]{4,}$")
+    resource_alias: str = Field(pattern=r"^EC2_RESOURCE_[0-9]{2}$")
+    severity: Literal["INFORMATIONAL", "LOW", "MEDIUM", "HIGH", "CRITICAL", "UNKNOWN"]
+    package_name: str | None = Field(default=None, pattern=r"^[A-Za-z0-9][A-Za-z0-9._+:/@-]{0,79}$")
+    installed_version: str | None = Field(default=None, pattern=r"^[A-Za-z0-9][A-Za-z0-9._+:/@~-]{0,63}$")
+    fixed_version: str | None = Field(default=None, pattern=r"^[A-Za-z0-9][A-Za-z0-9._+:/@~-]{0,63}$")
+    action: Literal["SSM_INSTALL_SECURITY_UPDATE", "NONE"]
+    reboot_policy: Literal["NO_REBOOT", "EXPLICIT_APPROVAL_REQUIRED", "UNKNOWN"]
+    requires_approval: bool
+    mutation_performed: Literal[False]
+    proposal_hash: str = Field(default="0" * 64, pattern=r"^[0-9a-f]{64}$")
+    approval_expires_at: datetime | None = None
+    read_executed_calls: tuple[str, ...] = ()
+    message: str = Field(min_length=1, max_length=220)
+
+
+class SecCopApprovalResult(Contract):
+    """Phase 2A approval record; the decision path performs no mutation."""
+
+    status: Literal["APPROVED_NO_MUTATION", "REJECTED"]
+    reason_code: Literal["HUMAN_APPROVED_NO_MUTATION", "HUMAN_REJECTED"]
+    proposal_id: str = Field(pattern=r"^SECCOP_PROPOSAL_[0-9]{2}$")
+    mutation_performed: Literal[False]
+    proposal_hash: str = Field(default="0" * 64, pattern=r"^[0-9a-f]{64}$")
+    approval_expires_at: datetime | None = None
+    executed_calls: tuple[str, ...] = ()
+    message: str = Field(min_length=1, max_length=220)
+
+
+class SecCopRemediationRequest(Contract):
+    """Approval-bound request for the one-target Phase 2B operation."""
+
+    proposal_id: str = Field(pattern=r"^SECCOP_PROPOSAL_[0-9]{2}$")
+    proposal_hash: str = Field(pattern=r"^[0-9a-f]{64}$")
+    reboot_approved: Literal[False] = False
+
+
+class SecCopRemediationResult(Contract):
+    """Sanitized SSM execution and immediate follow-up result."""
+
+    status: Literal["COMPLETED", "BLOCKED", "FAILED"]
+    reason_code: Literal[
+        "SSM_REMEDIATION_VERIFIED",
+        "SSM_REMEDIATION_PENDING_RESCAN",
+        "SSM_PACKAGE_VERSION_VERIFIED",
+        "SSM_PACKAGE_SOURCE_NOT_READY",
+        "SSM_COMMAND_FAILED",
+        "SSM_COMMAND_TIMEOUT",
+        "SSM_VERIFICATION_FAILED",
+        "SSM_APPROVAL_REQUIRED",
+        "SSM_APPROVAL_BINDING_MISMATCH",
+        "SSM_APPROVAL_EXPIRED",
+        "SSM_APPROVAL_ALREADY_USED",
+        "PROPOSAL_NOT_FOUND",
+        "AWS_BACKEND_UNAVAILABLE",
+    ]
+    cve_id: str = Field(pattern=r"^CVE-[0-9]{4}-[0-9]{4,}$")
+    resource_alias: str = Field(pattern=r"^EC2_RESOURCE_[0-9]{2}$")
+    package_name: str | None = Field(default=None, pattern=r"^[A-Za-z0-9][A-Za-z0-9._+:/@-]{0,79}$")
+    fixed_version: str | None = Field(default=None, pattern=r"^[A-Za-z0-9][A-Za-z0-9._+:/@~-]{0,63}$")
+    before_version: str | None = Field(default=None, pattern=r"^[A-Za-z0-9][A-Za-z0-9._+:/@~-]{0,63}$")
+    after_version: str | None = Field(default=None, pattern=r"^[A-Za-z0-9][A-Za-z0-9._+:/@~-]{0,63}$")
+    change_state: Literal["NOT_STARTED", "ATTEMPTED", "COMPLETED"]
+    verification_status: Literal["VERIFIED", "PENDING_RESCAN", "NOT_AVAILABLE"]
+    reboot_approved: Literal[False]
+    mutation_performed: bool
+    executed_calls: tuple[str, ...] = ()
+    evidence_path: str | None = None
+    message: str = Field(min_length=1, max_length=240)

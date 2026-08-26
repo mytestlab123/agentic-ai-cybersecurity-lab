@@ -57,13 +57,24 @@ CSV_COLUMNS = (
 _CVE_RE = re.compile(r"^CVE-[0-9]{4}-[0-9]{4,}$")
 
 
-def parse_csv(text: str, *, instance_id: str, cve_id: str) -> SecCopCsvDocument:
+def parse_csv(
+    text: str,
+    *,
+    instance_id: str,
+    cve_id: str,
+    package_name: str | None = None,
+) -> SecCopCsvDocument:
     """Parse only the canonical export shape; never echo raw CSV fields."""
 
     if len(text.encode("utf-8")) > 500_000:
         raise SecCopCsvError("CSV_SCHEMA_INVALID")
     normalized_cve = cve_id.strip().upper()
     if not _CVE_RE.fullmatch(normalized_cve):
+        raise SecCopCsvError("CSV_SCHEMA_INVALID")
+    normalized_package = package_name.strip() if package_name else None
+    if normalized_package and not re.fullmatch(
+        r"^[A-Za-z0-9][A-Za-z0-9._+:/@-]{0,79}$", normalized_package
+    ):
         raise SecCopCsvError("CSV_SCHEMA_INVALID")
 
     reader = csv.DictReader(io.StringIO(text, newline=""))
@@ -96,9 +107,14 @@ def parse_csv(text: str, *, instance_id: str, cve_id: str) -> SecCopCsvDocument:
         raise SecCopCsvError("CSV_SCHEMA_INVALID")
     if any(row.instance_id != instance_id for row in rows):
         raise SecCopCsvError("CSV_TARGET_MISMATCH")
-    matching = tuple(row for row in rows if row.cve_id == normalized_cve)
+    matching = tuple(
+        row
+        for row in rows
+        if row.cve_id == normalized_cve
+        and (normalized_package is None or row.package_name == normalized_package)
+    )
     if not matching:
-        raise SecCopCsvError("CSV_CVE_NOT_FOUND")
+        raise SecCopCsvError("CSV_PACKAGE_NOT_FOUND" if normalized_package else "CSV_CVE_NOT_FOUND")
     return SecCopCsvDocument(rows=tuple(rows), matching_rows=matching)
 
 

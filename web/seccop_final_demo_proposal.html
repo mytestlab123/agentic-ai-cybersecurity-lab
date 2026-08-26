@@ -1,0 +1,163 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Security Copilot - DEMO proposal</title>
+  <style>
+    :root { --ink:#173227; --muted:#5a6d63; --green:#0b8751; --mint:#e7f6ee; --line:#cfe0d5; --paper:#fbfdfb; --gold:#9b6911; }
+    * { box-sizing:border-box; }
+    body { margin:0; color:var(--ink); background:linear-gradient(160deg,#eff8f2,#fff 55%,#eef6ff); font:16px/1.5 Arial,sans-serif; }
+    .shell { max-width:1120px; margin:0 auto; padding:30px 22px 80px; }
+    header { display:flex; align-items:flex-start; justify-content:space-between; gap:20px; padding:20px 0 30px; }
+    .eyebrow { color:var(--green); font-size:.78rem; font-weight:800; letter-spacing:.16em; }
+    h1 { margin:.2em 0 .15em; font-size:clamp(2.2rem,6vw,4.8rem); line-height:1.02; }
+    h2 { margin:0 0 12px; font-size:clamp(1.5rem,3vw,2.4rem); }
+    h3 { margin:0 0 7px; font-size:1.05rem; }
+    p { margin:8px 0; }
+    .tag { display:inline-flex; align-items:center; gap:7px; padding:7px 11px; color:#145b3b; background:#daf2e5; border:1px solid #a8ddbe; border-radius:999px; font-weight:700; font-size:.8rem; }
+    .dot { width:8px; height:8px; background:#1db56c; border-radius:50%; }
+    .hero { padding:32px; background:rgba(255,255,255,.85); border:1px solid var(--line); border-radius:22px; box-shadow:0 20px 50px #24523912; }
+    .hero p { max-width:750px; color:var(--muted); font-size:1.18rem; }
+    .hero-actions { display:flex; flex-wrap:wrap; gap:10px; margin-top:22px; }
+    button { border:0; border-radius:9px; padding:11px 16px; color:#fff; background:var(--green); font-weight:800; cursor:pointer; }
+    button.secondary { color:var(--ink); background:#fff; border:1px solid var(--line); }
+    .section { margin-top:28px; padding:28px; background:rgba(255,255,255,.76); border:1px solid var(--line); border-radius:18px; }
+    .section-intro { max-width:760px; color:var(--muted); }
+    .journey { display:grid; grid-template-columns:repeat(6,1fr); gap:10px; margin-top:20px; }
+    .step { position:relative; min-height:128px; padding:15px; background:var(--paper); border:1px solid var(--line); border-radius:12px; }
+    .step:not(:last-child)::after { content:'>'; position:absolute; right:-15px; top:45px; z-index:2; color:var(--green); font-size:1.6rem; font-weight:800; }
+    .step-number { color:var(--green); font-weight:900; font-size:.8rem; }
+    .step p { color:var(--muted); font-size:.88rem; }
+    .choice-grid { display:grid; grid-template-columns:repeat(3,1fr); gap:14px; margin-top:18px; }
+    .choice { padding:19px; background:#fff; border:1px solid var(--line); border-radius:13px; }
+    .choice.recommended { border:2px solid var(--green); box-shadow:0 8px 24px #16804d16; }
+    .choice-label { color:var(--green); font-size:.75rem; font-weight:900; letter-spacing:.08em; text-transform:uppercase; }
+    .choice p { color:var(--muted); }
+    .choice ul { padding-left:19px; color:var(--muted); }
+    .answer { display:grid; grid-template-columns:1fr 1fr; gap:16px; margin-top:18px; }
+    .answer-card { padding:19px; border-radius:13px; border:1px solid var(--line); background:#fff; }
+    .answer-card h3 { color:var(--green); }
+    .demo-panel { display:none; margin-top:19px; padding:18px; background:#11271d; color:#eaf8ef; border-radius:13px; }
+    .demo-panel.show { display:block; }
+    .demo-status { color:#a6ebc2; font-weight:800; }
+    .progress { display:grid; grid-template-columns:repeat(6,1fr); gap:6px; margin-top:16px; }
+    .progress span { height:9px; background:#385242; border-radius:99px; }
+    .progress span.on { background:#4fd78c; }
+    .final-box { margin-top:16px; padding:15px; background:#e8f8ee; border:1px solid #a9dfbd; border-radius:10px; color:#155736; }
+    footer { margin-top:28px; color:var(--muted); font-size:.88rem; }
+    @media (max-width:850px) { .journey { grid-template-columns:repeat(2,1fr); }.step:not(:last-child)::after { display:none; }.choice-grid,.answer { grid-template-columns:1fr; } header { flex-direction:column; } }
+    @media (max-width:520px) { .shell { padding:18px 12px 50px; }.hero,.section { padding:20px; }.journey { grid-template-columns:1fr; } }
+  </style>
+</head>
+<body>
+  <main class="shell">
+    <header>
+      <div>
+        <div class="eyebrow">SECURITY COPILOT</div>
+        <h1>DEMO proposal</h1>
+        <p class="section-intro">A simple story: start with a security finding, make a clear decision, apply one approved fix, and show whether it worked.</p>
+      </div>
+      <div class="tag"><span class="dot"></span>Human approval stays in control</div>
+    </header>
+
+    <section class="hero">
+      <h2>What the final experience should feel like</h2>
+      <p>You upload a security report. Security Copilot connects the finding to the right server, explains a safe next step, waits for your approval, applies only that approved change, and returns with the result.</p>
+      <div class="hero-actions">
+        <button id="run-demo" type="button">Show the end-to-end story</button>
+        <button id="jump-options" class="secondary" type="button">See the choices</button>
+      </div>
+      <div id="demo-panel" class="demo-panel" aria-live="polite">
+        <div id="demo-status" class="demo-status">Preparing the demo story...</div>
+        <div class="progress" aria-label="Demo progress"><span></span><span></span><span></span><span></span><span></span><span></span></div>
+        <div id="demo-result" class="final-box" hidden>Final view: the selected issue is checked again, and the screen says whether it is fixed, still waiting for the new scan, or needs attention.</div>
+      </div>
+    </section>
+
+    <section class="section">
+      <h2>The journey</h2>
+      <p class="section-intro">Each step answers one question a non-technical reviewer naturally asks.</p>
+      <div class="journey">
+        <article class="step"><div class="step-number">01</div><h3>Upload</h3><p>What did the security scan find?</p></article>
+        <article class="step"><div class="step-number">02</div><h3>Match</h3><p>Which server does it belong to?</p></article>
+        <article class="step"><div class="step-number">03</div><h3>Suggest</h3><p>What change would help?</p></article>
+        <article class="step"><div class="step-number">04</div><h3>Approve</h3><p>Has a person agreed?</p></article>
+        <article class="step"><div class="step-number">05</div><h3>Apply</h3><p>Did we make only that change?</p></article>
+        <article class="step"><div class="step-number">06</div><h3>Check</h3><p>Did the issue actually go away?</p></article>
+      </div>
+    </section>
+
+    <section id="options" class="section">
+      <h2>Three ways to reach the end goal</h2>
+      <p class="section-intro">They are not competing products. They are levels of confidence and automation.</p>
+      <div class="choice-grid">
+        <article class="choice">
+          <div class="choice-label">Option 1 · Practice</div>
+          <h3>Safe local story</h3>
+          <p>Use prepared examples to learn the conversation without touching AWS.</p>
+          <ul><li>Fast and repeatable</li><li>No cloud change</li><li>Best for learning the flow</li></ul>
+        </article>
+        <article class="choice recommended">
+          <div class="choice-label">Recommended · DEMO</div>
+          <h3>Controlled real journey</h3>
+          <p>Use one real server, one finding, one approved fix, and one follow-up check.</p>
+          <ul><li>Feels real</li><li>Small and explainable</li><li>Approval before the change</li></ul>
+        </article>
+        <article class="choice">
+          <div class="choice-label">Option 3 · Scale later</div>
+          <h3>AI-assisted operations</h3>
+          <p>Use the low-cost Luna assistant to explain results after the safe workflow is proven.</p>
+          <ul><li>Helpful summaries</li><li>Still not the approver</li><li>Usage shown honestly</li></ul>
+        </article>
+      </div>
+    </section>
+
+    <section class="section">
+      <div class="answer">
+        <article class="answer-card"><h3>Why not jump straight to the end?</h3><p>We can present the end goal as one smooth DEMO. Underneath, the small checkpoints still matter: confirm the right server, show the exact change, ask for approval, and check the result. That is what makes the “wow” moment trustworthy.</p></article>
+        <article class="answer-card"><h3>What you will be able to say</h3><p>“I uploaded a real finding, SecCopilot showed me the proposed fix, I approved it, the system made only that approved change, and it came back with independent proof.”</p></article>
+      </div>
+    </section>
+
+    <section class="section">
+      <h2>Recommended final DEMO</h2>
+      <p class="section-intro">One selected finding. One server. One approval. One result. Then we can widen the story only when the proof is clear.</p>
+      <div class="final-box"><strong>Current position:</strong> the evidence, proposal, and approval screens are ready. Phase 2B adds the approved fix action; the next phase checks the result independently.</div>
+    </section>
+
+    <footer>Security Copilot is designed to make a powerful workflow easy to understand without hiding the human decision.</footer>
+  </main>
+  <script>
+    const runButton = document.querySelector('#run-demo');
+    const optionsButton = document.querySelector('#jump-options');
+    const panel = document.querySelector('#demo-panel');
+    const status = document.querySelector('#demo-status');
+    const result = document.querySelector('#demo-result');
+    const bars = [...document.querySelectorAll('.progress span')];
+    const stages = ['Reading the uploaded finding...', 'Confirming the right server...', 'Preparing a clear suggested fix...', 'Waiting for your approval...', 'Applying only the approved change...', 'Checking the result again...'];
+    let timer;
+    runButton.addEventListener('click', () => {
+      window.clearInterval(timer);
+      panel.classList.add('show');
+      result.hidden = true;
+      bars.forEach((bar) => bar.classList.remove('on'));
+      let index = 0;
+      status.textContent = stages[index];
+      bars[index].classList.add('on');
+      timer = window.setInterval(() => {
+        index += 1;
+        if (index >= stages.length) {
+          window.clearInterval(timer);
+          status.textContent = 'The guided story is complete.';
+          result.hidden = false;
+          return;
+        }
+        status.textContent = stages[index];
+        bars[index].classList.add('on');
+      }, 850);
+    });
+    optionsButton.addEventListener('click', () => document.querySelector('#options').scrollIntoView({ behavior:'smooth' }));
+  </script>
+</body>
+</html>
