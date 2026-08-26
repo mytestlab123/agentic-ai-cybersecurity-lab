@@ -6,7 +6,7 @@ Request: `docs/chatgpt/inbox/REQUEST-20260827-seccop-multi-source.md`
 
 Bounded work issue: #21 — **SecCop: one-click operator Scan with EC2 real fix and S3/ECR demo findings**
 
-Review PR: created from `chatgpt/review-20260827-seccop-multi-source` as a documentation-only handoff. Implementation must wait for Amit's explicit `go`.
+Review PR: #22 — **[Issue 21] Add ChatGPT review for SecCop multi-source operator scan**. This is a documentation-only handoff. Implementation must wait for Amit's explicit `go`.
 
 ## Recommendation
 
