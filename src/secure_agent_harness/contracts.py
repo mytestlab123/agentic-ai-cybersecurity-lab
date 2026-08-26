@@ -295,6 +295,7 @@ class SecCopCsvRequest(Contract):
     csv_text: str = Field(min_length=1, max_length=500_000)
     instance_id: str = Field(pattern=r"^i-[0-9a-f]{8,17}$")
     cve_id: str = Field(pattern=r"^CVE-[0-9]{4}-[0-9]{4,}$")
+    package_name: str | None = Field(default=None, pattern=r"^[A-Za-z0-9][A-Za-z0-9._+:/@-]{0,79}$")
     region: Literal["ap-southeast-1", "ap-south-1"] = "ap-southeast-1"
 
 
@@ -307,6 +308,7 @@ class SecCopComparison(Contract):
         "CSV_SCHEMA_INVALID",
         "CSV_TARGET_MISMATCH",
         "CSV_CVE_NOT_FOUND",
+        "CSV_PACKAGE_NOT_FOUND",
         "AWS_READ_ONLY_BLOCKED",
         "AWS_BACKEND_UNAVAILABLE",
     ]
@@ -329,6 +331,7 @@ class SecCopRemediationProposal(Contract):
         "CSV_TARGET_MISMATCH",
         "CSV_CVE_NOT_FOUND",
         "CSV_MATCH_AMBIGUOUS",
+        "CSV_PACKAGE_NOT_FOUND",
         "NO_FIXED_VERSION",
         "AWS_READ_ONLY_BLOCKED",
         "AWS_BACKEND_UNAVAILABLE",

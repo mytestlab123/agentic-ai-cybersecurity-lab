@@ -108,6 +108,7 @@ def _live_proposal(request: SecCopCsvRequest) -> SecCopRemediationProposal:
             request.csv_text,
             instance_id=request.instance_id,
             cve_id=request.cve_id,
+            package_name=request.package_name,
         )
     except SecCopCsvError as error:
         return SecCopRemediationProposal(
@@ -311,6 +312,7 @@ class _Handler(BaseHTTPRequestHandler):
                     request.csv_text,
                     instance_id=request.instance_id,
                     cve_id=request.cve_id,
+                    package_name=request.package_name,
                 )
             except SecCopCsvError as error:
                 result = SecCopComparison(

@@ -122,6 +122,8 @@
         <input id="instance-id" type="text" autocomplete="off" placeholder="i-...">
         <label for="live-cve">CVE from CSV</label>
         <input id="live-cve" type="text" autocomplete="off" placeholder="CVE-YYYY-NNNN">
+        <label for="live-package">Package (only if the CVE lists several)</label>
+        <input id="live-package" type="text" autocomplete="off" placeholder="for example: python">
         <label for="aws-region">AWS region</label>
         <select id="aws-region"><option value="ap-southeast-1">Singapore</option><option value="ap-south-1">Mumbai</option></select>
         <button id="compare-live" type="button">Compare live target</button>
@@ -174,6 +176,7 @@
     const csvUploadEl = document.querySelector('#csv-upload');
     const instanceIdEl = document.querySelector('#instance-id');
     const liveCveEl = document.querySelector('#live-cve');
+    const livePackageEl = document.querySelector('#live-package');
     const awsRegionEl = document.querySelector('#aws-region');
     const compareLiveButton = document.querySelector('#compare-live');
     const modeStatus = document.querySelector('#mode-status');
@@ -329,11 +332,21 @@
       body.appendChild(card);
       if (result.status === 'READY' && live && live.status === 'READY') {
         const actionCard = node('div', 'approval-card');
-        actionCard.appendChild(node('div', 'approval-copy', 'Read-only evidence is ready. Generate one deterministic package proposal before any approval.'));
-        const actionButton = node('button', 'btn primary', 'Generate remediation suggestion');
-        actionButton.type = 'button';
-        actionButton.addEventListener('click', () => generateLiveProposal(request, actionButton));
-        actionCard.appendChild(actionButton);
+        if (result.csv_match_count === 1) {
+          actionCard.appendChild(node('div', 'approval-copy', 'Read-only evidence is ready. Generate the proposed package change for review.'));
+          const actionButton = node('button', 'btn primary', 'Generate remediation suggestion');
+          actionButton.type = 'button';
+          actionButton.addEventListener('click', () => generateLiveProposal(request, actionButton));
+          actionCard.appendChild(actionButton);
+        } else {
+          const packageNames = live.evidence && live.evidence.packages
+            ? live.evidence.packages.map((item) => item.name).join(', ')
+            : '';
+          const packageHint = packageNames
+            ? `This CVE appears on several packages (${packageNames}). Enter one package name on the left and compare again.`
+            : 'This CVE appears on several packages. Enter one package name on the left and compare again.';
+          actionCard.appendChild(node('div', 'approval-copy', packageHint));
+        }
         card.appendChild(actionCard);
       }
     }
@@ -524,6 +537,7 @@
       const file = csvUploadEl.files && csvUploadEl.files[0];
       const instanceId = instanceIdEl.value.trim();
       const cveId = liveCveEl.value.trim().toUpperCase();
+      const packageName = livePackageEl.value.trim();
       if (!file || !instanceId || !/^i-[0-9a-f]{8,17}$/.test(instanceId) || !/^CVE-[0-9]{4}-[0-9]{4,}$/.test(cveId)) {
         const body = addMessage('assistant', 'Provide an Inspector CSV, an EC2 instance ID, and a valid CVE from that CSV.');
         body.lastChild.classList.add('error-copy');
@@ -537,6 +551,7 @@
           csv_text: await file.text(),
           instance_id: instanceId,
           cve_id: cveId,
+          ...(packageName ? { package_name: packageName } : {}),
           region: awsRegionEl.value
         };
         lastLiveRequest = request;
