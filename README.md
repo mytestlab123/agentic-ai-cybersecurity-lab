@@ -126,6 +126,10 @@ shows server, stored-artifact, and container findings. Only the server card
 can open the existing real approval and SSM path; the other two are explicitly
 read-only suggestions.
 
+The latest browser proof is in the
+[SecCop DEMO evidence report](docs/evidence/seccop-demo/report.md), with
+sanitized screenshots beside it.
+
 ## Learning vocabulary
 
 - **LLM:** a probabilistic model that may propose a plan. No real LLM is used
