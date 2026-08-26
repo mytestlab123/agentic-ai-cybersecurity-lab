@@ -31,9 +31,15 @@ uv run python scripts/build_seccop_presentation.py \
 ```
 
 The script creates a Marp source named `seccop-executive-demo.md`, copies
-captures into `assets/`, and writes a simple fallback HTML file. When Marp is
+captures into `assets/`, writes a MarkView source named
+`seccop-markview-demo.md`, and writes a simple fallback HTML file. When Marp is
 available, render the Markdown source to `index.html`; the current Windows
 installation can be called with `cmd.exe /d /c marp`.
+
+For the MarkView Chrome extension, open `seccop-markview-demo.md`. It is a
+separate plain-Markdown version: it does not use Marp front matter, CSS, or
+Marp image sizing. That keeps the screenshots visible when MarkView switches
+from reading view to presentation view.
 
 The output is outside the repository at
 `~/.AGENTS-temp/agentic-ai-cybersecurity-lab/seccop-presentation/` or the

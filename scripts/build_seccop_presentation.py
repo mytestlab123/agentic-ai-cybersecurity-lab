@@ -146,6 +146,103 @@ A suggestion does not change the server. A person must review it and choose **Ap
     return source
 
 
+def _write_markview(output_dir: Path, images: dict[str, list[Path]]) -> Path:
+    """Write a MarkView-friendly source without Marp-only directives.
+
+    MarkView's reading view can display the Marp source, but its presentation
+    view is a separate renderer.  Keep this version deliberately plain: no
+    YAML front matter, CSS, or ``w:...`` image sizing syntax.  Each capture is
+    on its own short slide so the slideshow has room to display it.
+    """
+
+    phase_2a = images["2A"]
+
+    def image(index: int) -> str:
+        if len(phase_2a) <= index:
+            return "_Screenshot will be added after this demo step._"
+        return f"![Security Copilot DEMO step {index + 1}](assets/{phase_2a[index].name})"
+
+    markdown = f"""# Security Copilot
+
+## DEMO
+
+A simple way to move from a security finding to a safe, reviewable decision.
+
+---
+
+# Why I built this
+
+A security scan can find a weakness. The harder part is deciding what to do next:
+
+- Which server is affected?
+- What change is being suggested?
+- Has a person reviewed it?
+- How do we know the change worked?
+
+---
+
+# The idea in one picture
+
+## Finding -> Compare -> Suggest -> Approve -> Check
+
+Security Copilot puts these steps in one guided conversation so the result is easy to explain and review.
+
+---
+
+# Step 1: Start with evidence
+
+The finding is matched to the selected server. At this point, nothing has been changed.
+
+{image(0)}
+
+---
+
+# Step 2: Show the suggested fix
+
+The screen explains the current package, the safer version, and whether a restart may be needed.
+
+{image(1)}
+
+---
+
+# Step 3: Keep a person in control
+
+A suggestion does not change the server. A person must review it and choose **Approve** or **Reject**.
+
+{image(2)}
+
+---
+
+# What this demo showed
+
+- The finding was connected to the correct server.
+- A clear fix was prepared for review.
+- Approval was recorded.
+- **No server change was made in this demo.**
+
+{image(3)}
+
+---
+
+# What comes next
+
+1. **Apply one approved fix** to the server.
+2. **Check the result independently** with a new security scan.
+3. **Show the outcome clearly:** fixed, waiting for scan results, or not fixed.
+4. Add the optional low-cost Luna assistant only when a plain-language explanation is useful.
+
+---
+
+# The key message
+
+## Security Copilot turns a security finding into a guided, reviewable decision - and then proves whether the fix worked.
+
+"""
+    source = output_dir / "seccop-markview-demo.md"
+    source.write_text(markdown, encoding="utf-8")
+    return source
+
+
 def _write_fallback_html(output_dir: Path, images: dict[str, list[Path]]) -> Path:
     """Keep a dependency-free browser deck when Marp is not available."""
 
@@ -169,13 +266,14 @@ body{{margin:0;background:#f7faf8;color:#17212b;font:20px Arial,sans-serif}}.dec
     return index
 
 
-def build(source_dir: Path, output_dir: Path) -> tuple[Path, Path]:
+def build(source_dir: Path, output_dir: Path) -> tuple[Path, Path, Path]:
     assets_dir = output_dir / "assets"
     images = _copy_screenshots(source_dir, assets_dir)
     output_dir.mkdir(parents=True, exist_ok=True)
     source = _write_marp(output_dir, images)
+    markview = _write_markview(output_dir, images)
     fallback = _write_fallback_html(output_dir, images)
-    return source, fallback
+    return source, markview, fallback
 
 
 def main() -> int:
@@ -191,8 +289,9 @@ def main() -> int:
         default=Path.home() / ".AGENTS-temp/agentic-ai-cybersecurity-lab/seccop-presentation",
     )
     args = parser.parse_args()
-    source, fallback = build(args.source_dir, args.output_dir)
+    source, markview, fallback = build(args.source_dir, args.output_dir)
     print(source)
+    print(markview)
     print(fallback)
     return 0
 

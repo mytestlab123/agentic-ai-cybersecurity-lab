@@ -355,3 +355,37 @@ class SecCopApprovalResult(Contract):
     mutation_performed: Literal[False]
     executed_calls: tuple[str, ...] = ()
     message: str = Field(min_length=1, max_length=220)
+
+
+class SecCopRemediationRequest(Contract):
+    """Approval-bound request for the one-target Phase 2B operation."""
+
+    proposal_id: str = Field(pattern=r"^SECCOP_PROPOSAL_[0-9]{2}$")
+    reboot_approved: Literal[False] = False
+
+
+class SecCopRemediationResult(Contract):
+    """Sanitized SSM execution and immediate follow-up result."""
+
+    status: Literal["COMPLETED", "BLOCKED", "FAILED"]
+    reason_code: Literal[
+        "SSM_REMEDIATION_VERIFIED",
+        "SSM_REMEDIATION_PENDING_RESCAN",
+        "SSM_PACKAGE_SOURCE_NOT_READY",
+        "SSM_COMMAND_FAILED",
+        "SSM_COMMAND_TIMEOUT",
+        "SSM_APPROVAL_REQUIRED",
+        "PROPOSAL_NOT_FOUND",
+        "AWS_BACKEND_UNAVAILABLE",
+    ]
+    cve_id: str = Field(pattern=r"^CVE-[0-9]{4}-[0-9]{4,}$")
+    resource_alias: str = Field(pattern=r"^EC2_RESOURCE_[0-9]{2}$")
+    package_name: str | None = Field(default=None, pattern=r"^[A-Za-z0-9][A-Za-z0-9._+:/@-]{0,79}$")
+    fixed_version: str | None = Field(default=None, pattern=r"^[A-Za-z0-9][A-Za-z0-9._+:/@~-]{0,63}$")
+    change_state: Literal["NOT_STARTED", "ATTEMPTED", "COMPLETED"]
+    verification_status: Literal["VERIFIED", "PENDING_RESCAN", "NOT_AVAILABLE"]
+    reboot_approved: Literal[False]
+    mutation_performed: bool
+    executed_calls: tuple[str, ...] = ()
+    evidence_path: str | None = None
+    message: str = Field(min_length=1, max_length=240)
