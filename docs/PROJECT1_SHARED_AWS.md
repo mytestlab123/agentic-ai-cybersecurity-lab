@@ -35,6 +35,13 @@ The shared network is infrastructure for multiple repositories. A repository
 may read it and launch a tagged, disposable EC2 target in an existing public
 subnet, subject to the account owner's approval.
 
+The repo-owned Terraform entry points are:
+
+- `infra/project1-seccop-shared/` - creates the retain-protected shared SSM
+  role and instance profile.
+- `infra/project1-seccop-ec2/` - creates one disposable EC2 target and its
+  dedicated security group without managing the shared VPC.
+
 ## Disposable demo contract
 
 The only expected per-demo AWS resources are:

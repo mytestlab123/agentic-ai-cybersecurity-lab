@@ -1,9 +1,21 @@
 # SecCop live demo lane
 
-SecCop is the Security Copilot browser lane for one exact, private AWS EC2
-target. The infrastructure is owned by
-`infra/issue5-private-ssm-vpc/` and is held for the human demo until the
-repo-owned cleanup command is explicitly approved.
+SecCop is the Security Copilot browser lane for one exact Project1 AWS EC2
+target. The shared network is retained; the disposable target is owned by
+`infra/project1-seccop-ec2/` and the reusable SSM profile by
+`infra/project1-seccop-shared/`.
+
+Use the shared local profile and region:
+
+```bash
+export AWS_PROFILE=vagent
+export AWS_REGION=ap-southeast-1
+```
+
+The Project1 account must have Amazon Inspector EC2 scanning activated before
+the exporter can produce a real finding CSV. If the AWS API returns
+`SubscriptionRequiredException`, activate Inspector from the account's
+Inspector console and then rerun the exporter.
 
 ## GUI inputs
 
@@ -31,7 +43,7 @@ Generate one from the exact target with the repo-owned exporter:
 
 ```bash
 uv run python scripts/seccop_export_inspector_csv.py \
-  --profile amit \
+  --profile vagent \
   --region ap-southeast-1 \
   --instance-id INSTANCE_ID \
   --output /path/outside/repo/inspector-findings.csv
@@ -68,10 +80,13 @@ read-only CSV comparison.
 
 ## Safety boundary
 
-- The VPC has no IGW, NAT, public subnet, public IP, EIP, or public default
-  route.
-- SSM and Inspector access uses private endpoints.
+- The existing shared VPC and public subnet are retained; no route or gateway
+  is created or changed by SecCop.
+- The disposable security group has no inbound rules; the target has outbound
+  HTTPS and an approved public IP for this learning lane.
+- SSM and Inspector use the target's outbound HTTPS path.
 - The browser never receives raw AWS payloads or identifiers from the live
   adapter.
 - A successful read comparison does not claim remediation success.
-- Cleanup is a separate, explicit Terraform operation after the human demo.
+- Cleanup is a separate, explicit Terraform destroy of only the EC2 stack; the
+  shared VPC and SSM profile remain.

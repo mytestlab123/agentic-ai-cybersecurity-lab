@@ -7,6 +7,7 @@ No model text or browser-provided shell command is accepted.
 from __future__ import annotations
 
 import json
+import os
 import re
 import shlex
 import subprocess
@@ -26,9 +27,9 @@ class AwsRemediationTimeout(AwsRemediationBackendError):
 
 
 class _AwsCli:
-    def __init__(self, *, region: str, profile: str = "amit") -> None:
+    def __init__(self, *, region: str, profile: str | None = None) -> None:
         self.region = region
-        self.profile = profile
+        self.profile = profile or os.environ.get("SECCOP_AWS_PROFILE", "vagent")
 
     def call(self, service: str, operation: str, payload: dict[str, Any]) -> dict[str, Any]:
         with tempfile.NamedTemporaryFile("w", encoding="utf-8", suffix=".json") as handle:

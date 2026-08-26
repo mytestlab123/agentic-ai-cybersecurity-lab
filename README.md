@@ -96,11 +96,11 @@ uv run python scripts/issue5_live_lab.py collect --cve-id CVE-YYYY-NNNN
 uv run python scripts/issue5_live_lab.py cleanup --confirm
 ```
 
-`plan` refuses public networking, requires a private SSM path, an existing
-no-ingress security group, an existing instance profile, an available AMI,
-and enabled Inspector EC2 coverage. The persistent SecCop lane uses that
-preflight before holding one private demo target; cleanup is explicit and is
-not run automatically.
+The historical Issue 5 operator remains private-only and refuses public
+networking. The current Project1 SecCop lane is owned by
+`infra/project1-seccop-shared/` and `infra/project1-seccop-ec2/`: it reuses the
+existing shared public VPC, keeps one SSM profile, and holds one tagged demo
+target. Cleanup destroys only the EC2 stack; the shared VPC and profile remain.
 
 The persistent **SecCop** demo lane is documented in
 [docs/SECCOP_LIVE_DEMO.md](docs/SECCOP_LIVE_DEMO.md). It adds a strict AWS
