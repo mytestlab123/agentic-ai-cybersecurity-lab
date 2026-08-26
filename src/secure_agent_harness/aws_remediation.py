@@ -7,6 +7,7 @@ No model text or browser-provided shell command is accepted.
 from __future__ import annotations
 
 import json
+import os
 import re
 import shlex
 import subprocess
@@ -26,9 +27,9 @@ class AwsRemediationTimeout(AwsRemediationBackendError):
 
 
 class _AwsCli:
-    def __init__(self, *, region: str, profile: str = "amit") -> None:
+    def __init__(self, *, region: str, profile: str | None = None) -> None:
         self.region = region
-        self.profile = profile
+        self.profile = profile or os.environ.get("SECCOP_AWS_PROFILE", "vagent")
 
     def call(self, service: str, operation: str, payload: dict[str, Any]) -> dict[str, Any]:
         with tempfile.NamedTemporaryFile("w", encoding="utf-8", suffix=".json") as handle:
@@ -66,6 +67,7 @@ class _AwsCli:
 
 _PACKAGE_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._+:/@-]{0,79}$")
 _VERSION_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._+:/@~-]{0,63}$")
+_ADVISORY_RE = re.compile(r"^ALAS[0-9]{1,2}-[0-9]{4}-[0-9]{4,}$")
 _TERMINAL = {"Success", "Cancelled", "TimedOut", "Failed", "Cancelling"}
 
 
@@ -76,7 +78,12 @@ def _validate_package(package_name: str, fixed_version: str) -> None:
 
 def _package_target(package_name: str, fixed_version: str) -> str:
     _validate_package(package_name, fixed_version)
-    return f"{package_name}-{fixed_version}"
+    # Inspector reports the RPM epoch (for example ``0:2.7...``), but yum's
+    # name-version-release selector expects the epoch to be omitted. Keep the
+    # original Inspector value in evidence while translating only the command
+    # argument at this boundary.
+    yum_version = fixed_version.split(":", 1)[1] if ":" in fixed_version else fixed_version
+    return f"{package_name}-{yum_version}"
 
 
 def _preflight_command(target: str) -> str:
@@ -86,7 +93,12 @@ def _preflight_command(target: str) -> str:
             "set -eu",
             "printf 'SECCOP_PREFLIGHT=START\\n'",
             "command -v yum >/dev/null 2>&1",
-            f"yum -q info {quoted_target} >/dev/null 2>&1",
+            "command -v timeout >/dev/null 2>&1",
+            "temp_dir=$(mktemp -d /tmp/seccop-source-preflight.XXXXXX)",
+            "cleanup() { rm -rf \"$temp_dir\"; }",
+            "trap cleanup EXIT",
+            f"timeout 75 yum -q install -y --downloadonly --downloaddir=\"$temp_dir\" {quoted_target}",
+            "find \"$temp_dir\" -maxdepth 1 -type f -name '*.rpm' | grep -q .",
             "printf 'SECCOP_PREFLIGHT=READY\\n'",
         ]
     )
@@ -98,10 +110,35 @@ def _install_command(target: str) -> str:
         [
             "set -eu",
             "printf 'SECCOP_INSTALL=START\\n'",
-            f"yum install -y --setopt=install_weak_deps=False {quoted_target}",
+            f"timeout 120 yum install -y {quoted_target}",
             "printf 'SECCOP_INSTALL=SUCCESS\\n'",
         ]
     )
+
+
+def _verification_command(package_name: str) -> str:
+    if not _PACKAGE_RE.fullmatch(package_name):
+        raise AwsRemediationBackendError("Package scope failed the remediation contract.")
+    quoted_package = shlex.quote(package_name)
+    return "\n".join(
+        [
+            "set -eu",
+            "printf 'SECCOP_VERIFY=START\\n'",
+            f"rpm -q --qf '%{{NAME}}-%{{VERSION}}-%{{RELEASE}}.%{{ARCH}}\\n' {quoted_package}",
+            "printf 'SECCOP_VERIFY=SUCCESS\\n'",
+        ]
+    )
+
+
+def _verified_version(stdout: object, package_name: str) -> str | None:
+    if not isinstance(stdout, str):
+        return None
+    prefix = f"{package_name}-"
+    for line in stdout.splitlines():
+        value = line.strip()
+        if value.startswith(prefix) and len(value) > len(prefix):
+            return value[len(prefix) :]
+    return None
 
 
 def _send(cli: _AwsCli, *, instance_id: str, command: str, comment: str) -> str:
@@ -196,8 +233,10 @@ def execute_package_remediation(
             command=_preflight_command(target),
             comment="Security Copilot package-source check",
         )
+        _write_json(evidence, "preflight-dispatch.json", {"command_id": preflight_id})
         preflight = _wait(cli, command_id=preflight_id, instance_id=instance_id)
     except AwsRemediationTimeout:
+        _write_json(evidence, "summary.json", {"stage": "preflight", "status": "TIMEOUT"})
         return {
             "change_state": "NOT_STARTED",
             "reason_code": "SSM_COMMAND_TIMEOUT",
@@ -235,6 +274,7 @@ def execute_package_remediation(
             command=_install_command(target),
             comment="Security Copilot approved package remediation",
         )
+        _write_json(evidence, "install-dispatch.json", {"command_id": install_id})
     except AwsRemediationBackendError:
         return {
             "change_state": "NOT_STARTED",
@@ -247,6 +287,7 @@ def execute_package_remediation(
     try:
         install = _wait(cli, command_id=install_id, instance_id=instance_id)
     except AwsRemediationTimeout:
+        _write_json(evidence, "summary.json", {"stage": "install", "status": "TIMEOUT"})
         return {
             "change_state": "ATTEMPTED",
             "reason_code": "SSM_COMMAND_TIMEOUT",
@@ -277,12 +318,162 @@ def execute_package_remediation(
             "evidence_path": str(evidence),
         }
 
-    _write_json(evidence, "summary.json", {"stage": "install", "status": install_status})
+    verification_command = _verification_command(package_name)
+    _write_json(
+        evidence,
+        "verification-command.json",
+        {"document": "AWS-RunShellScript", "command": verification_command},
+    )
+    try:
+        verification_id = _send(
+            cli,
+            instance_id=instance_id,
+            command=verification_command,
+            comment="Security Copilot package version verification",
+        )
+        _write_json(evidence, "verification-dispatch.json", {"command_id": verification_id})
+        verification = _wait(cli, command_id=verification_id, instance_id=instance_id)
+    except (AwsRemediationTimeout, AwsRemediationBackendError):
+        return {
+            "change_state": "ATTEMPTED",
+            "reason_code": "SSM_VERIFICATION_FAILED",
+            "verification_status": "NOT_AVAILABLE",
+            "mutation_performed": True,
+            "executed_calls": (
+                "ssm.send_command",
+                "ssm.get_command_invocation",
+            ),
+            "evidence_path": str(evidence),
+        }
+    _write_json(evidence, "verification-response.json", verification)
+    verification_status = verification.get("Status")
+    after_version = _verified_version(verification.get("StandardOutputContent"), package_name)
+    if verification_status != "Success" or after_version is None:
+        _write_json(
+            evidence,
+            "summary.json",
+            {
+                "stage": "verification",
+                "status": verification_status,
+                "after_version": after_version,
+            },
+        )
+        return {
+            "change_state": "ATTEMPTED",
+            "reason_code": "SSM_VERIFICATION_FAILED",
+            "verification_status": "NOT_AVAILABLE",
+            "mutation_performed": True,
+            "executed_calls": (
+                "ssm.send_command",
+                "ssm.get_command_invocation",
+            ),
+            "evidence_path": str(evidence),
+        }
+    _write_json(
+        evidence,
+        "summary.json",
+        {"stage": "verification", "status": verification_status, "after_version": after_version},
+    )
     return {
         "change_state": "COMPLETED",
-        "reason_code": "SSM_REMEDIATION_PENDING_RESCAN",
-        "verification_status": "PENDING_RESCAN",
+        "reason_code": "SSM_PACKAGE_VERSION_VERIFIED",
+        "verification_status": "VERIFIED",
         "mutation_performed": True,
-        "executed_calls": ("ssm.send_command", "ssm.get_command_invocation"),
+        "executed_calls": (
+            "ssm.send_command",
+            "ssm.get_command_invocation",
+        ),
+        "after_version": after_version,
+        "evidence_path": str(evidence),
+    }
+
+
+def collect_package_advisory(
+    *,
+    region: str,
+    instance_id: str,
+    advisory_id: str,
+    package_name: str,
+) -> dict[str, object]:
+    """Read one RPM version and Amazon Linux advisory through SSM.
+
+    The command is deliberately limited to ``rpm -q`` and ``yum updateinfo``;
+    it does not install, update, reboot, or accept arbitrary shell text.
+    """
+
+    if not _ADVISORY_RE.fullmatch(advisory_id) or not _PACKAGE_RE.fullmatch(package_name):
+        return {
+            "status": "BLOCKED",
+            "reason_code": "ADVISORY_INPUT_INVALID",
+            "executed_calls": (),
+        }
+    evidence = _evidence_dir()
+    command = "\n".join(
+        [
+            "set -eu",
+            "printf 'SECCOP_ADVISORY=START\\n'",
+            f"rpm -q --qf '%{{NAME}}-%{{VERSION}}-%{{RELEASE}}.%{{ARCH}}\\n' {shlex.quote(package_name)}",
+            f"yum -q updateinfo info {shlex.quote(advisory_id)}",
+            "printf 'SECCOP_ADVISORY=SUCCESS\\n'",
+        ]
+    )
+    _write_json(
+        evidence,
+        "advisory-request.json",
+        {
+            "region": region,
+            "instance_id": instance_id,
+            "advisory_id": advisory_id,
+            "package_name": package_name,
+            "operation": "read-only-rpm-advisory-check",
+        },
+    )
+    _write_json(evidence, "advisory-command.json", {"document": "AWS-RunShellScript", "command": command})
+    cli = _AwsCli(region=region)
+    try:
+        command_id = _send(cli, instance_id=instance_id, command=command, comment="Security Copilot advisory check")
+        _write_json(evidence, "advisory-dispatch.json", {"command_id": command_id})
+        response = _wait(cli, command_id=command_id, instance_id=instance_id, timeout_seconds=120)
+    except AwsRemediationTimeout:
+        _write_json(evidence, "summary.json", {"status": "TIMEOUT"})
+        return {
+            "status": "BLOCKED",
+            "reason_code": "SSM_COMMAND_TIMEOUT",
+            "executed_calls": ("ssm.send_command", "ssm.get_command_invocation"),
+            "evidence_path": str(evidence),
+        }
+    except AwsRemediationBackendError:
+        return {
+            "status": "BLOCKED",
+            "reason_code": "AWS_BACKEND_UNAVAILABLE",
+            "executed_calls": ("ssm.send_command",),
+            "evidence_path": str(evidence),
+        }
+    _write_json(evidence, "advisory-response.json", response)
+    executed_calls = ("ssm.send_command", "ssm.get_command_invocation")
+    if response.get("Status") != "Success":
+        _write_json(evidence, "summary.json", {"status": response.get("Status", "UNKNOWN")})
+        return {
+            "status": "BLOCKED",
+            "reason_code": "SSM_ADVISORY_NOT_FOUND",
+            "executed_calls": executed_calls,
+            "evidence_path": str(evidence),
+        }
+    stdout = response.get("StandardOutputContent")
+    before_version = _verified_version(stdout, package_name)
+    if before_version is None or not isinstance(stdout, str) or advisory_id not in stdout:
+        _write_json(evidence, "summary.json", {"status": "NOT_FOUND", "before_version": before_version})
+        return {
+            "status": "BLOCKED",
+            "reason_code": "SSM_ADVISORY_NOT_FOUND",
+            "executed_calls": executed_calls,
+            "evidence_path": str(evidence),
+        }
+    _write_json(evidence, "summary.json", {"status": "READY", "before_version": before_version})
+    return {
+        "status": "READY",
+        "reason_code": "SSM_ADVISORY_READY",
+        "before_version": before_version,
+        "executed_calls": executed_calls,
         "evidence_path": str(evidence),
     }
