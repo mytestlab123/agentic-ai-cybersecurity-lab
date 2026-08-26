@@ -17,6 +17,9 @@ This is a public personal-learning repository.
   path over new services, abstractions, or infrastructure.
 - Make only the EC2 path real when the issue explicitly requires mutation;
   keep other sources read-only until a separate bounded issue proves the need.
+- The approved three-source DEMO may use small, tagged S3/ECR baseline artifacts
+  with deterministic scanners. GuardDuty, real malware, AgentCore, and new
+  networking are not DEMO requirements.
 - Defer AgentCore, multi-agent orchestration, broad IAM, networking, and
   integrations unless a small POC cannot work without them.
 
@@ -32,7 +35,9 @@ This is a public personal-learning repository.
 ## AWS and cost boundary
 
 - Local fixtures and mocks are the default.
-- Personal profile `amit` is the only allowed future AWS profile.
+- Personal profile `amit` remains the default for future AWS work. The
+  explicitly approved Project1 SecCop DEMO uses the existing local `vagent`
+  profile only for its tagged Singapore resources.
 - Never run `aws sso login`.
 - Do not create or mutate AWS resources without explicit approval for the exact
   experiment and a same-day cleanup plan.

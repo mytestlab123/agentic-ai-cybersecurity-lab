@@ -8,10 +8,11 @@ fixtures.
 
 This is a KISS (Keep It Short and Stupid) learning POC, not an enterprise
 platform. Each change should demonstrate one operator outcome with the fewest
-moving parts. The SecCop multi-source scan uses fixture-backed S3/ECR findings;
-the existing EC2 path is the only real remediation lane. New AWS services,
-networking, broad IAM, and AgentCore are deferred until a small follow-up issue
-proves they are needed.
+moving parts. The SecCop multi-source scan is fixture-backed by default; the
+separate DEMO preparation script can create small, tagged S3/ECR baselines for
+an approved live rehearsal. The existing EC2 path remains the authoritative
+server remediation lane. GuardDuty, real malware, new networking, broad IAM,
+and AgentCore are not required for this POC.
 
 ## Issue 1: secure agent harness
 
@@ -129,6 +130,26 @@ read-only suggestions.
 The latest browser proof is in the
 [SecCop DEMO evidence report](docs/evidence/seccop-demo/report.md), with
 sanitized screenshots beside it.
+
+## Repeatable three-source DEMO
+
+Issue 25 adds one guarded preparation command for the approved live rehearsal.
+It reuses the existing tagged EC2 target, creates or refreshes two small
+versioned S3 buckets, and creates or refreshes one ECR repository with a known
+old and clean image. It refuses to downgrade an already-clean EC2 target. It
+does not enable GuardDuty or create network resources.
+
+```bash
+./scripts/start-demo.sh --profile vagent --region ap-southeast-1 --confirm
+uv run python scripts/seccop_demo.py scan --profile vagent --region ap-southeast-1
+uv run python scripts/seccop_demo.py verify --profile vagent --region ap-southeast-1 --confirm
+```
+
+The first command is the only preparation mutation. S3 and ECR fixes are
+explicit commands with `--confirm`; the EC2 package remains behind the
+existing SecCop approval screen. `verify` runs one bounded S3/ECR fix and clean
+rescan rehearsal, then restores the non-compliant baseline. Evidence is written under the operator-local
+`~/.AGENTS-temp/` directory and contains aliases rather than AWS identifiers.
 
 ## Learning vocabulary
 

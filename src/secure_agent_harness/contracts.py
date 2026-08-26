@@ -373,8 +373,10 @@ class SecCopFinding(Contract):
         "SECCOP_EC2_FINDING_CONFIRMED",
         "SECCOP_S3_FIXTURE_FINDING",
         "SECCOP_ECR_FIXTURE_FINDING",
+        "SECCOP_S3_FINDING_CONFIRMED",
+        "SECCOP_ECR_FINDING_CONFIRMED",
     ]
-    action_label: Literal["Review live fix", "View suggested fix"]
+    action_label: Literal["Review live fix", "View suggested fix", "Review and fix"]
 
 
 class SecCopScanResult(Contract):

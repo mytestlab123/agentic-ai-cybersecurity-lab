@@ -78,12 +78,18 @@ An unknown CVE is blocked before any tool runs. The screen shows `CVE_NOT_FOUND`
 This POC keeps the useful story small:
 
 - **EC2:** real remediation may be requested only after the existing live checks and explicit approval.
-- **S3:** demo/read-only suggestion only.
-- **ECR:** demo/read-only suggestion only.
+- **S3:** local screenshots show the read-only fixture path; the optional AWS
+  backend now supports an approved clean-object replacement.
+- **ECR:** local screenshots show the read-only fixture path; the optional AWS
+  backend now supports an approved clean-image promotion.
 - **GovTech AI:** not used in this deterministic path.
 - **AWS mutation:** none was performed for this evidence run.
 
-S3 and ECR can become separate bounded work only after their exact permissions, cost, rollback, and verification rules are approved.
+The AWS backend keeps S3/ECR changes limited to the exact baseline objects and
+image tags; broader scanning and new security services remain deferred.
+
+The approved AWS rehearsal is recorded in
+[aws-live-rehearsal.md](aws-live-rehearsal.md).
 
 ## Run the DEMO locally
 

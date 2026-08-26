@@ -125,6 +125,7 @@
         <div class="side-label" style="padding:0">POC SCAN</div>
         <div class="usage-note">Check server packages, a stored artifact, and a container image.</div>
         <button id="scan-environment" type="button">Scan environment</button>
+        <button id="start-real-demo" type="button" hidden>Start AWS DEMO</button>
       </div>
       <div class="side-spacer"></div>
       <label class="upload-button" for="evidence-upload"><span>↑</span><span>Upload read-only evidence</span><input id="evidence-upload" type="file" accept="application/json,.json"></label>
@@ -196,6 +197,7 @@
     const runButton = document.querySelector('#run');
     const scanButton = document.querySelector('#scan-environment');
     const scanWelcomeButton = document.querySelector('#scan-welcome');
+    const startRealDemoButton = document.querySelector('#start-real-demo');
     const uploadEl = document.querySelector('#evidence-upload');
     const advisoryUploadEl = document.querySelector('#advisory-upload');
     const csvUploadEl = document.querySelector('#csv-upload');
@@ -213,6 +215,7 @@
     let lastLiveRequest = null;
     let lastLiveProposalId = null;
     let lastLiveProposalHash = null;
+    let demoBackend = 'LOCAL';
     const labels = {
       mock_inspector_finding: 'Inspector finding lookup',
       mock_instance_context: 'EC2 instance context',
@@ -386,6 +389,21 @@
     function reviewScanFinding(finding) {
       addMessage('user', finding.action_label + ': ' + finding.title);
       if (finding.remediation_mode === 'REAL_APPROVAL_REQUIRED') {
+        if (finding.source_type !== 'EC2_PACKAGE') {
+          const body = addMessage('assistant', 'The clean replacement is ready for review. Approve it to replace only this DEMO artifact.');
+          const card = node('div', 'approval-card');
+          const grid = node('div', 'evidence-grid');
+          evidenceCell(grid, 'Source', finding.source_type);
+          evidenceCell(grid, 'Change', finding.recommended_state);
+          evidenceCell(grid, 'After', 'The clean item will be scanned again');
+          card.appendChild(grid);
+          const approve = node('button', 'btn approve', 'Approve and fix');
+          approve.type = 'button';
+          approve.addEventListener('click', () => approveDemoFix(finding, approve));
+          card.appendChild(approve);
+          body.appendChild(card);
+          return body;
+        }
         const body = addMessage('assistant', 'The real server fix still needs a live advisory check. Use the live check panel to confirm the current package before any approval.');
         const panel = document.querySelector('.live-panel');
         panel.scrollIntoView({ behavior: 'smooth', block: 'center' });
@@ -402,6 +420,62 @@
       card.appendChild(grid);
       body.appendChild(card);
       return body;
+    }
+
+    async function approveDemoFix(finding, button) {
+      button.disabled = true;
+      addMessage('user', 'Approve and fix: ' + finding.title);
+      const thinking = addMessage('assistant', 'Applying the approved replacement and checking it again...');
+      const source = finding.source_type === 'S3_ARTIFACT' ? 's3' : 'ecr';
+      try {
+        const payload = await post('/api/demo/fix', { source, confirm: true });
+        thinking.parentElement.remove();
+        renderDemoFixResult(payload, finding.source_type);
+      } catch (error) {
+        thinking.textContent = 'The approved DEMO fix was blocked.';
+        thinking.classList.add('error-copy');
+        button.disabled = false;
+      }
+    }
+
+    function renderDemoFixResult(payload, sourceType) {
+      const result = payload.result || {};
+      const body = addMessage('assistant', result.message || 'The approved DEMO fix was recorded.');
+      const card = node('div', 'result-card');
+      const head = node('div', 'result-head');
+      head.appendChild(node('div', 'result-title', 'Approved DEMO fix'));
+      head.appendChild(node('span', 'badge', result.reason_code || result.status || 'BLOCKED'));
+      card.appendChild(head);
+      const grid = node('div', 'evidence-grid');
+      evidenceCell(grid, 'Source', sourceType);
+      evidenceCell(grid, 'Change', result.state || 'Recorded');
+      evidenceCell(grid, 'Approval', 'Human approved');
+      evidenceCell(grid, 'Next', 'Run the scan again');
+      card.appendChild(grid);
+      const rescan = node('button', 'btn primary', 'Scan again');
+      rescan.type = 'button';
+      rescan.addEventListener('click', () => startScan(rescan));
+      card.appendChild(rescan);
+      body.appendChild(card);
+    }
+
+    async function startRealDemo() {
+      if (!startRealDemoButton) return;
+      startRealDemoButton.disabled = true;
+      addMessage('user', 'Start AWS DEMO');
+      const thinking = addMessage('assistant', 'Restoring the known non-compliant DEMO resources...');
+      try {
+        const payload = await post('/api/demo/start', { confirm: true });
+        thinking.parentElement.remove();
+        const result = payload.result || {};
+        addMessage('assistant', result.message || 'The AWS DEMO baseline is ready.');
+        startScan(scanButton);
+      } catch (error) {
+        thinking.textContent = 'The AWS DEMO could not be started.';
+        thinking.classList.add('error-copy');
+      } finally {
+        startRealDemoButton.disabled = false;
+      }
     }
 
     function renderLiveComparison(payload, request) {
@@ -689,6 +763,21 @@
 
     scanButton.addEventListener('click', () => startScan(scanButton));
     scanWelcomeButton.addEventListener('click', () => startScan(scanWelcomeButton));
+    if (startRealDemoButton) startRealDemoButton.addEventListener('click', startRealDemo);
+
+    async function configureBackend() {
+      try {
+        const response = await fetch('/api/health', { cache: 'no-store' });
+        const health = await response.json();
+        demoBackend = health.demo_backend || 'LOCAL';
+        if (demoBackend === 'AWS' && startRealDemoButton) {
+          startRealDemoButton.hidden = false;
+          modeStatus.textContent = 'AWS DEMO';
+        }
+      } catch (error) {
+        // The local synthetic page remains usable if the health probe is unavailable.
+      }
+    }
 
     uploadEl.addEventListener('change', async () => {
       const file = uploadEl.files && uploadEl.files[0];
@@ -758,6 +847,8 @@
         compareCsvButton.disabled = false;
       }
     });
+
+    configureBackend();
   </script>
 </body>
 </html>
