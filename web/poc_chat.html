@@ -1,0 +1,392 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Security Copilot - Inspector to SSM</title>
+  <style>
+    :root { color-scheme: dark; --bg:#212121; --sidebar:#171717; --panel:#2b2b2b; --border:#454545; --muted:#999; --text:#ececec; --green:#19c37d; --blue:#8ab4f8; --amber:#f5c66d; --red:#ff8b8b; font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif; }
+    * { box-sizing:border-box; }
+    body { margin:0; min-height:100vh; background:var(--bg); color:var(--text); }
+    button,input,select,textarea { font:inherit; }
+    button { cursor:pointer; }
+    .app-shell { display:flex; min-height:100vh; }
+    .sidebar { width:260px; background:var(--sidebar); border-right:1px solid #2d2d2d; padding:14px; display:flex; flex-direction:column; gap:18px; }
+    .brand { display:flex; align-items:center; gap:10px; padding:6px 8px 16px; }
+    .brand-mark,.welcome-mark { display:grid; place-items:center; color:var(--green); border:1px solid #555; font-weight:800; }
+    .brand-mark { width:28px; height:28px; border-radius:8px; }
+    .brand-name { font-size:.94rem; font-weight:650; }
+    .new-chat { display:flex; gap:10px; width:100%; padding:11px 12px; color:var(--text); background:transparent; border:1px solid #4b4b4b; border-radius:9px; text-align:left; }
+    .new-chat:hover { background:#242424; }
+    .upload-button { display:flex; align-items:center; gap:9px; width:100%; padding:10px 11px; color:#cfcfcf; background:#242424; border:1px solid #414141; border-radius:8px; font-size:.8rem; }
+    .upload-button:hover { background:#2d2d2d; color:#fff; }
+    .live-panel { display:grid; gap:8px; padding:11px; background:#202020; border:1px solid #3d3d3d; border-radius:9px; }
+    .live-panel label { color:#aaa; font-size:.72rem; }
+    .live-panel input,.live-panel select { width:100%; padding:7px 8px; color:#eee; background:#2b2b2b; border:1px solid #4b4b4b; border-radius:6px; font-size:.75rem; }
+    .live-panel button { padding:8px 9px; color:#092219; background:var(--green); border:0; border-radius:6px; font-size:.75rem; font-weight:700; }
+    .live-panel button:disabled { opacity:.45; cursor:wait; }
+    .upload-button input { display:none; }
+    .side-label { padding:0 9px; color:#777; font-size:.7rem; font-weight:700; letter-spacing:.08em; }
+    .chat-item { padding:10px 11px; border-radius:8px; color:#d1d1d1; font-size:.88rem; }
+    .chat-item.active { background:#2c2c2c; color:#fff; }
+    .side-spacer { flex:1; }
+    .side-footer { border-top:1px solid #2c2c2c; padding:14px 8px 2px; color:var(--muted); font-size:.76rem; line-height:1.45; }
+    .mode-dot { display:inline-block; width:7px; height:7px; margin-right:6px; border-radius:50%; background:var(--green); }
+    .main { flex:1; min-width:0; display:flex; flex-direction:column; }
+    .topbar { height:68px; display:flex; align-items:center; justify-content:space-between; padding:0 34px; border-bottom:1px solid #303030; }
+    .eyebrow { color:#858585; font-size:.68rem; font-weight:700; letter-spacing:.1em; }
+    h1 { margin:3px 0 0; font-size:1.05rem; font-weight:600; }
+    .status-pill { display:inline-flex; align-items:center; gap:7px; padding:6px 10px; color:#b8e8d2; background:#18352b; border:1px solid #285d49; border-radius:999px; font-size:.74rem; }
+    .status-pill .mode-dot { margin:0; }
+    .safety-banner { max-width:850px; width:calc(100% - 48px); margin:18px auto 0; padding:10px 13px; color:#c8d5e9; background:#202d3d; border:1px solid #334861; border-radius:8px; font-size:.78rem; }
+    .safety-banner strong { color:var(--blue); }
+    .chat { flex:1; width:100%; max-width:850px; margin:0 auto; padding:30px 24px 170px; }
+    .welcome { max-width:650px; margin:30px auto 40px; text-align:center; }
+    .welcome-mark { width:42px; height:42px; margin:0 auto 15px; border-radius:13px; font-size:1.25rem; }
+    .welcome h2 { margin:0 0 8px; font-size:1.55rem; font-weight:600; }
+    .welcome p { margin:0; color:var(--muted); line-height:1.55; font-size:.9rem; }
+    .messages { display:grid; gap:24px; }
+    .message { display:flex; gap:15px; align-items:flex-start; }
+    .avatar { flex:0 0 30px; width:30px; height:30px; display:grid; place-items:center; border-radius:7px; font-size:.72rem; font-weight:750; }
+    .avatar.user { color:#fff; background:#6b5dd3; }
+    .avatar.assistant { color:#082218; background:var(--green); }
+    .message-body { min-width:0; flex:1; padding-top:4px; }
+    .message-head { display:flex; align-items:center; gap:9px; margin-bottom:7px; font-size:.84rem; font-weight:650; }
+    .message-time { color:#777; font-size:.72rem; font-weight:400; }
+    .message-copy { margin:0; color:#dedede; line-height:1.55; white-space:pre-wrap; overflow-wrap:anywhere; }
+    .activity { display:grid; gap:6px; margin-top:14px; }
+    .activity-row { display:flex; align-items:center; gap:9px; padding:9px 11px; color:#cfcfcf; background:#292929; border:1px solid #3d3d3d; border-radius:8px; font-size:.8rem; }
+    .activity-icon { width:17px; color:var(--green); font-weight:800; text-align:center; }
+    .activity-row.pending .activity-icon { color:var(--amber); }
+    .activity-row.blocked .activity-icon { color:var(--red); }
+    .activity-state { margin-left:auto; color:#818181; font-size:.72rem; }
+    .result-card { margin-top:15px; padding:15px; background:var(--panel); border:1px solid var(--border); border-radius:10px; }
+    .result-head { display:flex; align-items:center; justify-content:space-between; gap:12px; margin-bottom:13px; }
+    .result-title { font-size:.85rem; font-weight:650; }
+    .badge { padding:4px 8px; color:#fbe2a4; background:#483b1e; border:1px solid #725d2a; border-radius:999px; font-size:.7rem; font-weight:700; }
+    .evidence-grid { display:grid; grid-template-columns:repeat(3,minmax(0,1fr)); gap:8px; }
+    .evidence-cell { padding:9px 10px; background:#242424; border-radius:7px; }
+    .evidence-label { color:#818181; font-size:.68rem; text-transform:uppercase; letter-spacing:.05em; }
+    .evidence-value { margin-top:4px; color:#e8e8e8; font-size:.81rem; overflow-wrap:anywhere; }
+    .approval-card { display:flex; align-items:center; justify-content:space-between; gap:15px; margin-top:13px; padding-top:13px; border-top:1px solid #414141; }
+    .approval-copy { color:#b7b7b7; font-size:.78rem; line-height:1.4; }
+    .approval-actions { display:flex; gap:8px; flex-shrink:0; }
+    .btn { border:1px solid transparent; border-radius:7px; padding:8px 12px; font-size:.78rem; font-weight:650; }
+    .btn.approve { color:#082218; background:var(--green); }
+    .btn.reject { color:#f0c3c3; background:transparent; border-color:#684040; }
+    .btn:disabled,.send:disabled { opacity:.45; cursor:wait; }
+    .composer-wrap { position:fixed; bottom:0; left:260px; right:0; padding:16px 24px 20px; background:linear-gradient(transparent,var(--bg) 22%); }
+    .composer { max-width:800px; margin:0 auto; padding:10px 12px 10px 16px; background:#2f2f2f; border:1px solid #555; border-radius:14px; box-shadow:0 8px 30px #111a; }
+    .composer-row { display:flex; align-items:flex-end; gap:10px; }
+    .composer textarea { flex:1; min-height:27px; max-height:110px; resize:vertical; padding:5px 0; color:#eee; background:transparent; border:0; outline:0; line-height:1.45; }
+    .composer textarea::placeholder { color:#898989; }
+    .composer-controls { display:flex; align-items:center; gap:8px; }
+    .composer select { max-width:145px; padding:7px 8px; color:#cfcfcf; background:#242424; border:1px solid #4b4b4b; border-radius:7px; font-size:.72rem; }
+    .send { width:32px; height:32px; display:grid; place-items:center; padding:0; color:#082218; background:var(--green); border:0; border-radius:8px; font-weight:900; }
+    .composer-hint { max-width:800px; margin:8px auto 0; color:#777; text-align:center; font-size:.69rem; }
+    .error-copy { color:var(--red); }
+    .hidden { display:none !important; }
+    @media (max-width:760px) {
+      .sidebar { display:none; }
+      .topbar { padding:0 16px; }
+      .safety-banner { width:calc(100% - 28px); }
+      .chat { padding:22px 14px 170px; }
+      .composer-wrap { left:0; padding:12px 10px 16px; }
+      .evidence-grid { grid-template-columns:repeat(2,minmax(0,1fr)); }
+      .approval-card { align-items:flex-start; flex-direction:column; }
+      .approval-actions { width:100%; }
+      .approval-actions .btn { flex:1; }
+      .composer-controls { width:100%; }
+      .composer select { flex:1; max-width:none; }
+    }
+  </style>
+</head>
+<body>
+  <div class="app-shell">
+    <aside class="sidebar" aria-label="Workspace navigation">
+      <div class="brand"><div class="brand-mark">S</div><div class="brand-name">Security Copilot</div></div>
+      <button id="new-chat" class="new-chat" type="button"><span>+</span><span>New investigation</span></button>
+      <div class="side-label">WORKSPACE</div>
+      <div class="chat-item active">Shield&nbsp;&nbsp; Inspector to SSM</div>
+      <div class="side-spacer"></div>
+      <label class="upload-button" for="evidence-upload"><span>↑</span><span>Upload read-only evidence</span><input id="evidence-upload" type="file" accept="application/json,.json"></label>
+      <div class="live-panel">
+        <div class="side-label" style="padding:0">LIVE SECOP COMPARISON</div>
+        <label for="csv-upload">AWS Inspector CSV</label>
+        <input id="csv-upload" type="file" accept="text/csv,.csv">
+        <label for="instance-id">EC2 instance ID</label>
+        <input id="instance-id" type="text" autocomplete="off" placeholder="i-...">
+        <label for="live-cve">CVE from CSV</label>
+        <input id="live-cve" type="text" autocomplete="off" placeholder="CVE-YYYY-NNNN">
+        <label for="aws-region">AWS region</label>
+        <select id="aws-region"><option value="ap-southeast-1">Singapore</option><option value="ap-south-1">Mumbai</option></select>
+        <button id="compare-live" type="button">Compare live target</button>
+      </div>
+      <div class="side-footer"><span class="mode-dot"></span>Local synthetic mode<br>Live upload is sanitized and read-only</div>
+    </aside>
+
+    <main class="main">
+      <header class="topbar">
+        <div><div class="eyebrow">SECURITY WORKSPACE</div><h1>Inspector to SSM</h1></div>
+        <div class="status-pill"><span class="mode-dot"></span>Offline demo</div>
+      </header>
+      <div class="safety-banner"><strong>Safe demo boundary.</strong> Local runs use synthetic fixtures. Uploaded live results must be typed, sanitized, and read-only.</div>
+
+      <section class="chat" aria-live="polite">
+        <div id="welcome" class="welcome">
+          <div class="welcome-mark">S</div>
+          <h2>How can I help with your security review?</h2>
+          <p>Ask me to inspect a synthetic CVE. I will correlate the finding, instance, SSM readiness, and patch state before asking for approval.</p>
+        </div>
+        <div id="messages" class="messages"></div>
+      </section>
+
+      <div class="composer-wrap">
+        <form id="run-form" class="composer">
+          <div class="composer-row">
+            <textarea id="prompt" rows="1" required placeholder="Ask about a CVE in your synthetic lab...">Inspect CVE-2099-0001 in my synthetic lab.</textarea>
+            <div class="composer-controls">
+              <select id="lab-env" aria-label="Lab environment"><option>SYNTHETIC_LAB</option></select>
+              <button id="run" class="send" type="submit" aria-label="Send">↑</button>
+            </div>
+          </div>
+        </form>
+        <div class="composer-hint">Synthetic evidence only. Approval records a no-op mock remediation.</div>
+      </div>
+    </main>
+  </div>
+
+  <script>
+    const form = document.querySelector('#run-form');
+    const promptEl = document.querySelector('#prompt');
+    const labEnvEl = document.querySelector('#lab-env');
+    const runButton = document.querySelector('#run');
+    const uploadEl = document.querySelector('#evidence-upload');
+    const csvUploadEl = document.querySelector('#csv-upload');
+    const instanceIdEl = document.querySelector('#instance-id');
+    const liveCveEl = document.querySelector('#live-cve');
+    const awsRegionEl = document.querySelector('#aws-region');
+    const compareLiveButton = document.querySelector('#compare-live');
+    const welcome = document.querySelector('#welcome');
+    const messages = document.querySelector('#messages');
+    const newChat = document.querySelector('#new-chat');
+    let runId = null;
+    const labels = {
+      mock_inspector_finding: 'Inspector finding lookup',
+      mock_instance_context: 'EC2 instance context',
+      mock_ssm_node_context: 'SSM managed-node readiness',
+      mock_patch_compliance: 'Patch compliance check'
+    };
+
+    function node(tag, className, text) {
+      const item = document.createElement(tag);
+      if (className) item.className = className;
+      if (text !== undefined) item.textContent = text;
+      return item;
+    }
+
+    function addMessage(role, text) {
+      welcome.classList.add('hidden');
+      const message = node('article', 'message');
+      const avatar = node('div', 'avatar ' + role, role === 'user' ? 'You' : 'S');
+      const body = node('div', 'message-body');
+      const head = node('div', 'message-head');
+      head.appendChild(node('span', '', role === 'user' ? 'You' : 'Security Copilot'));
+      head.appendChild(node('span', 'message-time', 'just now'));
+      body.appendChild(head);
+      body.appendChild(node('p', 'message-copy', text));
+      message.appendChild(avatar);
+      message.appendChild(body);
+      messages.appendChild(message);
+      message.scrollIntoView({ behavior: 'smooth', block: 'end' });
+      return body;
+    }
+
+    function renderActivity(parent, events) {
+      const activity = node('div', 'activity');
+      for (const event of events) {
+        if (!['TOOL_CALL_START', 'TOOL_CALL_END', 'BLOCKED'].includes(event.event_type)) continue;
+        const pending = event.event_type === 'TOOL_CALL_START';
+        const blocked = event.event_type === 'BLOCKED';
+        const row = node('div', 'activity-row' + (pending ? ' pending' : '') + (blocked ? ' blocked' : ''));
+        row.appendChild(node('span', 'activity-icon', blocked ? '!' : (pending ? '...' : 'OK')));
+        row.appendChild(node('span', '', blocked ? 'Flow blocked' : (labels[event.tool_name] || event.tool_name || 'Synthetic check')));
+        row.appendChild(node('span', 'activity-state', blocked ? (event.reason_code || 'BLOCKED') : (pending ? 'running' : 'complete')));
+        activity.appendChild(row);
+      }
+      parent.appendChild(activity);
+    }
+
+    function evidenceCell(grid, label, value) {
+      const cell = node('div', 'evidence-cell');
+      cell.appendChild(node('div', 'evidence-label', label));
+      cell.appendChild(node('div', 'evidence-value', value === undefined || value === null ? '-' : String(value)));
+      grid.appendChild(cell);
+    }
+
+    function renderResult(parent, result) {
+      const card = node('div', 'result-card');
+      const head = node('div', 'result-head');
+      head.appendChild(node('div', 'result-title', 'Structured security result'));
+      head.appendChild(node('span', 'badge', result.reason_code || result.status));
+      card.appendChild(head);
+      const evidence = result.evidence;
+      if (evidence) {
+        const grid = node('div', 'evidence-grid');
+        evidenceCell(grid, 'CVE', evidence.cve_id);
+        evidenceCell(grid, 'Severity', evidence.finding_severity || evidence.severity);
+        evidenceCell(grid, 'Resource', evidence.resource_alias);
+        evidenceCell(grid, 'Finding', evidence.finding_state);
+        evidenceCell(grid, 'Instance', evidence.instance_state);
+        evidenceCell(grid, 'SSM', evidence.ssm_readiness ? (evidence.ssm_managed ? 'MANAGED / ' + evidence.ssm_readiness : 'NOT MANAGED') : evidence.managed_state + ' / ' + evidence.readiness);
+        if (evidence.patch_summary) {
+          evidenceCell(grid, 'Missing patches', evidence.patch_summary.missing_count);
+          evidenceCell(grid, 'Critical', evidence.patch_summary.critical_non_compliant_count);
+          evidenceCell(grid, 'Pending reboot', evidence.patch_summary.installed_pending_reboot_count);
+          evidenceCell(grid, 'Patch operation', evidence.patch_summary.operation);
+        } else {
+          evidenceCell(grid, 'Patch', evidence.patch_state || 'Not collected');
+          evidenceCell(grid, 'Reboot', evidence.reboot_required ? 'Required' : 'Not required');
+        }
+        if (evidence.packages) evidenceCell(grid, 'Packages', evidence.packages.length);
+        card.appendChild(grid);
+      }
+      const summary = node('p', 'message-copy', result.message || '');
+      summary.style.marginTop = '13px';
+      card.appendChild(summary);
+      if (result.executed_calls) {
+        const calls = node('div', 'message-time', 'Executed calls: ' + result.executed_calls.join(', '));
+        calls.style.marginTop = '10px';
+        card.appendChild(calls);
+      }
+      if (result.status === 'AWAITING_APPROVAL') {
+        const approval = node('div', 'approval-card');
+        approval.appendChild(node('div', 'approval-copy', 'The proposal is a mock patch only. Choose a human decision to close this demo flow.'));
+        const actions = node('div', 'approval-actions');
+        const approve = node('button', 'btn approve', 'Approve mock remediation');
+        const reject = node('button', 'btn reject', 'Reject');
+        approve.type = 'button';
+        reject.type = 'button';
+        approve.addEventListener('click', () => decide('APPROVE', approve, reject));
+        reject.addEventListener('click', () => decide('REJECT', approve, reject));
+        actions.appendChild(approve);
+        actions.appendChild(reject);
+        approval.appendChild(actions);
+        card.appendChild(approval);
+      }
+      parent.appendChild(card);
+    }
+
+    function renderAssistant(payload) {
+      const body = addMessage('assistant', payload.result ? payload.result.message : 'No result returned.');
+      if (payload.events) renderActivity(body, payload.events);
+      if (payload.result) renderResult(body, payload.result);
+    }
+
+    function renderLiveComparison(payload) {
+      const result = payload.result || {};
+      const body = addMessage('assistant', result.message || 'No comparison result returned.');
+      const card = node('div', 'result-card');
+      const head = node('div', 'result-head');
+      head.appendChild(node('div', 'result-title', 'SecCop live comparison'));
+      head.appendChild(node('span', 'badge', result.reason_code || result.status || 'BLOCKED'));
+      card.appendChild(head);
+      const grid = node('div', 'evidence-grid');
+      evidenceCell(grid, 'CVE', result.cve_id);
+      evidenceCell(grid, 'CSV rows', result.csv_row_count);
+      evidenceCell(grid, 'CSV matches', result.csv_match_count);
+      evidenceCell(grid, 'Target', result.resource_alias);
+      const live = result.live_result;
+      evidenceCell(grid, 'AWS status', live ? live.status : 'NOT COLLECTED');
+      evidenceCell(grid, 'AWS reason', live ? live.reason_code : '-');
+      card.appendChild(grid);
+      if (live && live.evidence) {
+        evidenceCell(grid, 'Severity', live.evidence.finding_severity);
+        evidenceCell(grid, 'Packages', live.evidence.packages ? live.evidence.packages.length : 0);
+        evidenceCell(grid, 'SSM', live.evidence.ssm_readiness);
+      }
+      body.appendChild(card);
+    }
+
+    function extractCve(prompt) {
+      const match = prompt.match(/CVE-[0-9]{4}-[0-9]{4,}/i);
+      return match ? match[0].toUpperCase() : null;
+    }
+
+    async function post(path, body) {
+      const response = await fetch(path, { method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify(body) });
+      const payload = await response.json();
+      if (!response.ok) throw new Error(payload.reason_code || 'REQUEST_REJECTED');
+      return payload;
+    }
+
+    async function decide(decision, approveButton, rejectButton) {
+      approveButton.disabled = true;
+      rejectButton.disabled = true;
+      addMessage('user', decision === 'APPROVE' ? 'Approve mock remediation' : 'Reject mock remediation');
+      try { renderAssistant(await post('/api/decision', { run_id:runId, decision })); }
+      catch (error) { const body = addMessage('assistant', 'The decision could not be recorded.'); body.lastChild.classList.add('error-copy'); }
+    }
+
+    form.addEventListener('submit', async (event) => {
+      event.preventDefault();
+      const prompt = promptEl.value.trim();
+      const cve = extractCve(prompt);
+      if (!cve) { const body = addMessage('assistant', 'Please include a CVE identifier such as CVE-2099-0001.'); body.lastChild.classList.add('error-copy'); return; }
+      runButton.disabled = true;
+      addMessage('user', prompt);
+      const thinking = addMessage('assistant', 'Reviewing the synthetic evidence...');
+      try {
+        const payload = await post('/api/run', { cve_id:cve, lab_env:labEnvEl.value });
+        thinking.parentElement.remove();
+        runId = payload.result && payload.result.run_id;
+        renderAssistant(payload);
+      } catch (error) { thinking.textContent = error.message; }
+      finally { runButton.disabled = false; }
+    });
+
+    newChat.addEventListener('click', () => { messages.replaceChildren(); welcome.classList.remove('hidden'); promptEl.focus(); runId = null; });
+
+    uploadEl.addEventListener('change', async () => {
+      const file = uploadEl.files && uploadEl.files[0];
+      uploadEl.value = '';
+      if (!file) return;
+      addMessage('user', 'Upload sanitized Inspector / SSM evidence');
+      try {
+        const payload = JSON.parse(await file.text());
+        renderAssistant(await post('/api/live-evidence', payload));
+      } catch (error) {
+        const body = addMessage('assistant', 'The evidence upload was blocked.');
+        body.lastChild.classList.add('error-copy');
+      }
+    });
+
+    compareLiveButton.addEventListener('click', async () => {
+      const file = csvUploadEl.files && csvUploadEl.files[0];
+      const instanceId = instanceIdEl.value.trim();
+      const cveId = liveCveEl.value.trim().toUpperCase();
+      if (!file || !instanceId || !/^i-[0-9a-f]{8,17}$/.test(instanceId) || !/^CVE-[0-9]{4}-[0-9]{4,}$/.test(cveId)) {
+        const body = addMessage('assistant', 'Provide an Inspector CSV, an EC2 instance ID, and a valid CVE from that CSV.');
+        body.lastChild.classList.add('error-copy');
+        return;
+      }
+      compareLiveButton.disabled = true;
+      addMessage('user', 'Compare Inspector CSV with the selected live EC2 target');
+      try {
+        const payload = await post('/api/live-csv', {
+          csv_text: await file.text(),
+          instance_id: instanceId,
+          cve_id: cveId,
+          region: awsRegionEl.value
+        });
+        renderLiveComparison(payload);
+      } catch (error) {
+        const body = addMessage('assistant', 'The live comparison was blocked.');
+        body.lastChild.classList.add('error-copy');
+      } finally {
+        compareLiveButton.disabled = false;
+      }
+    });
+  </script>
+</body>
+</html>

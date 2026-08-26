@@ -67,3 +67,51 @@ normalized state, and a coarse size class.
 The regression test proves the allow-listed read completes and that every raw
 fixture value is absent from the serialized result. No AWS SDK, account, or
 live resource was used.
+
+## Issue 5 - local Inspector-to-SSM visual proof
+
+The FAST POC reuses the secure harness boundary and adds a dependency-free
+browser adapter. A scripted plan proposes four read-only synthetic checks:
+Inspector finding, instance context, SSM managed-node readiness, and patch
+compliance. The result exposes aliases and typed state only, with stable
+`policy_reason_codes` and `executed_calls` fields.
+
+The browser stops at `APPROVAL_REQUIRED`. Reject records `HUMAN_REJECTED` and
+Approve records `MOCK_REMEDIATION_NOOP`; both paths perform no mutation. An
+unknown synthetic CVE is blocked before any tool runs. The local HTTP proof
+used `CVE-2099-0001` and `SYNTHETIC_LAB`; no AWS, AgentCore, credentials, or
+live sample deployment was used.
+
+The browser surface was then upgraded to a ChatGPT-style workspace with a
+conversation view, assistant tool cards, structured evidence cards, and inline
+approval controls. The presentation change did not widen the tool registry or
+change the approval/no-mutation contract.
+
+## Issue 5 - read-only AWS evidence adapter
+
+Milestone 2 now has a client-injected adapter for Inspector2, EC2, and SSM.
+It filters one CVE, proves the finding binds to one exact instance, verifies
+the required lab tags, and checks that the matching SSM node is online. Zero,
+ambiguous, mismatched, or incomplete evidence returns `BLOCKED` before the
+next call. Fake-client tests prove the request shapes and that raw IDs, IPs,
+ARNs, titles, and backend exception text do not enter the result.
+
+No live AWS profile, credentials, network call, SSM command, patch, reboot, or
+mutation was used.
+
+## Issue 5 - live-lab boundary and patch summary projection
+
+The live path is now a repo-owned operator with separate `plan`, `apply`,
+`collect`, and `cleanup` commands. `plan` is the safety gate: an available
+AMI alone is not enough. The instance needs a private subnet with an existing
+SSM path, a no-ingress security group, an existing instance profile, and
+enabled Inspector EC2 coverage. Public IPs, new networking, new IAM, and
+Inspector enablement are not silently added to make the demo pass.
+
+The read-only adapter can optionally read SSM `AWS:PatchSummary` and projects
+only patch counts plus strictly constrained package/version fields. The local
+ChatGPT-style UI accepts a typed sanitized result upload; malformed or extra
+fields produce a generic `REQUEST_REJECTED` response and are not echoed.
+
+The current preflight found no complete launch plan, so no live instance,
+SSM command, patch, reboot, or mutation was performed.

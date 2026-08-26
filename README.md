@@ -46,6 +46,70 @@ uv run python -m secure_agent_harness.demo
 No AWS account, API key, network service, or real security data is required.
 `uv.lock` pins the resolved learning environment.
 
+## Issue 5: local Inspector-to-SSM visual proof
+
+The first FAST POC milestone is local and synthetic. Start the dependency-free
+browser server with:
+
+```bash
+uv run python -m secure_agent_harness.poc_server
+```
+
+Open `http://127.0.0.1:8765`, enter the synthetic CVE
+`CVE-2099-0001`, and run the triage. The page shows the Inspector, instance,
+SSM readiness, and patch-compliance checks, then requires Approve or Reject.
+Approval records a no-op mock remediation; it never calls SSM or changes a
+fixture. See [docs/FAST_POC_ADAPTATION.md](docs/FAST_POC_ADAPTATION.md) for
+the reuse boundary and the gates before any AWS work.
+
+The interface is a ChatGPT-style local workspace with a conversation view,
+tool activity cards, structured evidence cards, and inline approval controls.
+If port `8765` is already occupied, use `POC_PORT=8766 uv run python -m
+secure_agent_harness.poc_server` and open `http://127.0.0.1:8766`.
+
+Milestone 2 also includes a client-injected read-only Inspector/EC2/SSM
+evidence adapter in `secure_agent_harness.aws_read_only`. Its fake-client
+tests prove exact finding binding, required tags, SSM readiness, and
+fail-closed reason codes. It also projects sanitized Inspector package data and
+SSM `AWS:PatchSummary` counts when explicitly requested. The browser has an
+**Upload read-only evidence** control: it validates a sanitized result and
+never accepts raw AWS payloads or model text.
+
+The repo-owned `scripts/issue5_live_lab.py` is the bounded live-lab operator:
+
+```bash
+# read-only preflight; every target boundary is explicit
+uv run python scripts/issue5_live_lab.py plan \
+  --image-id AMI_ID \
+  --image-owner IMAGE_OWNER \
+  --subnet-id SUBNET_ID \
+  --security-group-id SG_ID \
+  --iam-instance-profile PROFILE_NAME
+
+# only after the plan is READY and the same-day TTL is accepted
+uv run python scripts/issue5_live_lab.py apply ... --confirm
+
+# exact-target, read-only Inspector + EC2 + SSM evidence
+uv run python scripts/issue5_live_lab.py collect --cve-id CVE-YYYY-NNNN
+
+# exact tagged target only; explicit cleanup confirmation is required
+uv run python scripts/issue5_live_lab.py cleanup --confirm
+```
+
+`plan` refuses public networking, requires a private SSM path, an existing
+no-ingress security group, an existing instance profile, an available AMI,
+and enabled Inspector EC2 coverage. The persistent SecCop lane uses that
+preflight before holding one private demo target; cleanup is explicit and is
+not run automatically.
+
+The persistent **SecCop** demo lane is documented in
+[docs/SECCOP_LIVE_DEMO.md](docs/SECCOP_LIVE_DEMO.md). It adds a strict AWS
+Inspector CSV export and GUI inputs for an exact EC2 instance ID, selected CVE,
+and region. The comparison remains read-only; remediation is a separate
+approval-gated milestone. The GovTech PlatformAI handoff is consumed through
+the sibling `govtechai` repository's `gtx` launcher, never through a key in
+this repository.
+
 ## Learning vocabulary
 
 - **LLM:** a probabilistic model that may propose a plan. No real LLM is used
