@@ -9,13 +9,16 @@ from typing import Any
 from pydantic import ValidationError
 
 from .aws_live import AwsLiveBackendError, collect_live_evidence
+from .aws_remediation import execute_package_remediation
 from .contracts import (
     AwsReadOnlyResult,
     PocRequest,
     SecCopApprovalResult,
     SecCopComparison,
     SecCopCsvRequest,
+    SecCopRemediationRequest,
     SecCopRemediationProposal,
+    SecCopRemediationResult,
 )
 from .poc import PocEngine
 from .seccop_csv import SecCopCsvError, parse_csv
@@ -24,6 +27,8 @@ from .seccop_csv import SecCopCsvError, parse_csv
 _HTML_PATH = Path(__file__).resolve().parents[2] / "web" / "poc_chat.html"
 _ENGINE = PocEngine()
 _SECCOP_PROPOSALS: dict[str, SecCopRemediationProposal] = {}
+_SECCOP_REQUESTS: dict[str, SecCopCsvRequest] = {}
+_SECCOP_APPROVALS: set[str] = set()
 _NEXT_PROPOSAL_ID = 1
 
 
@@ -141,6 +146,7 @@ def _live_proposal(request: SecCopCsvRequest) -> SecCopRemediationProposal:
     )
     if proposal.status == "READY":
         _SECCOP_PROPOSALS[proposal.proposal_id] = proposal
+        _SECCOP_REQUESTS[proposal.proposal_id] = request
     return proposal
 
 
@@ -303,6 +309,10 @@ class _Handler(BaseHTTPRequestHandler):
                 self._send_json(404, {"status": "BLOCKED", "reason_code": "PROPOSAL_NOT_FOUND"})
                 return
             approved = decision == "APPROVE"
+            if approved:
+                _SECCOP_APPROVALS.add(proposal_id)
+            else:
+                _SECCOP_APPROVALS.discard(proposal_id)
             result = SecCopApprovalResult(
                 status="APPROVED_NO_MUTATION" if approved else "REJECTED",
                 reason_code="HUMAN_APPROVED_NO_MUTATION" if approved else "HUMAN_REJECTED",
@@ -312,6 +322,152 @@ class _Handler(BaseHTTPRequestHandler):
                     "Approval recorded for the next phase; no AWS mutation was performed."
                     if approved
                     else "Human rejected the proposal; no AWS mutation was performed."
+                ),
+            )
+            self._send_json(200, {"result": result.model_dump(mode="json"), "events": []})
+            return
+
+        if self.path == "/api/live-remediation":
+            try:
+                remediation_request = SecCopRemediationRequest.model_validate(payload)
+            except ValidationError:
+                self._send_json(400, {"status": "BLOCKED", "reason_code": "REQUEST_REJECTED"})
+                return
+            proposal = _SECCOP_PROPOSALS.get(remediation_request.proposal_id)
+            request = _SECCOP_REQUESTS.get(remediation_request.proposal_id)
+            if proposal is None or request is None:
+                result = SecCopRemediationResult(
+                    status="BLOCKED",
+                    reason_code="PROPOSAL_NOT_FOUND",
+                    cve_id="CVE-0000-0000",
+                    resource_alias="EC2_RESOURCE_01",
+                    change_state="NOT_STARTED",
+                    verification_status="NOT_AVAILABLE",
+                    reboot_approved=False,
+                    mutation_performed=False,
+                    message="The approved proposal could not be found.",
+                )
+                self._send_json(200, {"result": result.model_dump(mode="json"), "events": []})
+                return
+            if remediation_request.proposal_id not in _SECCOP_APPROVALS:
+                result = SecCopRemediationResult(
+                    status="BLOCKED",
+                    reason_code="SSM_APPROVAL_REQUIRED",
+                    cve_id=proposal.cve_id,
+                    resource_alias=proposal.resource_alias,
+                    package_name=proposal.package_name,
+                    fixed_version=proposal.fixed_version,
+                    change_state="NOT_STARTED",
+                    verification_status="NOT_AVAILABLE",
+                    reboot_approved=False,
+                    mutation_performed=False,
+                    message="Human approval is required before the server can be changed.",
+                )
+                self._send_json(200, {"result": result.model_dump(mode="json"), "events": []})
+                return
+            if proposal.package_name is None or proposal.fixed_version is None:
+                result = SecCopRemediationResult(
+                    status="BLOCKED",
+                    reason_code="SSM_PACKAGE_SOURCE_NOT_READY",
+                    cve_id=proposal.cve_id,
+                    resource_alias=proposal.resource_alias,
+                    change_state="NOT_STARTED",
+                    verification_status="NOT_AVAILABLE",
+                    reboot_approved=False,
+                    mutation_performed=False,
+                    message="The proposal has no exact package and fixed version to apply.",
+                )
+                self._send_json(200, {"result": result.model_dump(mode="json"), "events": []})
+                return
+
+            execution = execute_package_remediation(
+                region=request.region,
+                instance_id=request.instance_id,
+                cve_id=proposal.cve_id,
+                package_name=proposal.package_name,
+                fixed_version=proposal.fixed_version,
+            )
+            execution_reason = str(execution["reason_code"])
+            executed_calls = tuple(str(item) for item in execution.get("executed_calls", ()))
+            if execution["change_state"] != "COMPLETED":
+                result = SecCopRemediationResult(
+                    status=(
+                        "BLOCKED"
+                        if execution_reason in {"SSM_PACKAGE_SOURCE_NOT_READY", "AWS_BACKEND_UNAVAILABLE"}
+                        else "FAILED"
+                    ),
+                    reason_code=execution_reason,
+                    cve_id=proposal.cve_id,
+                    resource_alias=proposal.resource_alias,
+                    package_name=proposal.package_name,
+                    fixed_version=proposal.fixed_version,
+                    change_state=str(execution["change_state"]),
+                    verification_status="NOT_AVAILABLE",
+                    reboot_approved=False,
+                    mutation_performed=bool(execution["mutation_performed"]),
+                    executed_calls=executed_calls,
+                    evidence_path=str(execution["evidence_path"]),
+                    message=(
+                        "The package source was not ready; no package change was started."
+                        if execution_reason == "SSM_PACKAGE_SOURCE_NOT_READY"
+                        else "The approved SSM operation did not complete. Review the saved evidence before retrying."
+                    ),
+                )
+                self._send_json(200, {"result": result.model_dump(mode="json"), "events": []})
+                return
+
+            try:
+                verification = collect_live_evidence(
+                    region=request.region,
+                    instance_id=request.instance_id,
+                    cve_id=proposal.cve_id,
+                )
+            except (AwsLiveBackendError, OSError, TimeoutError):
+                result = SecCopRemediationResult(
+                    status="FAILED",
+                    reason_code="AWS_BACKEND_UNAVAILABLE",
+                    cve_id=proposal.cve_id,
+                    resource_alias=proposal.resource_alias,
+                    package_name=proposal.package_name,
+                    fixed_version=proposal.fixed_version,
+                    change_state="COMPLETED",
+                    verification_status="NOT_AVAILABLE",
+                    reboot_approved=False,
+                    mutation_performed=True,
+                    executed_calls=executed_calls + ("inspector.list_findings",),
+                    evidence_path=str(execution["evidence_path"]),
+                    message="The package change completed, but the follow-up security check was unavailable.",
+                )
+                self._send_json(200, {"result": result.model_dump(mode="json"), "events": []})
+                return
+
+            executed_calls += tuple(verification.executed_calls)
+            resolved = bool(
+                verification.status == "READY"
+                and verification.evidence is not None
+                and verification.evidence.finding_state == "RESOLVED"
+            )
+            result = SecCopRemediationResult(
+                status="COMPLETED",
+                reason_code=(
+                    "SSM_REMEDIATION_VERIFIED"
+                    if resolved
+                    else "SSM_REMEDIATION_PENDING_RESCAN"
+                ),
+                cve_id=proposal.cve_id,
+                resource_alias=proposal.resource_alias,
+                package_name=proposal.package_name,
+                fixed_version=proposal.fixed_version,
+                change_state="COMPLETED",
+                verification_status="VERIFIED" if resolved else "PENDING_RESCAN",
+                reboot_approved=False,
+                mutation_performed=True,
+                executed_calls=executed_calls,
+                evidence_path=str(execution["evidence_path"]),
+                message=(
+                    "The approved package change completed and the follow-up check shows the finding resolved."
+                    if resolved
+                    else "The approved package change completed; the follow-up scan still needs to refresh before closure."
                 ),
             )
             self._send_json(200, {"result": result.model_dump(mode="json"), "events": []})

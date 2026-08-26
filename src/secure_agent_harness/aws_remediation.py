@@ -1,0 +1,288 @@
+"""One-target, approval-bound SSM remediation for the SecCop demo.
+
+The module deliberately builds the remote command from validated CSV fields.
+No model text or browser-provided shell command is accepted.
+"""
+
+from __future__ import annotations
+
+import json
+import re
+import shlex
+import subprocess
+import tempfile
+import time
+from datetime import datetime, timezone
+from pathlib import Path
+from typing import Any
+
+
+class AwsRemediationBackendError(RuntimeError):
+    """AWS CLI or response-shape failure kept inside the backend boundary."""
+
+
+class AwsRemediationTimeout(AwsRemediationBackendError):
+    """The SSM command did not reach a terminal state in the bounded wait."""
+
+
+class _AwsCli:
+    def __init__(self, *, region: str, profile: str = "amit") -> None:
+        self.region = region
+        self.profile = profile
+
+    def call(self, service: str, operation: str, payload: dict[str, Any]) -> dict[str, Any]:
+        with tempfile.NamedTemporaryFile("w", encoding="utf-8", suffix=".json") as handle:
+            json.dump(payload, handle)
+            handle.flush()
+            completed = subprocess.run(
+                [
+                    "aws",
+                    "--profile",
+                    self.profile,
+                    "--region",
+                    self.region,
+                    service,
+                    operation,
+                    "--cli-input-json",
+                    f"file://{handle.name}",
+                    "--output",
+                    "json",
+                ],
+                capture_output=True,
+                text=True,
+                timeout=45,
+                check=False,
+            )
+        if completed.returncode != 0:
+            raise AwsRemediationBackendError("AWS SSM backend unavailable.")
+        try:
+            value = json.loads(completed.stdout or "{}")
+        except json.JSONDecodeError as exc:
+            raise AwsRemediationBackendError("AWS SSM returned invalid data.") from exc
+        if not isinstance(value, dict):
+            raise AwsRemediationBackendError("AWS SSM returned an invalid object.")
+        return value
+
+
+_PACKAGE_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._+:/@-]{0,79}$")
+_VERSION_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._+:/@~-]{0,63}$")
+_TERMINAL = {"Success", "Cancelled", "TimedOut", "Failed", "Cancelling"}
+
+
+def _validate_package(package_name: str, fixed_version: str) -> None:
+    if not _PACKAGE_RE.fullmatch(package_name) or not _VERSION_RE.fullmatch(fixed_version):
+        raise AwsRemediationBackendError("Package scope failed the remediation contract.")
+
+
+def _package_target(package_name: str, fixed_version: str) -> str:
+    _validate_package(package_name, fixed_version)
+    return f"{package_name}-{fixed_version}"
+
+
+def _preflight_command(target: str) -> str:
+    quoted_target = shlex.quote(target)
+    return "\n".join(
+        [
+            "set -eu",
+            "printf 'SECCOP_PREFLIGHT=START\\n'",
+            "command -v yum >/dev/null 2>&1",
+            f"yum -q info {quoted_target} >/dev/null 2>&1",
+            "printf 'SECCOP_PREFLIGHT=READY\\n'",
+        ]
+    )
+
+
+def _install_command(target: str) -> str:
+    quoted_target = shlex.quote(target)
+    return "\n".join(
+        [
+            "set -eu",
+            "printf 'SECCOP_INSTALL=START\\n'",
+            f"yum install -y --setopt=install_weak_deps=False {quoted_target}",
+            "printf 'SECCOP_INSTALL=SUCCESS\\n'",
+        ]
+    )
+
+
+def _send(cli: _AwsCli, *, instance_id: str, command: str, comment: str) -> str:
+    response = cli.call(
+        "ssm",
+        "send-command",
+        {
+            "DocumentName": "AWS-RunShellScript",
+            "InstanceIds": [instance_id],
+            "Parameters": {"commands": [command]},
+            "Comment": comment,
+        },
+    )
+    command_id = response.get("Command", {}).get("CommandId")
+    if not isinstance(command_id, str) or not command_id:
+        raise AwsRemediationBackendError("SSM did not return a command identifier.")
+    return command_id
+
+
+def _wait(cli: _AwsCli, *, command_id: str, instance_id: str, timeout_seconds: int = 180) -> dict[str, Any]:
+    deadline = time.monotonic() + timeout_seconds
+    last_error: AwsRemediationBackendError | None = None
+    while time.monotonic() < deadline:
+        try:
+            response = cli.call(
+                "ssm",
+                "get-command-invocation",
+                {"CommandId": command_id, "InstanceId": instance_id},
+            )
+            status = response.get("Status")
+            if isinstance(status, str) and status in _TERMINAL:
+                return response
+        except AwsRemediationBackendError as exc:
+            last_error = exc
+        time.sleep(2)
+    if last_error is not None:
+        raise AwsRemediationTimeout("SSM command wait timed out.") from last_error
+    raise AwsRemediationTimeout("SSM command wait timed out.")
+
+
+def _write_json(directory: Path, name: str, value: object) -> None:
+    (directory / name).write_text(
+        json.dumps(value, indent=2, sort_keys=True, default=str) + "\n",
+        encoding="utf-8",
+    )
+
+
+def _evidence_dir() -> Path:
+    stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
+    directory = Path.home() / ".AGENTS-temp" / "agentic-ai-cybersecurity-lab" / "ssm-remediation" / stamp
+    directory.mkdir(parents=True, exist_ok=True)
+    return directory
+
+
+def execute_package_remediation(
+    *,
+    region: str,
+    instance_id: str,
+    cve_id: str,
+    package_name: str,
+    fixed_version: str,
+) -> dict[str, object]:
+    """Preflight the package source, install one exact package, and save evidence.
+
+    The function performs a mutation only when the caller has already passed
+    the approval gate. It never reboots the host.
+    """
+
+    target = _package_target(package_name, fixed_version)
+    evidence = _evidence_dir()
+    _write_json(
+        evidence,
+        "request.json",
+        {
+            "region": region,
+            "instance_id": instance_id,
+            "cve_id": cve_id,
+            "package_name": package_name,
+            "fixed_version": fixed_version,
+            "reboot_approved": False,
+            "operation": "one-package-yum-install",
+        },
+    )
+    _write_json(evidence, "preflight-command.json", {"document": "AWS-RunShellScript", "command": _preflight_command(target)})
+    _write_json(evidence, "install-command.json", {"document": "AWS-RunShellScript", "command": _install_command(target)})
+
+    cli = _AwsCli(region=region)
+    try:
+        preflight_id = _send(
+            cli,
+            instance_id=instance_id,
+            command=_preflight_command(target),
+            comment="Security Copilot package-source check",
+        )
+        preflight = _wait(cli, command_id=preflight_id, instance_id=instance_id)
+    except AwsRemediationTimeout:
+        return {
+            "change_state": "NOT_STARTED",
+            "reason_code": "SSM_COMMAND_TIMEOUT",
+            "verification_status": "NOT_AVAILABLE",
+            "mutation_performed": False,
+            "executed_calls": ("ssm.send_command", "ssm.get_command_invocation"),
+            "evidence_path": str(evidence),
+        }
+    except AwsRemediationBackendError:
+        return {
+            "change_state": "NOT_STARTED",
+            "reason_code": "AWS_BACKEND_UNAVAILABLE",
+            "verification_status": "NOT_AVAILABLE",
+            "mutation_performed": False,
+            "executed_calls": (),
+            "evidence_path": str(evidence),
+        }
+    _write_json(evidence, "preflight-response.json", preflight)
+    preflight_status = preflight.get("Status")
+    if preflight_status != "Success":
+        _write_json(evidence, "summary.json", {"stage": "preflight", "status": preflight_status})
+        return {
+            "change_state": "NOT_STARTED",
+            "reason_code": "SSM_PACKAGE_SOURCE_NOT_READY",
+            "verification_status": "NOT_AVAILABLE",
+            "mutation_performed": False,
+            "executed_calls": ("ssm.send_command", "ssm.get_command_invocation"),
+            "evidence_path": str(evidence),
+        }
+
+    try:
+        install_id = _send(
+            cli,
+            instance_id=instance_id,
+            command=_install_command(target),
+            comment="Security Copilot approved package remediation",
+        )
+    except AwsRemediationBackendError:
+        return {
+            "change_state": "NOT_STARTED",
+            "reason_code": "AWS_BACKEND_UNAVAILABLE",
+            "verification_status": "NOT_AVAILABLE",
+            "mutation_performed": False,
+            "executed_calls": ("ssm.send_command",),
+            "evidence_path": str(evidence),
+        }
+    try:
+        install = _wait(cli, command_id=install_id, instance_id=instance_id)
+    except AwsRemediationTimeout:
+        return {
+            "change_state": "ATTEMPTED",
+            "reason_code": "SSM_COMMAND_TIMEOUT",
+            "verification_status": "NOT_AVAILABLE",
+            "mutation_performed": True,
+            "executed_calls": ("ssm.send_command", "ssm.get_command_invocation"),
+            "evidence_path": str(evidence),
+        }
+    except AwsRemediationBackendError:
+        return {
+            "change_state": "ATTEMPTED",
+            "reason_code": "AWS_BACKEND_UNAVAILABLE",
+            "verification_status": "NOT_AVAILABLE",
+            "mutation_performed": True,
+            "executed_calls": ("ssm.send_command", "ssm.get_command_invocation"),
+            "evidence_path": str(evidence),
+        }
+    _write_json(evidence, "install-response.json", install)
+    install_status = install.get("Status")
+    if install_status != "Success":
+        _write_json(evidence, "summary.json", {"stage": "install", "status": install_status})
+        return {
+            "change_state": "ATTEMPTED",
+            "reason_code": "SSM_COMMAND_FAILED",
+            "verification_status": "NOT_AVAILABLE",
+            "mutation_performed": True,
+            "executed_calls": ("ssm.send_command", "ssm.get_command_invocation"),
+            "evidence_path": str(evidence),
+        }
+
+    _write_json(evidence, "summary.json", {"stage": "install", "status": install_status})
+    return {
+        "change_state": "COMPLETED",
+        "reason_code": "SSM_REMEDIATION_PENDING_RESCAN",
+        "verification_status": "PENDING_RESCAN",
+        "mutation_performed": True,
+        "executed_calls": ("ssm.send_command", "ssm.get_command_invocation"),
+        "evidence_path": str(evidence),
+    }

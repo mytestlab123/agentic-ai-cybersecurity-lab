@@ -364,9 +364,9 @@
       if (result.status === 'READY' && result.requires_approval) {
         lastLiveProposalId = result.proposal_id;
         const approval = node('div', 'approval-card');
-        approval.appendChild(node('div', 'approval-copy', 'Approval records the exact proposal only. Phase 2A performs no AWS mutation.'));
+        approval.appendChild(node('div', 'approval-copy', 'Approval starts this one-package fix. No reboot is included.'));
         const actions = node('div', 'approval-actions');
-        const approve = node('button', 'btn approve', 'Approve proposal');
+        const approve = node('button', 'btn approve', 'Approve and run fix');
         const reject = node('button', 'btn reject', 'Reject proposal');
         approve.type = 'button';
         reject.type = 'button';
@@ -393,6 +393,30 @@
       evidenceCell(grid, 'Mutation', result.mutation_performed ? 'Performed' : 'None');
       evidenceCell(grid, 'GovTech', 'Inference not used');
       card.appendChild(grid);
+      body.appendChild(card);
+    }
+
+    function renderLiveRemediation(payload) {
+      const result = payload.result || {};
+      const body = addMessage('assistant', result.message || 'No remediation result returned.');
+      const card = node('div', 'result-card');
+      const head = node('div', 'result-head');
+      head.appendChild(node('div', 'result-title', 'Fix and follow-up result'));
+      head.appendChild(node('span', 'badge', result.reason_code || result.status || 'BLOCKED'));
+      card.appendChild(head);
+      const grid = node('div', 'evidence-grid');
+      evidenceCell(grid, 'Package', result.package_name);
+      evidenceCell(grid, 'New version', result.fixed_version);
+      evidenceCell(grid, 'Change', result.change_state);
+      evidenceCell(grid, 'Follow-up check', result.verification_status);
+      evidenceCell(grid, 'Reboot', result.reboot_approved ? 'Approved' : 'Not run');
+      evidenceCell(grid, 'GovTech', 'Inference not used');
+      card.appendChild(grid);
+      if (result.executed_calls) {
+        const calls = node('div', 'message-time', 'Recorded steps: ' + result.executed_calls.join(', '));
+        calls.style.marginTop = '10px';
+        card.appendChild(calls);
+      }
       body.appendChild(card);
     }
 
@@ -435,9 +459,23 @@
       rejectButton.disabled = true;
       addMessage('user', decision === 'APPROVE' ? 'Approve proposed remediation' : 'Reject proposed remediation');
       try {
-        renderLiveDecision(await post('/api/live-decision', { proposal_id:lastLiveProposalId, decision }));
+        const decisionPayload = await post('/api/live-decision', { proposal_id:lastLiveProposalId, decision });
+        renderLiveDecision(decisionPayload);
+        if (decision === 'APPROVE' && decisionPayload.result && decisionPayload.result.reason_code === 'HUMAN_APPROVED_NO_MUTATION') {
+          await runLiveRemediation();
+        }
       } catch (error) {
         const body = addMessage('assistant', 'The proposal decision could not be recorded.');
+        body.lastChild.classList.add('error-copy');
+      }
+    }
+
+    async function runLiveRemediation() {
+      addMessage('assistant', 'Starting the approved one-package fix. No reboot will be requested.');
+      try {
+        renderLiveRemediation(await post('/api/live-remediation', { proposal_id:lastLiveProposalId, reboot_approved:false }));
+      } catch (error) {
+        const body = addMessage('assistant', 'The approved fix could not be started.');
         body.lastChild.classList.add('error-copy');
       }
     }
@@ -459,7 +497,7 @@
       finally { runButton.disabled = false; }
     });
 
-    newChat.addEventListener('click', () => { messages.replaceChildren(); welcome.classList.remove('hidden'); promptEl.focus(); runId = null; });
+    newChat.addEventListener('click', () => { messages.replaceChildren(); welcome.classList.remove('hidden'); promptEl.focus(); runId = null; lastLiveProposalId = null; });
 
     uploadEl.addEventListener('change', async () => {
       const file = uploadEl.files && uploadEl.files[0];

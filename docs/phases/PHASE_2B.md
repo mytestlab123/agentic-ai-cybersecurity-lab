@@ -2,9 +2,10 @@
 
 ## Objective
 
-Execute one approved package remediation on the exact live target through a
-repo-owned SSM adapter. This is the first phase allowed to mutate AWS, and it
-requires a separate exact-target approval.
+Complete the “wow” journey for one finding: show the proposed fix, wait for
+the human approval, apply one package change to the exact live target, and
+return with an honest follow-up result. This is the first phase allowed to
+mutate AWS, and the approval button is the only mutation boundary.
 
 ## Required gates
 
@@ -22,20 +23,20 @@ requires a separate exact-target approval.
 
 1. Open the Phase 2A approved proposal and confirm the target alias, package,
    fixed version, and `EXPLICIT_APPROVAL_REQUIRED` reboot policy.
-2. Click **Run approved SSM remediation** and confirm the confirmation dialog
-   repeats the exact target, package, document, and reboot choice.
-3. Observe the SSM execution card; it must show a stable command status and
-   sanitized stdout/stderr summary, never a raw payload.
-4. Capture a screenshot of the running/completed SSM evidence and the
-   `mutation_performed` result.
+2. Click **Approve and run fix**. The screen starts one package update with no
+   reboot request.
+3. Observe the progress and the follow-up result: fixed, waiting for the
+   security scan to refresh, or not completed.
+4. Capture a screenshot of the completed fix and follow-up result.
 5. Stop if the package source, SSM readiness, target binding, or command
-   status is not proven; do not widen scope to every Inspector finding.
+   status is not proven; do not widen scope to every finding.
 
 ## Acceptance
 
 - Only the explicitly approved package action can run.
 - No arbitrary command, public network path, or unapproved reboot is used.
-- The result is not called fixed until Phase 2C performs independent closure.
+- The result is not called fixed unless the follow-up security check confirms
+  that the finding is gone.
 
 ## Evidence
 
