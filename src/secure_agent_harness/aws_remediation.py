@@ -76,7 +76,12 @@ def _validate_package(package_name: str, fixed_version: str) -> None:
 
 def _package_target(package_name: str, fixed_version: str) -> str:
     _validate_package(package_name, fixed_version)
-    return f"{package_name}-{fixed_version}"
+    # Inspector reports the RPM epoch (for example ``0:2.7...``), but yum's
+    # name-version-release selector expects the epoch to be omitted. Keep the
+    # original Inspector value in evidence while translating only the command
+    # argument at this boundary.
+    yum_version = fixed_version.split(":", 1)[1] if ":" in fixed_version else fixed_version
+    return f"{package_name}-{yum_version}"
 
 
 def _preflight_command(target: str) -> str:
