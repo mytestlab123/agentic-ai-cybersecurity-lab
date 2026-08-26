@@ -72,6 +72,8 @@ An unknown CVE is blocked before any tool runs. The screen shows `CVE_NOT_FOUND`
 - No external browser requests were made.
 - No browser console errors remained.
 - The temporary server and browser processes were cleaned up.
+- The repeatable command is `./scripts/browser-e2e.sh`; it uses the existing
+  Windows Chrome and `playwright-core` over local CDP.
 
 ## POC boundary
 
@@ -94,19 +96,18 @@ The approved AWS rehearsal is recorded in
 ## Run the DEMO locally
 
 ```bash
-cd /home/user/git/agentic-ai-cybersecurity-lab
+cd <repo-root>
 uv run python -m secure_agent_harness.poc_server
 ```
 
-Open `http://127.0.0.1:8765` and press **Scan environment**.
+Open the local server URL shown by the command and press **Scan environment**.
 
-If that port is already in use by an older local server, start this version on
-another port, for example `POC_PORT=8766 uv run python -m
-secure_agent_harness.poc_server`, and open `http://127.0.0.1:8766`.
+If the default port is already in use by an older local server, start this
+version on another free port with `POC_PORT=<free-port> uv run python -m
+secure_agent_harness.poc_server`.
 
-The captured screenshots are also available in:
-
-`C:\Users\ISSUser\Pictures\Screenshots`
+The captured screenshots are also copied to the operator-configured review
+folder when the browser evidence runner is used.
 
 ## Project status
 

@@ -131,6 +131,17 @@ The latest browser proof is in the
 [SecCop DEMO evidence report](docs/evidence/seccop-demo/report.md), with
 sanitized screenshots beside it.
 
+To reproduce the local browser proof with the existing Windows Chrome and
+`playwright-core` installation, run:
+
+```bash
+./scripts/browser-e2e.sh
+```
+
+The runner saves JSON evidence in the operator-local temporary evidence area,
+copies review screenshots to the requested Windows folder, and cleans up only
+the app and browser profile it created.
+
 ## Repeatable three-source DEMO
 
 Issue 25 adds one guarded preparation command for the approved live rehearsal.
