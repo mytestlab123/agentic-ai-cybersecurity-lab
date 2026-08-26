@@ -1,5 +1,6 @@
 """Typed data crossing the model, policy, and tool boundaries."""
 
+from datetime import datetime
 from typing import Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field
@@ -342,6 +343,8 @@ class SecCopRemediationProposal(Contract):
     reboot_policy: Literal["NO_REBOOT", "EXPLICIT_APPROVAL_REQUIRED", "UNKNOWN"]
     requires_approval: bool
     mutation_performed: Literal[False]
+    proposal_hash: str = Field(default="0" * 64, pattern=r"^[0-9a-f]{64}$")
+    approval_expires_at: datetime | None = None
     read_executed_calls: tuple[str, ...] = ()
     message: str = Field(min_length=1, max_length=220)
 
@@ -353,6 +356,8 @@ class SecCopApprovalResult(Contract):
     reason_code: Literal["HUMAN_APPROVED_NO_MUTATION", "HUMAN_REJECTED"]
     proposal_id: str = Field(pattern=r"^SECCOP_PROPOSAL_[0-9]{2}$")
     mutation_performed: Literal[False]
+    proposal_hash: str = Field(default="0" * 64, pattern=r"^[0-9a-f]{64}$")
+    approval_expires_at: datetime | None = None
     executed_calls: tuple[str, ...] = ()
     message: str = Field(min_length=1, max_length=220)
 
@@ -361,6 +366,7 @@ class SecCopRemediationRequest(Contract):
     """Approval-bound request for the one-target Phase 2B operation."""
 
     proposal_id: str = Field(pattern=r"^SECCOP_PROPOSAL_[0-9]{2}$")
+    proposal_hash: str = Field(pattern=r"^[0-9a-f]{64}$")
     reboot_approved: Literal[False] = False
 
 
@@ -375,6 +381,9 @@ class SecCopRemediationResult(Contract):
         "SSM_COMMAND_FAILED",
         "SSM_COMMAND_TIMEOUT",
         "SSM_APPROVAL_REQUIRED",
+        "SSM_APPROVAL_BINDING_MISMATCH",
+        "SSM_APPROVAL_EXPIRED",
+        "SSM_APPROVAL_ALREADY_USED",
         "PROPOSAL_NOT_FOUND",
         "AWS_BACKEND_UNAVAILABLE",
     ]
@@ -382,6 +391,8 @@ class SecCopRemediationResult(Contract):
     resource_alias: str = Field(pattern=r"^EC2_RESOURCE_[0-9]{2}$")
     package_name: str | None = Field(default=None, pattern=r"^[A-Za-z0-9][A-Za-z0-9._+:/@-]{0,79}$")
     fixed_version: str | None = Field(default=None, pattern=r"^[A-Za-z0-9][A-Za-z0-9._+:/@~-]{0,63}$")
+    before_version: str | None = Field(default=None, pattern=r"^[A-Za-z0-9][A-Za-z0-9._+:/@~-]{0,63}$")
+    after_version: str | None = Field(default=None, pattern=r"^[A-Za-z0-9][A-Za-z0-9._+:/@~-]{0,63}$")
     change_state: Literal["NOT_STARTED", "ATTEMPTED", "COMPLETED"]
     verification_status: Literal["VERIFIED", "PENDING_RESCAN", "NOT_AVAILABLE"]
     reboot_approved: Literal[False]

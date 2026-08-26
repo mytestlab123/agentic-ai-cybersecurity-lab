@@ -1,7 +1,10 @@
 """Small dependency-free local web server for the Issue 5 visual proof."""
 
 import json
+import hashlib
 import os
+from dataclasses import dataclass, replace
+from datetime import datetime, timedelta, timezone
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from typing import Any
@@ -28,8 +31,18 @@ _HTML_PATH = Path(__file__).resolve().parents[2] / "web" / "poc_chat.html"
 _ENGINE = PocEngine()
 _SECCOP_PROPOSALS: dict[str, SecCopRemediationProposal] = {}
 _SECCOP_REQUESTS: dict[str, SecCopCsvRequest] = {}
-_SECCOP_APPROVALS: set[str] = set()
+
+
+@dataclass(frozen=True)
+class _ApprovalRecord:
+    proposal_hash: str
+    expires_at: datetime
+    consumed: bool = False
+
+
+_SECCOP_APPROVALS: dict[str, _ApprovalRecord] = {}
 _NEXT_PROPOSAL_ID = 1
+_APPROVAL_TTL = timedelta(minutes=15)
 
 
 def _session_payload(session: Any) -> dict[str, object]:
@@ -44,6 +57,47 @@ def _next_proposal_id() -> str:
     proposal_id = f"SECCOP_PROPOSAL_{_NEXT_PROPOSAL_ID:02d}"
     _NEXT_PROPOSAL_ID += 1
     return proposal_id
+
+
+def _approval_expiry() -> datetime:
+    return datetime.now(timezone.utc) + _APPROVAL_TTL
+
+
+def _proposal_hash(
+    *,
+    proposal_id: str,
+    request: SecCopCsvRequest,
+    cve_id: str,
+    resource_alias: str,
+    package_name: str | None,
+    fixed_version: str | None,
+    action: str,
+    reboot_policy: str,
+    expires_at: datetime,
+) -> str:
+    binding = {
+        "proposal_id": proposal_id,
+        "region": request.region,
+        "instance_id": request.instance_id,
+        "cve_id": cve_id,
+        "resource_alias": resource_alias,
+        "package_name": package_name,
+        "fixed_version": fixed_version,
+        "action": action,
+        "reboot_policy": reboot_policy,
+        "approval_expires_at": expires_at.isoformat(),
+    }
+    canonical = json.dumps(binding, sort_keys=True, separators=(",", ":"))
+    return hashlib.sha256(canonical.encode("utf-8")).hexdigest()
+
+
+def _verified_package_version(evidence: Any, package_name: str | None) -> str | None:
+    if evidence is None or not package_name:
+        return None
+    for package in getattr(evidence, "packages", ()):
+        if getattr(package, "name", None) == package_name:
+            return getattr(package, "installed_version", None)
+    return None
 
 
 def _live_proposal(request: SecCopCsvRequest) -> SecCopRemediationProposal:
@@ -119,8 +173,27 @@ def _live_proposal(request: SecCopCsvRequest) -> SecCopRemediationProposal:
         )
 
     row = document.matching_rows[0]
+    proposal_id = _next_proposal_id()
+    expires_at = _approval_expiry() if row.fixed_version else None
+    action = "SSM_INSTALL_SECURITY_UPDATE" if row.fixed_version else "NONE"
+    reboot_policy = "EXPLICIT_APPROVAL_REQUIRED" if row.fixed_version else "UNKNOWN"
+    proposal_hash = (
+        _proposal_hash(
+            proposal_id=proposal_id,
+            request=request,
+            cve_id=row.cve_id,
+            resource_alias=live_result.resource_alias,
+            package_name=row.package_name,
+            fixed_version=row.fixed_version,
+            action=action,
+            reboot_policy=reboot_policy,
+            expires_at=expires_at,
+        )
+        if expires_at is not None
+        else "0" * 64
+    )
     proposal = SecCopRemediationProposal(
-        proposal_id=_next_proposal_id(),
+        proposal_id=proposal_id,
         status="READY" if row.fixed_version else "BLOCKED",
         reason_code=(
             "SECCOP_REMEDIATION_PROPOSAL_READY"
@@ -133,10 +206,12 @@ def _live_proposal(request: SecCopCsvRequest) -> SecCopRemediationProposal:
         package_name=row.package_name,
         installed_version=row.installed_version,
         fixed_version=row.fixed_version,
-        action="SSM_INSTALL_SECURITY_UPDATE" if row.fixed_version else "NONE",
-        reboot_policy="EXPLICIT_APPROVAL_REQUIRED" if row.fixed_version else "UNKNOWN",
+        action=action,
+        reboot_policy=reboot_policy,
         requires_approval=bool(row.fixed_version),
         mutation_performed=False,
+        proposal_hash=proposal_hash,
+        approval_expires_at=expires_at,
         read_executed_calls=live_result.evidence.executed_calls,
         message=(
             "A deterministic package-level remediation proposal is ready for human approval."
@@ -308,16 +383,42 @@ class _Handler(BaseHTTPRequestHandler):
             if proposal is None or proposal.status != "READY":
                 self._send_json(404, {"status": "BLOCKED", "reason_code": "PROPOSAL_NOT_FOUND"})
                 return
+            proposal_hash = payload.get("proposal_hash")
+            if not isinstance(proposal_hash, str) or proposal_hash != proposal.proposal_hash:
+                self._send_json(
+                    409,
+                    {
+                        "status": "BLOCKED",
+                        "reason_code": "PROPOSAL_BINDING_MISMATCH",
+                        "message": "The approval did not match the exact proposal.",
+                    },
+                )
+                return
+            if proposal.approval_expires_at is None or proposal.approval_expires_at <= datetime.now(timezone.utc):
+                self._send_json(
+                    409,
+                    {
+                        "status": "BLOCKED",
+                        "reason_code": "APPROVAL_EXPIRED",
+                        "message": "This proposal expired; generate a new proposal before approving.",
+                    },
+                )
+                return
             approved = decision == "APPROVE"
             if approved:
-                _SECCOP_APPROVALS.add(proposal_id)
+                _SECCOP_APPROVALS[proposal_id] = _ApprovalRecord(
+                    proposal_hash=proposal.proposal_hash,
+                    expires_at=proposal.approval_expires_at,
+                )
             else:
-                _SECCOP_APPROVALS.discard(proposal_id)
+                _SECCOP_APPROVALS.pop(proposal_id, None)
             result = SecCopApprovalResult(
                 status="APPROVED_NO_MUTATION" if approved else "REJECTED",
                 reason_code="HUMAN_APPROVED_NO_MUTATION" if approved else "HUMAN_REJECTED",
                 proposal_id=proposal_id,
                 mutation_performed=False,
+                proposal_hash=proposal.proposal_hash,
+                approval_expires_at=proposal.approval_expires_at,
                 message=(
                     "Approval recorded for the next phase; no AWS mutation was performed."
                     if approved
@@ -349,7 +450,8 @@ class _Handler(BaseHTTPRequestHandler):
                 )
                 self._send_json(200, {"result": result.model_dump(mode="json"), "events": []})
                 return
-            if remediation_request.proposal_id not in _SECCOP_APPROVALS:
+            approval = _SECCOP_APPROVALS.get(remediation_request.proposal_id)
+            if approval is None:
                 result = SecCopRemediationResult(
                     status="BLOCKED",
                     reason_code="SSM_APPROVAL_REQUIRED",
@@ -362,6 +464,55 @@ class _Handler(BaseHTTPRequestHandler):
                     reboot_approved=False,
                     mutation_performed=False,
                     message="Human approval is required before the server can be changed.",
+                )
+                self._send_json(200, {"result": result.model_dump(mode="json"), "events": []})
+                return
+            if approval.proposal_hash != remediation_request.proposal_hash:
+                result = SecCopRemediationResult(
+                    status="BLOCKED",
+                    reason_code="SSM_APPROVAL_BINDING_MISMATCH",
+                    cve_id=proposal.cve_id,
+                    resource_alias=proposal.resource_alias,
+                    package_name=proposal.package_name,
+                    fixed_version=proposal.fixed_version,
+                    change_state="NOT_STARTED",
+                    verification_status="NOT_AVAILABLE",
+                    reboot_approved=False,
+                    mutation_performed=False,
+                    message="The approved action no longer matches the proposal.",
+                )
+                self._send_json(200, {"result": result.model_dump(mode="json"), "events": []})
+                return
+            now = datetime.now(timezone.utc)
+            if approval.expires_at <= now:
+                result = SecCopRemediationResult(
+                    status="BLOCKED",
+                    reason_code="SSM_APPROVAL_EXPIRED",
+                    cve_id=proposal.cve_id,
+                    resource_alias=proposal.resource_alias,
+                    package_name=proposal.package_name,
+                    fixed_version=proposal.fixed_version,
+                    change_state="NOT_STARTED",
+                    verification_status="NOT_AVAILABLE",
+                    reboot_approved=False,
+                    mutation_performed=False,
+                    message="The approval expired before the fix started.",
+                )
+                self._send_json(200, {"result": result.model_dump(mode="json"), "events": []})
+                return
+            if approval.consumed:
+                result = SecCopRemediationResult(
+                    status="BLOCKED",
+                    reason_code="SSM_APPROVAL_ALREADY_USED",
+                    cve_id=proposal.cve_id,
+                    resource_alias=proposal.resource_alias,
+                    package_name=proposal.package_name,
+                    fixed_version=proposal.fixed_version,
+                    change_state="NOT_STARTED",
+                    verification_status="NOT_AVAILABLE",
+                    reboot_approved=False,
+                    mutation_performed=False,
+                    message="This one-time approval was already used.",
                 )
                 self._send_json(200, {"result": result.model_dump(mode="json"), "events": []})
                 return
@@ -379,6 +530,10 @@ class _Handler(BaseHTTPRequestHandler):
                 )
                 self._send_json(200, {"result": result.model_dump(mode="json"), "events": []})
                 return
+
+            # Consume before dispatch so a retry or concurrent browser request
+            # cannot reuse the same approval for a second mutation.
+            _SECCOP_APPROVALS[remediation_request.proposal_id] = replace(approval, consumed=True)
 
             execution = execute_package_remediation(
                 region=request.region,
@@ -458,6 +613,8 @@ class _Handler(BaseHTTPRequestHandler):
                 resource_alias=proposal.resource_alias,
                 package_name=proposal.package_name,
                 fixed_version=proposal.fixed_version,
+                before_version=proposal.installed_version,
+                after_version=_verified_package_version(verification.evidence, proposal.package_name),
                 change_state="COMPLETED",
                 verification_status="VERIFIED" if resolved else "PENDING_RESCAN",
                 reboot_approved=False,

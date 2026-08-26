@@ -183,6 +183,7 @@
     let runId = null;
     let lastLiveRequest = null;
     let lastLiveProposalId = null;
+    let lastLiveProposalHash = null;
     const labels = {
       mock_inspector_finding: 'Inspector finding lookup',
       mock_instance_context: 'EC2 instance context',
@@ -354,6 +355,8 @@
       evidenceCell(grid, 'Fixed', result.fixed_version);
       evidenceCell(grid, 'Action', result.action);
       evidenceCell(grid, 'Reboot', result.reboot_policy);
+      evidenceCell(grid, 'Proposal', result.proposal_id);
+      evidenceCell(grid, 'Approval expires', result.approval_expires_at);
       evidenceCell(grid, 'GovTech', 'Inference not used');
       card.appendChild(grid);
       if (result.read_executed_calls) {
@@ -363,6 +366,7 @@
       }
       if (result.status === 'READY' && result.requires_approval) {
         lastLiveProposalId = result.proposal_id;
+        lastLiveProposalHash = result.proposal_hash;
         const approval = node('div', 'approval-card');
         approval.appendChild(node('div', 'approval-copy', 'Approval starts this one-package fix. No reboot is included.'));
         const actions = node('div', 'approval-actions');
@@ -391,6 +395,7 @@
       const grid = node('div', 'evidence-grid');
       evidenceCell(grid, 'Proposal', result.proposal_id);
       evidenceCell(grid, 'Mutation', result.mutation_performed ? 'Performed' : 'None');
+      evidenceCell(grid, 'Approval expires', result.approval_expires_at);
       evidenceCell(grid, 'GovTech', 'Inference not used');
       card.appendChild(grid);
       body.appendChild(card);
@@ -405,8 +410,10 @@
       head.appendChild(node('span', 'badge', result.reason_code || result.status || 'BLOCKED'));
       card.appendChild(head);
       const grid = node('div', 'evidence-grid');
+      evidenceCell(grid, 'Before', result.before_version || 'Not verified');
+      evidenceCell(grid, 'After', result.after_version || 'Awaiting check');
       evidenceCell(grid, 'Package', result.package_name);
-      evidenceCell(grid, 'New version', result.fixed_version);
+      evidenceCell(grid, 'Target version', result.fixed_version);
       evidenceCell(grid, 'Change', result.change_state);
       evidenceCell(grid, 'Follow-up check', result.verification_status);
       evidenceCell(grid, 'Reboot', result.reboot_approved ? 'Approved' : 'Not run');
@@ -459,7 +466,7 @@
       rejectButton.disabled = true;
       addMessage('user', decision === 'APPROVE' ? 'Approve proposed remediation' : 'Reject proposed remediation');
       try {
-        const decisionPayload = await post('/api/live-decision', { proposal_id:lastLiveProposalId, decision });
+        const decisionPayload = await post('/api/live-decision', { proposal_id:lastLiveProposalId, proposal_hash:lastLiveProposalHash, decision });
         renderLiveDecision(decisionPayload);
         if (decision === 'APPROVE' && decisionPayload.result && decisionPayload.result.reason_code === 'HUMAN_APPROVED_NO_MUTATION') {
           await runLiveRemediation();
@@ -473,7 +480,7 @@
     async function runLiveRemediation() {
       addMessage('assistant', 'Starting the approved one-package fix. No reboot will be requested.');
       try {
-        renderLiveRemediation(await post('/api/live-remediation', { proposal_id:lastLiveProposalId, reboot_approved:false }));
+        renderLiveRemediation(await post('/api/live-remediation', { proposal_id:lastLiveProposalId, proposal_hash:lastLiveProposalHash, reboot_approved:false }));
       } catch (error) {
         const body = addMessage('assistant', 'The approved fix could not be started.');
         body.lastChild.classList.add('error-copy');
@@ -497,7 +504,7 @@
       finally { runButton.disabled = false; }
     });
 
-    newChat.addEventListener('click', () => { messages.replaceChildren(); welcome.classList.remove('hidden'); promptEl.focus(); runId = null; lastLiveProposalId = null; });
+    newChat.addEventListener('click', () => { messages.replaceChildren(); welcome.classList.remove('hidden'); promptEl.focus(); runId = null; lastLiveProposalId = null; lastLiveProposalHash = null; });
 
     uploadEl.addEventListener('change', async () => {
       const file = uploadEl.files && uploadEl.files[0];
