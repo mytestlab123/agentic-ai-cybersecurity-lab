@@ -91,7 +91,12 @@ def _preflight_command(target: str) -> str:
             "set -eu",
             "printf 'SECCOP_PREFLIGHT=START\\n'",
             "command -v yum >/dev/null 2>&1",
-            f"yum -q info {quoted_target} >/dev/null 2>&1",
+            "command -v timeout >/dev/null 2>&1",
+            "temp_dir=$(mktemp -d /tmp/seccop-source-preflight.XXXXXX)",
+            "cleanup() { rm -rf \"$temp_dir\"; }",
+            "trap cleanup EXIT",
+            f"timeout 75 yum -q install -y --downloadonly --downloaddir=\"$temp_dir\" {quoted_target}",
+            "find \"$temp_dir\" -maxdepth 1 -type f -name '*.rpm' | grep -q .",
             "printf 'SECCOP_PREFLIGHT=READY\\n'",
         ]
     )
@@ -103,7 +108,7 @@ def _install_command(target: str) -> str:
         [
             "set -eu",
             "printf 'SECCOP_INSTALL=START\\n'",
-            f"yum install -y --setopt=install_weak_deps=False {quoted_target}",
+            f"timeout 120 yum install -y {quoted_target}",
             "printf 'SECCOP_INSTALL=SUCCESS\\n'",
         ]
     )
@@ -226,8 +231,10 @@ def execute_package_remediation(
             command=_preflight_command(target),
             comment="Security Copilot package-source check",
         )
+        _write_json(evidence, "preflight-dispatch.json", {"command_id": preflight_id})
         preflight = _wait(cli, command_id=preflight_id, instance_id=instance_id)
     except AwsRemediationTimeout:
+        _write_json(evidence, "summary.json", {"stage": "preflight", "status": "TIMEOUT"})
         return {
             "change_state": "NOT_STARTED",
             "reason_code": "SSM_COMMAND_TIMEOUT",
@@ -265,6 +272,7 @@ def execute_package_remediation(
             command=_install_command(target),
             comment="Security Copilot approved package remediation",
         )
+        _write_json(evidence, "install-dispatch.json", {"command_id": install_id})
     except AwsRemediationBackendError:
         return {
             "change_state": "NOT_STARTED",
@@ -277,6 +285,7 @@ def execute_package_remediation(
     try:
         install = _wait(cli, command_id=install_id, instance_id=instance_id)
     except AwsRemediationTimeout:
+        _write_json(evidence, "summary.json", {"stage": "install", "status": "TIMEOUT"})
         return {
             "change_state": "ATTEMPTED",
             "reason_code": "SSM_COMMAND_TIMEOUT",
@@ -320,6 +329,7 @@ def execute_package_remediation(
             command=verification_command,
             comment="Security Copilot package version verification",
         )
+        _write_json(evidence, "verification-dispatch.json", {"command_id": verification_id})
         verification = _wait(cli, command_id=verification_id, instance_id=instance_id)
     except (AwsRemediationTimeout, AwsRemediationBackendError):
         return {
