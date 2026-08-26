@@ -7,8 +7,14 @@ from urllib.request import Request, urlopen
 import pytest
 from pydantic import ValidationError
 
-from secure_agent_harness.contracts import PocRequest
+from secure_agent_harness.contracts import (
+    AwsReadOnlyEvidence,
+    AwsReadOnlyResult,
+    PocRequest,
+    SecCopCsvRequest,
+)
 from secure_agent_harness.poc import PocEngine
+from secure_agent_harness import poc_server
 from secure_agent_harness.poc_server import _Handler
 from http.server import ThreadingHTTPServer
 
@@ -83,8 +89,12 @@ def test_browser_surface_is_local_and_has_the_gate_controls() -> None:
     assert "/api/run" in html
     assert "/api/decision" in html
     assert "/api/live-evidence" in html
+    assert "/api/live-proposal" in html
+    assert "/api/live-decision" in html
     assert "Upload read-only evidence" in html
     assert "Approve mock remediation" in html
+    assert "Generate remediation suggestion" in html
+    assert "GovTech inference: not used" in html
     assert "Reject" in html
     assert "Uploaded live results must be typed, sanitized, and read-only" in html
 
@@ -152,3 +162,86 @@ def test_live_csv_blocks_target_mismatch_without_calling_aws() -> None:
         server.shutdown()
         server.server_close()
         thread.join(timeout=2)
+
+
+def _ready_live_result() -> AwsReadOnlyResult:
+    return AwsReadOnlyResult(
+        status="READY",
+        reason_code="READ_ONLY_EVIDENCE_READY",
+        cve_id="CVE-2026-0001",
+        resource_alias="EC2_RESOURCE_01",
+        evidence=AwsReadOnlyEvidence(
+            source="AWS_READ_ONLY",
+            cve_id="CVE-2026-0001",
+            resource_alias="EC2_RESOURCE_01",
+            finding_count=1,
+            finding_state="ACTIVE",
+            finding_severity="HIGH",
+            finding_ec2_bound=True,
+            instance_state="RUNNING",
+            expected_tags_verified=True,
+            ssm_managed=True,
+            ssm_readiness="READY",
+            checks=(),
+            executed_calls=(
+                "inspector.list_findings",
+                "ec2.describe_instances",
+                "ssm.describe_instance_information",
+            ),
+        ),
+        executed_calls=(
+            "inspector.list_findings",
+            "ec2.describe_instances",
+            "ssm.describe_instance_information",
+        ),
+        message="ready",
+    )
+
+
+def test_live_proposal_is_typed_and_has_no_mutation(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(poc_server, "collect_live_evidence", lambda **_: _ready_live_result())
+    request = SecCopCsvRequest(
+        csv_text=(
+            "instance_id,cve_id,severity,package_name,installed_version,fixed_version,status\n"
+            "i-0123456789abcdef0,CVE-2026-0001,HIGH,kernel,1.0,1.1,ACTIVE\n"
+        ),
+        instance_id="i-0123456789abcdef0",
+        cve_id="CVE-2026-0001",
+        region="ap-southeast-1",
+    )
+
+    proposal = poc_server._live_proposal(request)
+
+    assert proposal.status == "READY"
+    assert proposal.reason_code == "SECCOP_REMEDIATION_PROPOSAL_READY"
+    assert proposal.action == "SSM_INSTALL_SECURITY_UPDATE"
+    assert proposal.requires_approval is True
+    assert proposal.mutation_performed is False
+    assert proposal.resource_alias == "EC2_RESOURCE_01"
+    assert "i-0123456789abcdef0" not in proposal.model_dump_json()
+
+
+def test_live_proposal_blocks_ambiguous_csv_before_aws(monkeypatch: pytest.MonkeyPatch) -> None:
+    calls: list[str] = []
+
+    def fail_if_called(**_: object) -> AwsReadOnlyResult:
+        calls.append("aws")
+        return _ready_live_result()
+
+    monkeypatch.setattr(poc_server, "collect_live_evidence", fail_if_called)
+    request = SecCopCsvRequest(
+        csv_text=(
+            "instance_id,cve_id,severity,package_name,installed_version,fixed_version,status\n"
+            "i-0123456789abcdef0,CVE-2026-0001,HIGH,kernel,1.0,1.1,ACTIVE\n"
+            "i-0123456789abcdef0,CVE-2026-0001,HIGH,openssl,2.0,2.1,ACTIVE\n"
+        ),
+        instance_id="i-0123456789abcdef0",
+        cve_id="CVE-2026-0001",
+        region="ap-southeast-1",
+    )
+
+    proposal = poc_server._live_proposal(request)
+
+    assert proposal.status == "BLOCKED"
+    assert proposal.reason_code == "CSV_MATCH_AMBIGUOUS"
+    assert calls == []
