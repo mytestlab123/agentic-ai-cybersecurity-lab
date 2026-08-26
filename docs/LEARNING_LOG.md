@@ -87,6 +87,15 @@ conversation view, assistant tool cards, structured evidence cards, and inline
 approval controls. The presentation change did not widen the tool registry or
 change the approval/no-mutation contract.
 
+## Issue 21 - KISS multi-source operator scan
+
+The manager-facing POC now has one **Scan environment** action. It returns
+three alias-only finding cards: the existing EC2 path can open the real,
+approval-bound fix, while S3 and ECR are clearly fixture-backed suggestions.
+The UI never shows a fake approval or claims that a read-only source was fixed.
+This keeps the POC useful without adding new AWS services, permissions, or
+infrastructure.
+
 ## Issue 5 - read-only AWS evidence adapter
 
 Milestone 2 now has a client-injected adapter for Inspector2, EC2, and SSM.

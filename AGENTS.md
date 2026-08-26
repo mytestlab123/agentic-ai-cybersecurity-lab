@@ -9,6 +9,17 @@ This is a public personal-learning repository.
 - Prefer small typed Python components and deterministic tests.
 - Record useful lessons in `docs/LEARNING_LOG.md`.
 
+## KISS POC boundary
+
+- Follow KISS: **Keep It Short and Stupid**. This is a short, demonstrable
+  POC, not an enterprise platform.
+- Prefer one clear operator journey, small fixtures, and the existing approval
+  path over new services, abstractions, or infrastructure.
+- Make only the EC2 path real when the issue explicitly requires mutation;
+  keep other sources read-only until a separate bounded issue proves the need.
+- Defer AgentCore, multi-agent orchestration, broad IAM, networking, and
+  integrations unless a small POC cannot work without them.
+
 ## Public safety
 
 - Never add real credentials, tokens, `.env` content, account IDs, ARNs,

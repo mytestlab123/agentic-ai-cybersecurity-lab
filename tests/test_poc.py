@@ -89,6 +89,9 @@ def test_browser_surface_is_local_and_has_the_gate_controls() -> None:
     assert "/api/run" in html
     assert "/api/decision" in html
     assert "/api/live-evidence" in html
+    assert "/api/scan" in html
+    assert "Scan environment" in html
+    assert "Suggested fix only" in html
     assert "/api/live-proposal" in html
     assert "/api/live-decision" in html
     assert "Upload read-only evidence" in html
@@ -97,6 +100,37 @@ def test_browser_surface_is_local_and_has_the_gate_controls() -> None:
     assert "GovTech inference: not used" in html
     assert "Reject" in html
     assert "Uploaded live results must be typed, sanitized, and read-only" in html
+
+
+def test_demo_scan_returns_three_alias_only_findings_and_no_mutation_controls() -> None:
+    server = ThreadingHTTPServer(("127.0.0.1", 0), _Handler)
+    thread = Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    try:
+        request = Request(
+            f"http://127.0.0.1:{server.server_port}/api/scan",
+            data=json.dumps({"mode": "DEMO"}).encode(),
+            headers={"Content-Type": "application/json"},
+            method="POST",
+        )
+        payload = json.loads(urlopen(request).read().decode())
+        result = payload["result"]
+        assert result["status"] == "READY"
+        assert [item["source_type"] for item in result["source_status"]] == [
+            "EC2_PACKAGE",
+            "S3_ARTIFACT",
+            "ECR_IMAGE",
+        ]
+        assert len(result["findings"]) == 3
+        assert result["findings"][0]["remediation_mode"] == "REAL_APPROVAL_REQUIRED"
+        assert all(item["remediation_mode"] == "DEMO_ONLY" for item in result["findings"][1:])
+        assert "i-" not in json.dumps(payload)
+        assert "arn:" not in json.dumps(payload)
+        assert all("Approve" not in json.dumps(item) for item in result["findings"][1:])
+    finally:
+        server.shutdown()
+        server.server_close()
+        thread.join(timeout=2)
 
 
 def test_live_evidence_upload_validates_without_echoing_untrusted_payload() -> None:
