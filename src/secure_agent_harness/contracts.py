@@ -341,6 +341,58 @@ class SecCopAdvisoryComparison(Contract):
     executed_calls: tuple[str, ...] = ()
 
 
+class SecCopScanRequest(Contract):
+    """The primary demo scan has a fixed, server-owned source set."""
+
+    mode: Literal["DEMO"] = "DEMO"
+
+
+class SecCopScanSourceStatus(Contract):
+    """Safe progress state for one source in the manager-facing scan."""
+
+    source_type: Literal["EC2_PACKAGE", "S3_ARTIFACT", "ECR_IMAGE"]
+    label: str = Field(min_length=1, max_length=60)
+    state: Literal["COMPLETE", "BLOCKED"]
+    reason_code: Literal["SECCOP_SOURCE_READY", "SECCOP_SOURCE_BLOCKED"]
+
+
+class SecCopFinding(Contract):
+    """Alias-only finding card shared by the three POC source types."""
+
+    finding_id: str = Field(pattern=r"^FINDING_[0-9]{2}$")
+    source_type: Literal["EC2_PACKAGE", "S3_ARTIFACT", "ECR_IMAGE"]
+    resource_alias: Literal["LAB_SERVER_01", "ARTIFACT_01", "IMAGE_01"]
+    reference: str = Field(pattern=r"^(CVE-[0-9]{4}-[0-9]{4,}|[A-Z]+_RULE_[0-9]{2})$")
+    severity: Literal["LOW", "MEDIUM", "HIGH", "CRITICAL"]
+    title: str = Field(min_length=1, max_length=100)
+    problem_summary: str = Field(min_length=1, max_length=180)
+    observed_state: str = Field(min_length=1, max_length=120)
+    recommended_state: str = Field(min_length=1, max_length=180)
+    remediation_mode: Literal["REAL_APPROVAL_REQUIRED", "DEMO_ONLY", "NONE"]
+    reason_code: Literal[
+        "SECCOP_EC2_FINDING_CONFIRMED",
+        "SECCOP_S3_FIXTURE_FINDING",
+        "SECCOP_ECR_FIXTURE_FINDING",
+    ]
+    action_label: Literal["Review live fix", "View suggested fix"]
+
+
+class SecCopScanResult(Contract):
+    """Sanitized result for one fixed-source POC scan."""
+
+    scan_id: str = Field(pattern=r"^SECCOP_SCAN_[0-9]{2}$")
+    status: Literal["READY", "PARTIAL", "NO_FINDINGS", "BLOCKED"]
+    reason_code: Literal[
+        "SECCOP_SCAN_READY",
+        "SECCOP_SCAN_PARTIAL",
+        "SECCOP_SCAN_NO_FINDINGS",
+        "SECCOP_SCAN_BLOCKED",
+    ]
+    source_status: tuple[SecCopScanSourceStatus, ...]
+    findings: tuple[SecCopFinding, ...]
+    message: str = Field(min_length=1, max_length=220)
+
+
 class SecCopComparison(Contract):
     """Sanitized CSV-to-live comparison returned to the browser."""
 

@@ -27,12 +27,14 @@ from .contracts import (
     SecCopAdvisoryComparison,
     SecCopAdvisoryRequest,
     SecCopCsvRequest,
+    SecCopScanRequest,
     SecCopRemediationRequest,
     SecCopRemediationProposal,
     SecCopRemediationResult,
 )
 from .poc import PocEngine
 from .seccop_csv import SecCopCsvError, parse_csv
+from .seccop_scan import run_demo_scan
 
 
 _HTML_PATH = Path(__file__).resolve().parents[2] / "web" / "poc_chat.html"
@@ -471,6 +473,16 @@ class _Handler(BaseHTTPRequestHandler):
                 return
             session = _ENGINE.start(request)
             self._send_json(200, _session_payload(session))
+            return
+
+        if self.path == "/api/scan":
+            try:
+                SecCopScanRequest.model_validate(payload)
+            except ValidationError:
+                self._send_json(400, {"status": "BLOCKED", "reason_code": "REQUEST_REJECTED"})
+                return
+            result = run_demo_scan()
+            self._send_json(200, {"result": result.model_dump(mode="json"), "events": []})
             return
 
         if self.path == "/api/live-evidence":

@@ -4,6 +4,15 @@ A public, personal learning lab for understanding secure agent engineering with
 small Python experiments. Every example uses synthetic identifiers and local
 fixtures.
 
+## POC boundary
+
+This is a KISS (Keep It Short and Stupid) learning POC, not an enterprise
+platform. Each change should demonstrate one operator outcome with the fewest
+moving parts. The SecCop multi-source scan uses fixture-backed S3/ECR findings;
+the existing EC2 path is the only real remediation lane. New AWS services,
+networking, broad IAM, and AgentCore are deferred until a small follow-up issue
+proves they are needed.
+
 ## Issue 1: secure agent harness
 
 The first experiment separates an untrusted plan-producing model from a
@@ -110,6 +119,12 @@ before the one-package update. No reboot is requested. The older Inspector CSV
 route remains available under the technical panel. The GovTech PlatformAI
 handoff is consumed through the sibling `govtechai` repository's `gtx`
 launcher, never through a key in this repository.
+
+The operator-facing multi-source POC is documented in
+[docs/SECCOP_OPERATOR_DEMO.md](docs/SECCOP_OPERATOR_DEMO.md). One Scan action
+shows server, stored-artifact, and container findings. Only the server card
+can open the existing real approval and SSM path; the other two are explicitly
+read-only suggestions.
 
 ## Learning vocabulary
 

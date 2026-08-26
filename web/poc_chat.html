@@ -25,6 +25,15 @@
     .live-panel input,.live-panel select { width:100%; padding:7px 8px; color:#eee; background:#2b2b2b; border:1px solid #4b4b4b; border-radius:6px; font-size:.75rem; }
     .live-panel button { padding:8px 9px; color:#092219; background:var(--green); border:0; border-radius:6px; font-size:.75rem; font-weight:700; }
     .live-panel button:disabled { opacity:.45; cursor:wait; }
+    .scan-panel { display:grid; gap:8px; padding:11px; background:#202020; border:1px solid #3d3d3d; border-radius:9px; }
+    .scan-panel button { padding:10px 9px; color:#082218; background:var(--green); border:0; border-radius:6px; font-size:.8rem; font-weight:750; }
+    .scan-panel button:disabled { opacity:.45; cursor:wait; }
+    .scan-findings { display:grid; gap:10px; margin-top:14px; }
+    .scan-finding { padding:12px; background:#242424; border:1px solid #414141; border-radius:8px; }
+    .scan-finding-head { display:flex; align-items:center; justify-content:space-between; gap:10px; margin-bottom:9px; }
+    .scan-finding-title { font-size:.84rem; font-weight:650; }
+    .scan-finding-meta { color:#8e8e8e; font-size:.7rem; }
+    .scan-finding-actions { display:flex; gap:8px; margin-top:11px; }
     .usage-panel { padding:11px 12px; background:#202020; border:1px solid #3d3d3d; border-radius:9px; }
     .usage-value { margin-top:7px; color:#d9f8e9; font-size:.78rem; }
     .usage-note { margin-top:4px; color:#777; font-size:.68rem; line-height:1.35; }
@@ -112,6 +121,11 @@
       <button id="new-chat" class="new-chat" type="button"><span>+</span><span>New investigation</span></button>
       <div class="side-label">WORKSPACE</div>
       <div class="chat-item active">Shield&nbsp;&nbsp; Inspector to SSM</div>
+      <div class="scan-panel">
+        <div class="side-label" style="padding:0">POC SCAN</div>
+        <div class="usage-note">Check server packages, a stored artifact, and a container image.</div>
+        <button id="scan-environment" type="button">Scan environment</button>
+      </div>
       <div class="side-spacer"></div>
       <label class="upload-button" for="evidence-upload"><span>↑</span><span>Upload read-only evidence</span><input id="evidence-upload" type="file" accept="application/json,.json"></label>
       <div class="live-panel">
@@ -154,7 +168,8 @@
         <div id="welcome" class="welcome">
           <div class="welcome-mark">S</div>
           <h2>How can I help with your security review?</h2>
-          <p>Upload one package advisory. I will check the server, explain the small update, and ask before changing anything.</p>
+          <p>Scan three demo sources, see what needs attention, and review the one real server fix.</p>
+          <button id="scan-welcome" class="btn primary" type="button">Scan environment</button>
         </div>
         <div id="messages" class="messages"></div>
       </section>
@@ -169,7 +184,7 @@
             </div>
           </div>
         </form>
-        <div class="composer-hint">Live checks are read-only until you approve one package update. No reboot is requested.</div>
+        <div class="composer-hint">POC scan: S3 and ECR are read-only suggestions. Only the EC2 path can request an approved fix.</div>
       </div>
     </main>
   </div>
@@ -179,6 +194,8 @@
     const promptEl = document.querySelector('#prompt');
     const labEnvEl = document.querySelector('#lab-env');
     const runButton = document.querySelector('#run');
+    const scanButton = document.querySelector('#scan-environment');
+    const scanWelcomeButton = document.querySelector('#scan-welcome');
     const uploadEl = document.querySelector('#evidence-upload');
     const advisoryUploadEl = document.querySelector('#advisory-upload');
     const csvUploadEl = document.querySelector('#csv-upload');
@@ -313,6 +330,78 @@
       const body = addMessage('assistant', payload.result ? payload.result.message : 'No result returned.');
       if (payload.events) renderActivity(body, payload.events);
       if (payload.result) renderResult(body, payload.result);
+    }
+
+    function renderScan(payload) {
+      const result = payload.result || {};
+      const body = addMessage('assistant', result.message || 'No scan result returned.');
+      const activity = node('div', 'activity');
+      for (const source of result.source_status || []) {
+        const row = node('div', 'activity-row' + (source.state === 'BLOCKED' ? ' blocked' : ''));
+        row.appendChild(node('span', 'activity-icon', source.state === 'COMPLETE' ? 'OK' : '!'));
+        row.appendChild(node('span', '', source.label || source.source_type));
+        row.appendChild(node('span', 'activity-state', source.state === 'COMPLETE' ? 'complete' : source.reason_code));
+        activity.appendChild(row);
+      }
+      body.appendChild(activity);
+
+      const card = node('div', 'result-card');
+      const head = node('div', 'result-head');
+      head.appendChild(node('div', 'result-title', 'Security scan summary'));
+      head.appendChild(node('span', 'badge', result.reason_code || result.status || 'BLOCKED'));
+      card.appendChild(head);
+      const grid = node('div', 'evidence-grid');
+      evidenceCell(grid, 'Findings', (result.findings || []).length);
+      evidenceCell(grid, 'Real fix path', (result.findings || []).filter((item) => item.remediation_mode === 'REAL_APPROVAL_REQUIRED').length);
+      evidenceCell(grid, 'Demo suggestions', (result.findings || []).filter((item) => item.remediation_mode === 'DEMO_ONLY').length);
+      evidenceCell(grid, 'Scan', result.status);
+      evidenceCell(grid, 'GovTech', 'Inference not used');
+      card.appendChild(grid);
+
+      const findings = node('div', 'scan-findings');
+      for (const finding of result.findings || []) {
+        const item = node('section', 'scan-finding');
+        const findingHead = node('div', 'scan-finding-head');
+        findingHead.appendChild(node('div', 'scan-finding-title', finding.title));
+        findingHead.appendChild(node('span', 'badge', finding.severity));
+        item.appendChild(findingHead);
+        item.appendChild(node('div', 'scan-finding-meta', `${finding.source_type} · ${finding.resource_alias} · ${finding.reference}`));
+        const findingGrid = node('div', 'evidence-grid');
+        evidenceCell(findingGrid, 'Problem', finding.problem_summary);
+        evidenceCell(findingGrid, 'Observed', finding.observed_state);
+        evidenceCell(findingGrid, 'Recommended', finding.recommended_state);
+        item.appendChild(findingGrid);
+        const actions = node('div', 'scan-finding-actions');
+        const action = node('button', 'btn ' + (finding.remediation_mode === 'REAL_APPROVAL_REQUIRED' ? 'primary' : 'reject'), finding.action_label);
+        action.type = 'button';
+        action.addEventListener('click', () => reviewScanFinding(finding));
+        actions.appendChild(action);
+        item.appendChild(actions);
+        findings.appendChild(item);
+      }
+      card.appendChild(findings);
+      body.appendChild(card);
+    }
+
+    function reviewScanFinding(finding) {
+      addMessage('user', finding.action_label + ': ' + finding.title);
+      if (finding.remediation_mode === 'REAL_APPROVAL_REQUIRED') {
+        const body = addMessage('assistant', 'The real server fix still needs a live advisory check. Use the live check panel to confirm the current package before any approval.');
+        const panel = document.querySelector('.live-panel');
+        panel.scrollIntoView({ behavior: 'smooth', block: 'center' });
+        panel.style.outline = '2px solid var(--green)';
+        window.setTimeout(() => { panel.style.outline = ''; }, 1800);
+        return body;
+      }
+      const body = addMessage('assistant', 'Suggested fix only. This POC source is read-only; no AWS change or approval is enabled.');
+      const card = node('div', 'result-card');
+      const grid = node('div', 'evidence-grid');
+      evidenceCell(grid, 'Source', finding.source_type);
+      evidenceCell(grid, 'Action', finding.recommended_state);
+      evidenceCell(grid, 'After', 'Not executed — demo/read-only');
+      card.appendChild(grid);
+      body.appendChild(card);
+      return body;
     }
 
     function renderLiveComparison(payload, request) {
@@ -496,6 +585,27 @@
       return payload;
     }
 
+    async function startScan(button) {
+      button.disabled = true;
+      if (scanButton) scanButton.disabled = true;
+      if (scanWelcomeButton) scanWelcomeButton.disabled = true;
+      setMode('Demo scan', false);
+      addMessage('user', 'Scan environment');
+      const thinking = addMessage('assistant', 'Checking server packages, stored artifact, and container image...');
+      try {
+        const payload = await post('/api/scan', { mode:'DEMO' });
+        thinking.parentElement.remove();
+        renderScan(payload);
+      } catch (error) {
+        thinking.textContent = 'The scan was blocked.';
+        thinking.classList.add('error-copy');
+      } finally {
+        button.disabled = false;
+        if (scanButton) scanButton.disabled = false;
+        if (scanWelcomeButton) scanWelcomeButton.disabled = false;
+      }
+    }
+
     async function decide(decision, approveButton, rejectButton) {
       approveButton.disabled = true;
       rejectButton.disabled = true;
@@ -576,6 +686,9 @@
     });
 
     newChat.addEventListener('click', () => { messages.replaceChildren(); welcome.classList.remove('hidden'); promptEl.focus(); runId = null; lastLiveProposalId = null; lastLiveProposalHash = null; });
+
+    scanButton.addEventListener('click', () => startScan(scanButton));
+    scanWelcomeButton.addEventListener('click', () => startScan(scanWelcomeButton));
 
     uploadEl.addEventListener('change', async () => {
       const file = uploadEl.files && uploadEl.files[0];
