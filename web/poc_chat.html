@@ -177,14 +177,14 @@
       <div class="composer-wrap">
         <form id="run-form" class="composer">
           <div class="composer-row">
-            <textarea id="prompt" rows="1" required placeholder="Ask about a CVE in your synthetic lab...">Inspect CVE-2099-0001 in my synthetic lab.</textarea>
+            <textarea id="prompt" rows="1" required placeholder="Ask about a finding, or use Scan environment..."></textarea>
             <div class="composer-controls">
               <select id="lab-env" aria-label="Lab environment"><option>SYNTHETIC_LAB</option></select>
               <button id="run" class="send" type="submit" aria-label="Send">↑</button>
             </div>
           </div>
         </form>
-        <div class="composer-hint">POC scan: S3 and ECR are read-only suggestions. Only the EC2 path can request an approved fix.</div>
+        <div class="composer-hint">Review the findings first. Any server change needs your approval.</div>
       </div>
     </main>
   </div>
