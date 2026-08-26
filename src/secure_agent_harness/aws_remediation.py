@@ -109,6 +109,31 @@ def _install_command(target: str) -> str:
     )
 
 
+def _verification_command(package_name: str) -> str:
+    if not _PACKAGE_RE.fullmatch(package_name):
+        raise AwsRemediationBackendError("Package scope failed the remediation contract.")
+    quoted_package = shlex.quote(package_name)
+    return "\n".join(
+        [
+            "set -eu",
+            "printf 'SECCOP_VERIFY=START\\n'",
+            f"rpm -q --qf '%{{NAME}}-%{{VERSION}}-%{{RELEASE}}.%{{ARCH}}\\n' {quoted_package}",
+            "printf 'SECCOP_VERIFY=SUCCESS\\n'",
+        ]
+    )
+
+
+def _verified_version(stdout: object, package_name: str) -> str | None:
+    if not isinstance(stdout, str):
+        return None
+    prefix = f"{package_name}-"
+    for line in stdout.splitlines():
+        value = line.strip()
+        if value.startswith(prefix) and len(value) > len(prefix):
+            return value[len(prefix) :]
+    return None
+
+
 def _send(cli: _AwsCli, *, instance_id: str, command: str, comment: str) -> str:
     response = cli.call(
         "ssm",
@@ -282,12 +307,70 @@ def execute_package_remediation(
             "evidence_path": str(evidence),
         }
 
-    _write_json(evidence, "summary.json", {"stage": "install", "status": install_status})
+    verification_command = _verification_command(package_name)
+    _write_json(
+        evidence,
+        "verification-command.json",
+        {"document": "AWS-RunShellScript", "command": verification_command},
+    )
+    try:
+        verification_id = _send(
+            cli,
+            instance_id=instance_id,
+            command=verification_command,
+            comment="Security Copilot package version verification",
+        )
+        verification = _wait(cli, command_id=verification_id, instance_id=instance_id)
+    except (AwsRemediationTimeout, AwsRemediationBackendError):
+        return {
+            "change_state": "ATTEMPTED",
+            "reason_code": "SSM_VERIFICATION_FAILED",
+            "verification_status": "NOT_AVAILABLE",
+            "mutation_performed": True,
+            "executed_calls": (
+                "ssm.send_command",
+                "ssm.get_command_invocation",
+            ),
+            "evidence_path": str(evidence),
+        }
+    _write_json(evidence, "verification-response.json", verification)
+    verification_status = verification.get("Status")
+    after_version = _verified_version(verification.get("StandardOutputContent"), package_name)
+    if verification_status != "Success" or after_version is None:
+        _write_json(
+            evidence,
+            "summary.json",
+            {
+                "stage": "verification",
+                "status": verification_status,
+                "after_version": after_version,
+            },
+        )
+        return {
+            "change_state": "ATTEMPTED",
+            "reason_code": "SSM_VERIFICATION_FAILED",
+            "verification_status": "NOT_AVAILABLE",
+            "mutation_performed": True,
+            "executed_calls": (
+                "ssm.send_command",
+                "ssm.get_command_invocation",
+            ),
+            "evidence_path": str(evidence),
+        }
+    _write_json(
+        evidence,
+        "summary.json",
+        {"stage": "verification", "status": verification_status, "after_version": after_version},
+    )
     return {
         "change_state": "COMPLETED",
-        "reason_code": "SSM_REMEDIATION_PENDING_RESCAN",
-        "verification_status": "PENDING_RESCAN",
+        "reason_code": "SSM_PACKAGE_VERSION_VERIFIED",
+        "verification_status": "VERIFIED",
         "mutation_performed": True,
-        "executed_calls": ("ssm.send_command", "ssm.get_command_invocation"),
+        "executed_calls": (
+            "ssm.send_command",
+            "ssm.get_command_invocation",
+        ),
+        "after_version": after_version,
         "evidence_path": str(evidence),
     }

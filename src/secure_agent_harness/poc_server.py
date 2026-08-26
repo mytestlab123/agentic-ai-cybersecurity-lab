@@ -544,6 +544,7 @@ class _Handler(BaseHTTPRequestHandler):
             )
             execution_reason = str(execution["reason_code"])
             executed_calls = tuple(str(item) for item in execution.get("executed_calls", ()))
+            execution_after_version = execution.get("after_version")
             if execution["change_state"] != "COMPLETED":
                 result = SecCopRemediationResult(
                     status=(
@@ -556,6 +557,7 @@ class _Handler(BaseHTTPRequestHandler):
                     resource_alias=proposal.resource_alias,
                     package_name=proposal.package_name,
                     fixed_version=proposal.fixed_version,
+                    before_version=proposal.installed_version,
                     change_state=str(execution["change_state"]),
                     verification_status="NOT_AVAILABLE",
                     reboot_approved=False,
@@ -565,6 +567,8 @@ class _Handler(BaseHTTPRequestHandler):
                     message=(
                         "The package source was not ready; no package change was started."
                         if execution_reason == "SSM_PACKAGE_SOURCE_NOT_READY"
+                        else "The package changed, but the exact post-change version could not be verified."
+                        if execution_reason == "SSM_VERIFICATION_FAILED"
                         else "The approved SSM operation did not complete. Review the saved evidence before retrying."
                     ),
                 )
@@ -578,6 +582,26 @@ class _Handler(BaseHTTPRequestHandler):
                     cve_id=proposal.cve_id,
                 )
             except (AwsLiveBackendError, OSError, TimeoutError):
+                if isinstance(execution_after_version, str) and execution_after_version:
+                    result = SecCopRemediationResult(
+                        status="COMPLETED",
+                        reason_code="SSM_PACKAGE_VERSION_VERIFIED",
+                        cve_id=proposal.cve_id,
+                        resource_alias=proposal.resource_alias,
+                        package_name=proposal.package_name,
+                        fixed_version=proposal.fixed_version,
+                        before_version=proposal.installed_version,
+                        after_version=execution_after_version,
+                        change_state="COMPLETED",
+                        verification_status="VERIFIED",
+                        reboot_approved=False,
+                        mutation_performed=True,
+                        executed_calls=executed_calls,
+                        evidence_path=str(execution["evidence_path"]),
+                        message="The package version was verified; Inspector still needs to refresh before the finding can close.",
+                    )
+                    self._send_json(200, {"result": result.model_dump(mode="json"), "events": []})
+                    return
                 result = SecCopRemediationResult(
                     status="FAILED",
                     reason_code="AWS_BACKEND_UNAVAILABLE",
@@ -602,11 +626,19 @@ class _Handler(BaseHTTPRequestHandler):
                 and verification.evidence is not None
                 and verification.evidence.finding_state == "RESOLVED"
             )
+            after_version = (
+                execution_after_version
+                if isinstance(execution_after_version, str) and execution_after_version
+                else _verified_package_version(verification.evidence, proposal.package_name)
+            )
+            package_verified = isinstance(execution_after_version, str) and bool(execution_after_version)
             result = SecCopRemediationResult(
                 status="COMPLETED",
                 reason_code=(
                     "SSM_REMEDIATION_VERIFIED"
                     if resolved
+                    else "SSM_PACKAGE_VERSION_VERIFIED"
+                    if package_verified
                     else "SSM_REMEDIATION_PENDING_RESCAN"
                 ),
                 cve_id=proposal.cve_id,
@@ -614,9 +646,9 @@ class _Handler(BaseHTTPRequestHandler):
                 package_name=proposal.package_name,
                 fixed_version=proposal.fixed_version,
                 before_version=proposal.installed_version,
-                after_version=_verified_package_version(verification.evidence, proposal.package_name),
+                after_version=after_version,
                 change_state="COMPLETED",
-                verification_status="VERIFIED" if resolved else "PENDING_RESCAN",
+                verification_status="VERIFIED" if (resolved or package_verified) else "PENDING_RESCAN",
                 reboot_approved=False,
                 mutation_performed=True,
                 executed_calls=executed_calls,
@@ -624,6 +656,8 @@ class _Handler(BaseHTTPRequestHandler):
                 message=(
                     "The approved package change completed and the follow-up check shows the finding resolved."
                     if resolved
+                    else "The package version was verified; Inspector still needs to refresh before the finding can close."
+                    if package_verified
                     else "The approved package change completed; the follow-up scan still needs to refresh before closure."
                 ),
             )
