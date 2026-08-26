@@ -3,6 +3,8 @@
 import json
 import hashlib
 import os
+import subprocess
+import sys
 from dataclasses import dataclass, replace
 from datetime import datetime, timedelta, timezone
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -38,6 +40,7 @@ from .seccop_scan import run_demo_scan
 
 
 _HTML_PATH = Path(__file__).resolve().parents[2] / "web" / "poc_chat.html"
+_DEMO_SCRIPT = Path(__file__).resolve().parents[2] / "scripts" / "seccop_demo.py"
 _ENGINE = PocEngine()
 _SECCOP_PROPOSALS: dict[str, SecCopRemediationProposal] = {}
 _SECCOP_REQUESTS: dict[str, SecCopCsvRequest] = {}
@@ -87,6 +90,73 @@ def _next_proposal_id() -> str:
 
 def _approval_expiry() -> datetime:
     return datetime.now(timezone.utc) + _APPROVAL_TTL
+
+
+def _real_demo_enabled() -> bool:
+    return os.environ.get("SECCOP_DEMO_BACKEND", "LOCAL").upper() == "AWS"
+
+
+def _run_real_demo(command: str, *, source: str | None = None) -> dict[str, object]:
+    """Run the repo-owned AWS DEMO command and return sanitized JSON only."""
+
+    if not _real_demo_enabled():
+        return {
+            "status": "BLOCKED",
+            "reason_code": "AWS_DEMO_DISABLED",
+            "message": "The local server is using synthetic mode. Enable the AWS DEMO backend explicitly.",
+        }
+    allowed_commands = {"start", "scan", "rescan", "fix"}
+    if command not in allowed_commands:
+        return {"status": "BLOCKED", "reason_code": "REQUEST_REJECTED", "message": "The DEMO command was not allowed."}
+    args = [
+        sys.executable,
+        str(_DEMO_SCRIPT),
+        command,
+        "--profile",
+        os.environ.get("AWS_PROFILE", os.environ.get("SECCOP_PROFILE", "vagent")),
+        "--region",
+        os.environ.get("AWS_REGION", os.environ.get("AWS_DEFAULT_REGION", "ap-southeast-1")),
+    ]
+    if source is not None:
+        args.extend(["--source", source])
+    if command in {"start", "fix"}:
+        args.append("--confirm")
+    try:
+        completed = subprocess.run(
+            args,
+            capture_output=True,
+            text=True,
+            check=False,
+            timeout=300,
+            env=os.environ.copy(),
+        )
+    except (OSError, subprocess.TimeoutExpired):
+        return {
+            "status": "BLOCKED",
+            "reason_code": "AWS_DEMO_COMMAND_UNAVAILABLE",
+            "message": "The AWS DEMO command could not be completed.",
+        }
+    try:
+        payload = json.loads(completed.stdout)
+    except (TypeError, json.JSONDecodeError):
+        return {
+            "status": "BLOCKED",
+            "reason_code": "AWS_DEMO_OUTPUT_INVALID",
+            "message": "The AWS DEMO returned invalid output.",
+        }
+    if not isinstance(payload, dict):
+        return {
+            "status": "BLOCKED",
+            "reason_code": "AWS_DEMO_OUTPUT_INVALID",
+            "message": "The AWS DEMO returned an invalid result.",
+        }
+    if completed.returncode != 0 and payload.get("status") != "BLOCKED":
+        return {
+            "status": "BLOCKED",
+            "reason_code": "AWS_DEMO_COMMAND_FAILED",
+            "message": "The AWS DEMO command did not complete.",
+        }
+    return payload
 
 
 def _proposal_hash(
@@ -442,7 +512,14 @@ class _Handler(BaseHTTPRequestHandler):
 
     def do_GET(self) -> None:  # noqa: N802 - stdlib handler API
         if self.path == "/api/health":
-            self._send_json(200, {"status": "OK", "mode": "LOCAL_SYNTHETIC"})
+            self._send_json(
+                200,
+                {
+                    "status": "OK",
+                    "mode": "AWS_DEMO" if _real_demo_enabled() else "LOCAL_SYNTHETIC",
+                    "demo_backend": "AWS" if _real_demo_enabled() else "LOCAL",
+                },
+            )
             return
         if self.path != "/":
             self._send_json(404, {"status": "BLOCKED", "reason_code": "NOT_FOUND"})
@@ -481,8 +558,27 @@ class _Handler(BaseHTTPRequestHandler):
             except ValidationError:
                 self._send_json(400, {"status": "BLOCKED", "reason_code": "REQUEST_REJECTED"})
                 return
-            result = run_demo_scan()
-            self._send_json(200, {"result": result.model_dump(mode="json"), "events": []})
+            result = _run_real_demo("scan") if _real_demo_enabled() else run_demo_scan().model_dump(mode="json")
+            self._send_json(200, {"result": result, "events": []})
+            return
+
+        if self.path == "/api/demo/start":
+            if payload.get("confirm") is not True:
+                self._send_json(400, {"status": "BLOCKED", "reason_code": "CONFIRM_REQUIRED"})
+                return
+            self._send_json(200, {"result": _run_real_demo("start"), "events": []})
+            return
+
+        if self.path == "/api/demo/fix":
+            source = payload.get("source")
+            if source not in {"s3", "ecr"} or payload.get("confirm") is not True:
+                self._send_json(400, {"status": "BLOCKED", "reason_code": "REQUEST_REJECTED"})
+                return
+            self._send_json(200, {"result": _run_real_demo("fix", source=source), "events": []})
+            return
+
+        if self.path == "/api/demo/rescan":
+            self._send_json(200, {"result": _run_real_demo("rescan"), "events": []})
             return
 
         if self.path == "/api/live-evidence":
