@@ -315,3 +315,43 @@ class SecCopComparison(Contract):
     csv_match_count: int = Field(ge=0)
     live_result: AwsReadOnlyResult | None = None
     message: str = Field(min_length=1, max_length=220)
+
+
+class SecCopRemediationProposal(Contract):
+    """Deterministic, approval-required proposal; never an AWS mutation."""
+
+    proposal_id: str = Field(pattern=r"^SECCOP_PROPOSAL_[0-9]{2}$")
+    status: Literal["READY", "BLOCKED"]
+    reason_code: Literal[
+        "SECCOP_REMEDIATION_PROPOSAL_READY",
+        "CSV_SCHEMA_INVALID",
+        "CSV_TARGET_MISMATCH",
+        "CSV_CVE_NOT_FOUND",
+        "CSV_MATCH_AMBIGUOUS",
+        "NO_FIXED_VERSION",
+        "AWS_READ_ONLY_BLOCKED",
+        "AWS_BACKEND_UNAVAILABLE",
+    ]
+    cve_id: str = Field(pattern=r"^CVE-[0-9]{4}-[0-9]{4,}$")
+    resource_alias: str = Field(pattern=r"^EC2_RESOURCE_[0-9]{2}$")
+    severity: Literal["INFORMATIONAL", "LOW", "MEDIUM", "HIGH", "CRITICAL", "UNKNOWN"]
+    package_name: str | None = Field(default=None, pattern=r"^[A-Za-z0-9][A-Za-z0-9._+:/@-]{0,79}$")
+    installed_version: str | None = Field(default=None, pattern=r"^[A-Za-z0-9][A-Za-z0-9._+:/@~-]{0,63}$")
+    fixed_version: str | None = Field(default=None, pattern=r"^[A-Za-z0-9][A-Za-z0-9._+:/@~-]{0,63}$")
+    action: Literal["SSM_INSTALL_SECURITY_UPDATE", "NONE"]
+    reboot_policy: Literal["NO_REBOOT", "EXPLICIT_APPROVAL_REQUIRED", "UNKNOWN"]
+    requires_approval: bool
+    mutation_performed: Literal[False]
+    read_executed_calls: tuple[str, ...] = ()
+    message: str = Field(min_length=1, max_length=220)
+
+
+class SecCopApprovalResult(Contract):
+    """Phase 2A approval record; the decision path performs no mutation."""
+
+    status: Literal["APPROVED_NO_MUTATION", "REJECTED"]
+    reason_code: Literal["HUMAN_APPROVED_NO_MUTATION", "HUMAN_REJECTED"]
+    proposal_id: str = Field(pattern=r"^SECCOP_PROPOSAL_[0-9]{2}$")
+    mutation_performed: Literal[False]
+    executed_calls: tuple[str, ...] = ()
+    message: str = Field(min_length=1, max_length=220)

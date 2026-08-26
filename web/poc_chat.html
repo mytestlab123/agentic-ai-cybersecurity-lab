@@ -25,6 +25,9 @@
     .live-panel input,.live-panel select { width:100%; padding:7px 8px; color:#eee; background:#2b2b2b; border:1px solid #4b4b4b; border-radius:6px; font-size:.75rem; }
     .live-panel button { padding:8px 9px; color:#092219; background:var(--green); border:0; border-radius:6px; font-size:.75rem; font-weight:700; }
     .live-panel button:disabled { opacity:.45; cursor:wait; }
+    .usage-panel { padding:11px 12px; background:#202020; border:1px solid #3d3d3d; border-radius:9px; }
+    .usage-value { margin-top:7px; color:#d9f8e9; font-size:.78rem; }
+    .usage-note { margin-top:4px; color:#777; font-size:.68rem; line-height:1.35; }
     .upload-button input { display:none; }
     .side-label { padding:0 9px; color:#777; font-size:.7rem; font-weight:700; letter-spacing:.08em; }
     .chat-item { padding:10px 11px; border-radius:8px; color:#d1d1d1; font-size:.88rem; }
@@ -73,6 +76,7 @@
     .approval-actions { display:flex; gap:8px; flex-shrink:0; }
     .btn { border:1px solid transparent; border-radius:7px; padding:8px 12px; font-size:.78rem; font-weight:650; }
     .btn.approve { color:#082218; background:var(--green); }
+    .btn.primary { color:#dceaff; background:#24436b; border-color:#3b6da8; }
     .btn.reject { color:#f0c3c3; background:transparent; border-color:#684040; }
     .btn:disabled,.send:disabled { opacity:.45; cursor:wait; }
     .composer-wrap { position:fixed; bottom:0; left:260px; right:0; padding:16px 24px 20px; background:linear-gradient(transparent,var(--bg) 22%); }
@@ -122,13 +126,18 @@
         <select id="aws-region"><option value="ap-southeast-1">Singapore</option><option value="ap-south-1">Mumbai</option></select>
         <button id="compare-live" type="button">Compare live target</button>
       </div>
+      <div class="usage-panel" aria-label="AI usage">
+        <div class="side-label" style="padding:0">AI USAGE</div>
+        <div id="govtech-usage" class="usage-value">GovTech inference: not used</div>
+        <div class="usage-note">This deterministic path uses no model credits. Billing remains portal-authoritative.</div>
+      </div>
       <div class="side-footer"><span class="mode-dot"></span>Local synthetic mode<br>Live upload is sanitized and read-only</div>
     </aside>
 
     <main class="main">
       <header class="topbar">
         <div><div class="eyebrow">SECURITY WORKSPACE</div><h1>Inspector to SSM</h1></div>
-        <div class="status-pill"><span class="mode-dot"></span>Offline demo</div>
+        <div id="mode-status" class="status-pill"><span class="mode-dot"></span>Offline demo</div>
       </header>
       <div class="safety-banner"><strong>Safe demo boundary.</strong> Local runs use synthetic fixtures. Uploaded live results must be typed, sanitized, and read-only.</div>
 
@@ -167,10 +176,13 @@
     const liveCveEl = document.querySelector('#live-cve');
     const awsRegionEl = document.querySelector('#aws-region');
     const compareLiveButton = document.querySelector('#compare-live');
+    const modeStatus = document.querySelector('#mode-status');
     const welcome = document.querySelector('#welcome');
     const messages = document.querySelector('#messages');
     const newChat = document.querySelector('#new-chat');
     let runId = null;
+    let lastLiveRequest = null;
+    let lastLiveProposalId = null;
     const labels = {
       mock_inspector_finding: 'Inspector finding lookup',
       mock_instance_context: 'EC2 instance context',
@@ -183,6 +195,13 @@
       if (className) item.className = className;
       if (text !== undefined) item.textContent = text;
       return item;
+    }
+
+    function setMode(label, live) {
+      modeStatus.replaceChildren();
+      modeStatus.appendChild(node('span', 'mode-dot'));
+      modeStatus.appendChild(document.createTextNode(label));
+      if (live) modeStatus.style.color = '#c9e3ff';
     }
 
     function addMessage(role, text) {
@@ -283,7 +302,7 @@
       if (payload.result) renderResult(body, payload.result);
     }
 
-    function renderLiveComparison(payload) {
+    function renderLiveComparison(payload, request) {
       const result = payload.result || {};
       const body = addMessage('assistant', result.message || 'No comparison result returned.');
       const card = node('div', 'result-card');
@@ -305,6 +324,75 @@
         evidenceCell(grid, 'Packages', live.evidence.packages ? live.evidence.packages.length : 0);
         evidenceCell(grid, 'SSM', live.evidence.ssm_readiness);
       }
+      evidenceCell(grid, 'GovTech', 'Inference not used');
+      body.appendChild(card);
+      if (result.status === 'READY' && live && live.status === 'READY') {
+        const actionCard = node('div', 'approval-card');
+        actionCard.appendChild(node('div', 'approval-copy', 'Read-only evidence is ready. Generate one deterministic package proposal before any approval.'));
+        const actionButton = node('button', 'btn primary', 'Generate remediation suggestion');
+        actionButton.type = 'button';
+        actionButton.addEventListener('click', () => generateLiveProposal(request, actionButton));
+        actionCard.appendChild(actionButton);
+        card.appendChild(actionCard);
+      }
+    }
+
+    function renderLiveProposal(payload) {
+      const result = payload.result || {};
+      const body = addMessage('assistant', result.message || 'No proposal returned.');
+      const card = node('div', 'result-card');
+      const head = node('div', 'result-head');
+      head.appendChild(node('div', 'result-title', 'SecCop remediation proposal'));
+      head.appendChild(node('span', 'badge', result.reason_code || result.status || 'BLOCKED'));
+      card.appendChild(head);
+      const grid = node('div', 'evidence-grid');
+      evidenceCell(grid, 'CVE', result.cve_id);
+      evidenceCell(grid, 'Severity', result.severity);
+      evidenceCell(grid, 'Target', result.resource_alias);
+      evidenceCell(grid, 'Package', result.package_name);
+      evidenceCell(grid, 'Installed', result.installed_version);
+      evidenceCell(grid, 'Fixed', result.fixed_version);
+      evidenceCell(grid, 'Action', result.action);
+      evidenceCell(grid, 'Reboot', result.reboot_policy);
+      evidenceCell(grid, 'GovTech', 'Inference not used');
+      card.appendChild(grid);
+      if (result.read_executed_calls) {
+        const calls = node('div', 'message-time', 'Read-only calls: ' + result.read_executed_calls.join(', '));
+        calls.style.marginTop = '10px';
+        card.appendChild(calls);
+      }
+      if (result.status === 'READY' && result.requires_approval) {
+        lastLiveProposalId = result.proposal_id;
+        const approval = node('div', 'approval-card');
+        approval.appendChild(node('div', 'approval-copy', 'Approval records the exact proposal only. Phase 2A performs no AWS mutation.'));
+        const actions = node('div', 'approval-actions');
+        const approve = node('button', 'btn approve', 'Approve proposal');
+        const reject = node('button', 'btn reject', 'Reject proposal');
+        approve.type = 'button';
+        reject.type = 'button';
+        approve.addEventListener('click', () => decideLive('APPROVE', approve, reject));
+        reject.addEventListener('click', () => decideLive('REJECT', approve, reject));
+        actions.appendChild(approve);
+        actions.appendChild(reject);
+        approval.appendChild(actions);
+        card.appendChild(approval);
+      }
+      body.appendChild(card);
+    }
+
+    function renderLiveDecision(payload) {
+      const result = payload.result || {};
+      const body = addMessage('assistant', result.message || 'Decision recorded.');
+      const card = node('div', 'result-card');
+      const head = node('div', 'result-head');
+      head.appendChild(node('div', 'result-title', 'Approval record'));
+      head.appendChild(node('span', 'badge', result.reason_code || result.status || 'BLOCKED'));
+      card.appendChild(head);
+      const grid = node('div', 'evidence-grid');
+      evidenceCell(grid, 'Proposal', result.proposal_id);
+      evidenceCell(grid, 'Mutation', result.mutation_performed ? 'Performed' : 'None');
+      evidenceCell(grid, 'GovTech', 'Inference not used');
+      card.appendChild(grid);
       body.appendChild(card);
     }
 
@@ -326,6 +414,32 @@
       addMessage('user', decision === 'APPROVE' ? 'Approve mock remediation' : 'Reject mock remediation');
       try { renderAssistant(await post('/api/decision', { run_id:runId, decision })); }
       catch (error) { const body = addMessage('assistant', 'The decision could not be recorded.'); body.lastChild.classList.add('error-copy'); }
+    }
+
+    async function generateLiveProposal(request, actionButton) {
+      actionButton.disabled = true;
+      addMessage('user', 'Generate deterministic remediation suggestion');
+      const thinking = addMessage('assistant', 'Rechecking read-only evidence and preparing a typed proposal...');
+      try {
+        const payload = await post('/api/live-proposal', request);
+        thinking.parentElement.remove();
+        renderLiveProposal(payload);
+      } catch (error) {
+        thinking.textContent = 'The remediation proposal was blocked.';
+        thinking.classList.add('error-copy');
+      }
+    }
+
+    async function decideLive(decision, approveButton, rejectButton) {
+      approveButton.disabled = true;
+      rejectButton.disabled = true;
+      addMessage('user', decision === 'APPROVE' ? 'Approve proposed remediation' : 'Reject proposed remediation');
+      try {
+        renderLiveDecision(await post('/api/live-decision', { proposal_id:lastLiveProposalId, decision }));
+      } catch (error) {
+        const body = addMessage('assistant', 'The proposal decision could not be recorded.');
+        body.lastChild.classList.add('error-copy');
+      }
     }
 
     form.addEventListener('submit', async (event) => {
@@ -371,15 +485,18 @@
         return;
       }
       compareLiveButton.disabled = true;
+      setMode('Live read-only', true);
       addMessage('user', 'Compare Inspector CSV with the selected live EC2 target');
       try {
-        const payload = await post('/api/live-csv', {
+        const request = {
           csv_text: await file.text(),
           instance_id: instanceId,
           cve_id: cveId,
           region: awsRegionEl.value
-        });
-        renderLiveComparison(payload);
+        };
+        lastLiveRequest = request;
+        const payload = await post('/api/live-csv', request);
+        renderLiveComparison(payload, request);
       } catch (error) {
         const body = addMessage('assistant', 'The live comparison was blocked.');
         body.lastChild.classList.add('error-copy');

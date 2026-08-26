@@ -115,3 +115,12 @@ fields produce a generic `REQUEST_REJECTED` response and are not echoed.
 
 The current preflight found no complete launch plan, so no live instance,
 SSM command, patch, reboot, or mutation was performed.
+
+## Issue 5 - Phase 2A deterministic live proposal
+
+The live comparison now has a second read-only gate that derives one typed
+package-level remediation proposal. It requires exactly one CSV row and a
+fixed version, then records an explicit Approve or Reject decision without
+calling SSM. The UI labels the live path separately from the synthetic demo
+and reports `GovTech inference: not used`; no model request or credit use is
+needed for deterministic evidence correlation.

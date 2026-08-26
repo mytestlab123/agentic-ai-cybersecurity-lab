@@ -9,13 +9,22 @@ from typing import Any
 from pydantic import ValidationError
 
 from .aws_live import AwsLiveBackendError, collect_live_evidence
-from .contracts import AwsReadOnlyResult, PocRequest, SecCopComparison, SecCopCsvRequest
+from .contracts import (
+    AwsReadOnlyResult,
+    PocRequest,
+    SecCopApprovalResult,
+    SecCopComparison,
+    SecCopCsvRequest,
+    SecCopRemediationProposal,
+)
 from .poc import PocEngine
 from .seccop_csv import SecCopCsvError, parse_csv
 
 
 _HTML_PATH = Path(__file__).resolve().parents[2] / "web" / "poc_chat.html"
 _ENGINE = PocEngine()
+_SECCOP_PROPOSALS: dict[str, SecCopRemediationProposal] = {}
+_NEXT_PROPOSAL_ID = 1
 
 
 def _session_payload(session: Any) -> dict[str, object]:
@@ -23,6 +32,116 @@ def _session_payload(session: Any) -> dict[str, object]:
         "result": session.result.model_dump(mode="json"),
         "events": [event.model_dump(mode="json") for event in session.events],
     }
+
+
+def _next_proposal_id() -> str:
+    global _NEXT_PROPOSAL_ID
+    proposal_id = f"SECCOP_PROPOSAL_{_NEXT_PROPOSAL_ID:02d}"
+    _NEXT_PROPOSAL_ID += 1
+    return proposal_id
+
+
+def _live_proposal(request: SecCopCsvRequest) -> SecCopRemediationProposal:
+    """Re-run the read-only gate and derive one exact package proposal."""
+
+    try:
+        document = parse_csv(
+            request.csv_text,
+            instance_id=request.instance_id,
+            cve_id=request.cve_id,
+        )
+    except SecCopCsvError as error:
+        return SecCopRemediationProposal(
+            proposal_id=_next_proposal_id(),
+            status="BLOCKED",
+            reason_code=error.reason_code,
+            cve_id=request.cve_id,
+            resource_alias="EC2_RESOURCE_01",
+            severity="UNKNOWN",
+            action="NONE",
+            reboot_policy="UNKNOWN",
+            requires_approval=False,
+            mutation_performed=False,
+            message="The remediation proposal was blocked by the CSV input contract.",
+        )
+    if document.match_count != 1:
+        return SecCopRemediationProposal(
+            proposal_id=_next_proposal_id(),
+            status="BLOCKED",
+            reason_code="CSV_MATCH_AMBIGUOUS",
+            cve_id=request.cve_id,
+            resource_alias="EC2_RESOURCE_01",
+            severity="UNKNOWN",
+            action="NONE",
+            reboot_policy="UNKNOWN",
+            requires_approval=False,
+            mutation_performed=False,
+            message="The selected CVE must resolve to exactly one CSV package row.",
+        )
+    try:
+        live_result = collect_live_evidence(
+            region=request.region,
+            instance_id=request.instance_id,
+            cve_id=request.cve_id,
+        )
+    except (AwsLiveBackendError, OSError, TimeoutError):
+        return SecCopRemediationProposal(
+            proposal_id=_next_proposal_id(),
+            status="BLOCKED",
+            reason_code="AWS_BACKEND_UNAVAILABLE",
+            cve_id=request.cve_id,
+            resource_alias="EC2_RESOURCE_01",
+            severity="UNKNOWN",
+            action="NONE",
+            reboot_policy="UNKNOWN",
+            requires_approval=False,
+            mutation_performed=False,
+            message="The read-only AWS gate could not be completed.",
+        )
+    if live_result.status != "READY" or live_result.evidence is None:
+        return SecCopRemediationProposal(
+            proposal_id=_next_proposal_id(),
+            status="BLOCKED",
+            reason_code="AWS_READ_ONLY_BLOCKED",
+            cve_id=request.cve_id,
+            resource_alias=live_result.resource_alias,
+            severity="UNKNOWN",
+            action="NONE",
+            reboot_policy="UNKNOWN",
+            requires_approval=False,
+            mutation_performed=False,
+            message="A remediation proposal requires ready read-only AWS evidence.",
+        )
+
+    row = document.matching_rows[0]
+    proposal = SecCopRemediationProposal(
+        proposal_id=_next_proposal_id(),
+        status="READY" if row.fixed_version else "BLOCKED",
+        reason_code=(
+            "SECCOP_REMEDIATION_PROPOSAL_READY"
+            if row.fixed_version
+            else "NO_FIXED_VERSION"
+        ),
+        cve_id=row.cve_id,
+        resource_alias=live_result.resource_alias,
+        severity=row.severity,
+        package_name=row.package_name,
+        installed_version=row.installed_version,
+        fixed_version=row.fixed_version,
+        action="SSM_INSTALL_SECURITY_UPDATE" if row.fixed_version else "NONE",
+        reboot_policy="EXPLICIT_APPROVAL_REQUIRED" if row.fixed_version else "UNKNOWN",
+        requires_approval=bool(row.fixed_version),
+        mutation_performed=False,
+        read_executed_calls=live_result.evidence.executed_calls,
+        message=(
+            "A deterministic package-level remediation proposal is ready for human approval."
+            if row.fixed_version
+            else "The finding has no fixed version in the supplied evidence."
+        ),
+    )
+    if proposal.status == "READY":
+        _SECCOP_PROPOSALS[proposal.proposal_id] = proposal
+    return proposal
 
 
 class _Handler(BaseHTTPRequestHandler):
@@ -158,6 +277,41 @@ class _Handler(BaseHTTPRequestHandler):
                     "CSV evidence matched the exact live AWS target."
                     if live_result.status == "READY"
                     else "The live AWS evidence gate blocked this comparison."
+                ),
+            )
+            self._send_json(200, {"result": result.model_dump(mode="json"), "events": []})
+            return
+
+        if self.path == "/api/live-proposal":
+            try:
+                request = SecCopCsvRequest.model_validate(payload)
+            except ValidationError:
+                self._send_json(400, {"status": "BLOCKED", "reason_code": "REQUEST_REJECTED"})
+                return
+            proposal = _live_proposal(request)
+            self._send_json(200, {"result": proposal.model_dump(mode="json"), "events": []})
+            return
+
+        if self.path == "/api/live-decision":
+            proposal_id = payload.get("proposal_id")
+            decision = payload.get("decision")
+            if not isinstance(proposal_id, str) or decision not in {"APPROVE", "REJECT"}:
+                self._send_json(400, {"status": "BLOCKED", "reason_code": "REQUEST_REJECTED"})
+                return
+            proposal = _SECCOP_PROPOSALS.get(proposal_id)
+            if proposal is None or proposal.status != "READY":
+                self._send_json(404, {"status": "BLOCKED", "reason_code": "PROPOSAL_NOT_FOUND"})
+                return
+            approved = decision == "APPROVE"
+            result = SecCopApprovalResult(
+                status="APPROVED_NO_MUTATION" if approved else "REJECTED",
+                reason_code="HUMAN_APPROVED_NO_MUTATION" if approved else "HUMAN_REJECTED",
+                proposal_id=proposal_id,
+                mutation_performed=False,
+                message=(
+                    "Approval recorded for the next phase; no AWS mutation was performed."
+                    if approved
+                    else "Human rejected the proposal; no AWS mutation was performed."
                 ),
             )
             self._send_json(200, {"result": result.model_dump(mode="json"), "events": []})
