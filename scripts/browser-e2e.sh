@@ -170,6 +170,7 @@ export WSLENV='APP_URL:CDP_URL:EVIDENCE_DIR:REVIEW_DIR:PLAYWRIGHT_CORE'
 
 for screenshot in \
   SecCop-Scan-01.png \
+  SecCop-CVE-01.png \
   SecCop-Scan-02.png \
   SecCop-Scan-02-live-review.png \
   SecCop-Scan-03.png \

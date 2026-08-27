@@ -1,9 +1,31 @@
 # SecCop operator DEMO
 
-This is a short POC story for a non-technical audience. It shows one Scan
-button, three source cards, and one real controlled fix.
+This is a short POC story for a non-technical audience. It shows one CVE
+check, one Scan button, three source cards, and one real controlled fix.
 
 ## What the operator sees
+
+The composer starts with **Check a CVE**. Paste one CVE from an email, ticket,
+or advisory, then press the arrow. SecCop checks all three demo sources and
+shows where the CVE was found. Paste one CVE at a time so the result stays
+exact.
+
+```text
+Paste: CVE-2099-0001
+
+Server packages       Found       Review fix
+Stored artifact       Found       View suggestion
+Container image       Found       View suggestion
+```
+
+The check is read-only. Only the existing server path can open the separate
+live advisory and approval flow.
+
+Use **Run guided example** in the composer only when you want to show the
+original synthetic Inspector-to-SSM conversation.
+
+The separate **Scan environment** button still runs the complete three-source
+DEMO summary:
 
 ```text
 [ Scan environment ]
@@ -26,11 +48,12 @@ a fake approval or claim a successful change.
 ## Five-minute DEMO
 
 1. Open `http://127.0.0.1:8765`.
-2. Press **Scan environment**.
-3. Show the three source checks and the three finding cards.
+2. Paste `CVE-2099-0001` and press the arrow.
+3. Show the three source results and the match count.
 4. Open the stored-artifact and container suggestions. Point out: “Suggested
    fix only — no AWS change is enabled.”
-5. Open **Review live fix** on the server card. Confirm the live advisory,
+5. Press **Scan environment** to show the full finding cards, then open
+   **Review live fix** on the server card. Confirm the live advisory,
    review the exact package change, and approve only if the current target is
    intentionally available for the demo.
 6. Show **Before -> Action -> After** and the final verification state.

@@ -3,7 +3,7 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>Security Copilot - Inspector to SSM</title>
+  <title>Security Copilot - Security review</title>
   <style>
     :root { color-scheme: dark; --bg:#212121; --sidebar:#171717; --panel:#2b2b2b; --border:#454545; --muted:#999; --text:#ececec; --green:#19c37d; --blue:#8ab4f8; --amber:#f5c66d; --red:#ff8b8b; font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif; }
     * { box-sizing:border-box; }
@@ -28,12 +28,21 @@
     .scan-panel { display:grid; gap:8px; padding:11px; background:#202020; border:1px solid #3d3d3d; border-radius:9px; }
     .scan-panel button { padding:10px 9px; color:#082218; background:var(--green); border:0; border-radius:6px; font-size:.8rem; font-weight:750; }
     .scan-panel button:disabled { opacity:.45; cursor:wait; }
-    .scan-findings { display:grid; gap:10px; margin-top:14px; }
+    .scan-findings,.cve-sources { display:grid; gap:10px; margin-top:14px; }
     .scan-finding { padding:12px; background:#242424; border:1px solid #414141; border-radius:8px; }
     .scan-finding-head { display:flex; align-items:center; justify-content:space-between; gap:10px; margin-bottom:9px; }
     .scan-finding-title { font-size:.84rem; font-weight:650; }
     .scan-finding-meta { color:#8e8e8e; font-size:.7rem; }
     .scan-finding-actions { display:flex; gap:8px; margin-top:11px; }
+    .cve-source { padding:11px 12px; background:#242424; border:1px solid #414141; border-radius:8px; }
+    .cve-source-head { display:flex; align-items:center; gap:9px; }
+    .cve-source-name { font-size:.82rem; font-weight:650; }
+    .cve-source-status { margin-left:auto; color:#9c9c9c; font-size:.7rem; font-weight:700; text-transform:uppercase; letter-spacing:.04em; }
+    .cve-source-status.found { color:#8de0bc; }
+    .cve-source-status.unavailable { color:var(--red); }
+    .cve-source-summary { margin:7px 0 0; color:#cfcfcf; font-size:.78rem; line-height:1.45; }
+    .cve-source-meta { margin-top:6px; color:#777; font-size:.68rem; }
+    .cve-source-action { margin-top:10px; }
     .usage-panel { padding:11px 12px; background:#202020; border:1px solid #3d3d3d; border-radius:9px; }
     .usage-value { margin-top:7px; color:#d9f8e9; font-size:.78rem; }
     .usage-note { margin-top:4px; color:#777; font-size:.68rem; line-height:1.35; }
@@ -90,6 +99,8 @@
     .btn:disabled,.send:disabled { opacity:.45; cursor:wait; }
     .composer-wrap { position:fixed; bottom:0; left:260px; right:0; padding:16px 24px 20px; background:linear-gradient(transparent,var(--bg) 22%); }
     .composer { max-width:800px; margin:0 auto; padding:10px 12px 10px 16px; background:#2f2f2f; border:1px solid #555; border-radius:14px; box-shadow:0 8px 30px #111a; }
+    .composer-toolbar { display:flex; align-items:center; gap:8px; margin-bottom:3px; color:#8f8f8f; font-size:.68rem; font-weight:700; letter-spacing:.06em; text-transform:uppercase; }
+    .composer-toolbar select { padding:4px 7px; color:#d1d1d1; background:#242424; border:1px solid #4b4b4b; border-radius:6px; font-size:.7rem; letter-spacing:normal; text-transform:none; }
     .composer-row { display:flex; align-items:flex-end; gap:10px; }
     .composer textarea { flex:1; min-height:27px; max-height:110px; resize:vertical; padding:5px 0; color:#eee; background:transparent; border:0; outline:0; line-height:1.45; }
     .composer textarea::placeholder { color:#898989; }
@@ -97,6 +108,10 @@
     .composer select { max-width:145px; padding:7px 8px; color:#cfcfcf; background:#242424; border:1px solid #4b4b4b; border-radius:7px; font-size:.72rem; }
     .send { width:32px; height:32px; display:grid; place-items:center; padding:0; color:#082218; background:var(--green); border:0; border-radius:8px; font-weight:900; }
     .composer-hint { max-width:800px; margin:8px auto 0; color:#777; text-align:center; font-size:.69rem; }
+    .composer-examples { max-width:800px; display:flex; justify-content:center; gap:8px; margin:7px auto 0; }
+    .composer-example { padding:4px 8px; color:#9c9c9c; background:transparent; border:1px solid #414141; border-radius:999px; font-size:.68rem; }
+    .composer-example:hover { color:#eee; border-color:#666; }
+    .welcome-actions { display:flex; justify-content:center; gap:9px; margin-top:16px; }
     .error-copy { color:var(--red); }
     .hidden { display:none !important; }
     @media (max-width:760px) {
@@ -111,6 +126,7 @@
       .approval-actions .btn { flex:1; }
       .composer-controls { width:100%; }
       .composer select { flex:1; max-width:none; }
+      .composer-examples { flex-wrap:wrap; }
     }
   </style>
 </head>
@@ -120,17 +136,17 @@
       <div class="brand"><div class="brand-mark">S</div><div class="brand-name">Security Copilot</div></div>
       <button id="new-chat" class="new-chat" type="button"><span>+</span><span>New investigation</span></button>
       <div class="side-label">WORKSPACE</div>
-      <div class="chat-item active">Shield&nbsp;&nbsp; Inspector to SSM</div>
+      <div class="chat-item active">Security review</div>
       <div class="scan-panel">
-        <div class="side-label" style="padding:0">POC SCAN</div>
-        <div class="usage-note">Check server packages, a stored artifact, and a container image.</div>
+        <div class="side-label" style="padding:0">DEMO</div>
+        <div class="usage-note">Check the server, stored file, and container image together.</div>
         <button id="scan-environment" type="button">Scan environment</button>
         <button id="start-real-demo" type="button" hidden>Start AWS DEMO</button>
       </div>
       <div class="side-spacer"></div>
       <label class="upload-button" for="evidence-upload"><span>↑</span><span>Upload read-only evidence</span><input id="evidence-upload" type="file" accept="application/json,.json"></label>
       <div class="live-panel">
-        <div class="side-label" style="padding:0">LIVE SECOP CHECK</div>
+        <div class="side-label" style="padding:0">LIVE AWS CHECK</div>
         <label for="advisory-upload">One advisory file (JSON)</label>
         <input id="advisory-upload" type="file" accept="application/json,.json">
         <div class="usage-note">The server selects LAB_SERVER_01. No EC2 ID is needed.</div>
@@ -160,32 +176,36 @@
 
     <main class="main">
       <header class="topbar">
-        <div><div class="eyebrow">SECURITY WORKSPACE</div><h1>Inspector to SSM</h1></div>
+        <div><div class="eyebrow">SECURITY WORKSPACE</div><h1>Security review</h1></div>
         <div id="mode-status" class="status-pill"><span class="mode-dot"></span>Offline demo</div>
       </header>
-      <div class="safety-banner"><strong>Safe demo boundary.</strong> The live check reads one tagged server, confirms one package advisory, then waits for your approval before any change. Uploaded live results must be typed, sanitized, and read-only.</div>
+      <div class="safety-banner"><strong>Safe demo boundary.</strong> Paste one CVE to check all demo sources. A server change always needs a separate review and approval.</div>
 
       <section class="chat" aria-live="polite">
         <div id="welcome" class="welcome">
           <div class="welcome-mark">S</div>
-          <h2>How can I help with your security review?</h2>
-          <p>Scan three demo sources, see what needs attention, and review the one real server fix.</p>
-          <button id="scan-welcome" class="btn primary" type="button">Scan environment</button>
+          <h2>What would you like to check?</h2>
+          <p>Paste one CVE to check the demo environment, or scan all three sources.</p>
+          <div class="welcome-actions">
+            <button id="cve-welcome" class="btn primary" type="button">Check a CVE</button>
+            <button id="scan-welcome" class="btn" type="button">Scan environment</button>
+          </div>
         </div>
         <div id="messages" class="messages"></div>
       </section>
 
       <div class="composer-wrap">
         <form id="run-form" class="composer">
+          <div class="composer-toolbar"><span>Ask SecCop</span><select id="input-mode" aria-label="What to check"><option value="CVE_REVIEW">Check a CVE</option><option value="SYNTHETIC_LAB">Run guided example</option></select></div>
           <div class="composer-row">
-            <textarea id="prompt" rows="1" required placeholder="Ask about a finding, or use Scan environment..."></textarea>
+            <textarea id="prompt" rows="1" required placeholder="Paste one CVE, for example CVE-2099-0001"></textarea>
             <div class="composer-controls">
-              <select id="lab-env" aria-label="Lab environment"><option>SYNTHETIC_LAB</option></select>
               <button id="run" class="send" type="submit" aria-label="Send">↑</button>
             </div>
           </div>
         </form>
-        <div class="composer-hint">Review the findings first. Any server change needs your approval.</div>
+        <div class="composer-examples"><button class="composer-example" type="button" data-example="CVE-2099-0001">Try CVE-2099-0001</button><button class="composer-example" type="button" data-example="scan">Scan environment</button></div>
+        <div class="composer-hint">One CVE in, a clear next step out. Checks are read-only.</div>
       </div>
     </main>
   </div>
@@ -193,9 +213,10 @@
   <script>
     const form = document.querySelector('#run-form');
     const promptEl = document.querySelector('#prompt');
-    const labEnvEl = document.querySelector('#lab-env');
+    const inputModeEl = document.querySelector('#input-mode');
     const runButton = document.querySelector('#run');
     const scanButton = document.querySelector('#scan-environment');
+    const cveWelcomeButton = document.querySelector('#cve-welcome');
     const scanWelcomeButton = document.querySelector('#scan-welcome');
     const startRealDemoButton = document.querySelector('#start-real-demo');
     const uploadEl = document.querySelector('#evidence-upload');
@@ -222,6 +243,7 @@
       mock_ssm_node_context: 'SSM managed-node readiness',
       mock_patch_compliance: 'Patch compliance check'
     };
+    const cveStatusLabels = { FOUND: 'Found', NOT_FOUND: 'Not found', UNAVAILABLE: 'Unavailable' };
 
     function node(tag, className, text) {
       const item = document.createElement(tag);
@@ -384,6 +406,63 @@
       }
       card.appendChild(findings);
       body.appendChild(card);
+    }
+
+    function renderCveReview(payload) {
+      const result = payload.result || {};
+      const body = addMessage('assistant', result.message || 'No CVE review result returned.');
+      const card = node('div', 'result-card');
+      const head = node('div', 'result-head');
+      head.appendChild(node('div', 'result-title', 'CVE check across the demo'));
+      head.appendChild(node('span', 'badge', result.reason_code || result.status || 'BLOCKED'));
+      card.appendChild(head);
+      const grid = node('div', 'evidence-grid');
+      evidenceCell(grid, 'CVE', result.cve_id);
+      evidenceCell(grid, 'Sources checked', (result.source_results || []).length);
+      evidenceCell(grid, 'Matches', result.match_count ?? 0);
+      evidenceCell(grid, 'Result', result.status || 'BLOCKED');
+      card.appendChild(grid);
+      const sources = node('div', 'cve-sources');
+      for (const source of result.source_results || []) {
+        const item = node('section', 'cve-source');
+        const sourceHead = node('div', 'cve-source-head');
+        sourceHead.appendChild(node('div', 'cve-source-name', source.label));
+        const status = node('span', 'cve-source-status' + (source.status === 'FOUND' ? ' found' : source.status === 'UNAVAILABLE' ? ' unavailable' : ''), cveStatusLabels[source.status] || source.status);
+        sourceHead.appendChild(status);
+        item.appendChild(sourceHead);
+        item.appendChild(node('div', 'cve-source-summary', source.summary));
+        item.appendChild(node('div', 'cve-source-meta', `${source.resource_alias} · ${source.reason_code}`));
+        if (source.status === 'FOUND' && source.action_label !== 'No action') {
+          const action = node('button', 'btn ' + (source.source_type === 'EC2_PACKAGE' ? 'primary' : 'reject') + ' cve-source-action', source.action_label);
+          action.type = 'button';
+          action.addEventListener('click', () => reviewCveSource(source));
+          item.appendChild(action);
+        }
+        sources.appendChild(item);
+      }
+      card.appendChild(sources);
+      body.appendChild(card);
+    }
+
+    function reviewCveSource(source) {
+      addMessage('user', `${source.action_label}: ${source.label}`);
+      if (source.source_type === 'EC2_PACKAGE') {
+        const body = addMessage('assistant', 'The server finding is ready for a live read-only advisory check. Review the package evidence before any approval.');
+        const panel = document.querySelector('.live-panel');
+        panel.scrollIntoView({ behavior: 'smooth', block: 'center' });
+        panel.style.outline = '2px solid var(--green)';
+        window.setTimeout(() => { panel.style.outline = ''; }, 1800);
+        return body;
+      }
+      const body = addMessage('assistant', 'This source has a suggested next step only. No change or approval is enabled for it in this POC.');
+      const card = node('div', 'result-card');
+      const grid = node('div', 'evidence-grid');
+      evidenceCell(grid, 'Source', source.label);
+      evidenceCell(grid, 'Suggested action', source.summary);
+      evidenceCell(grid, 'After', 'Not executed — read-only');
+      card.appendChild(grid);
+      body.appendChild(card);
+      return body;
     }
 
     function reviewScanFinding(finding) {
@@ -647,9 +726,12 @@
       body.appendChild(card);
     }
 
+    function extractCves(prompt) {
+      return [...prompt.matchAll(/\bCVE-[0-9]{4}-[0-9]{4,}\b/gi)].map((match) => match[0].toUpperCase());
+    }
+
     function extractCve(prompt) {
-      const match = prompt.match(/CVE-[0-9]{4}-[0-9]{4,}/i);
-      return match ? match[0].toUpperCase() : null;
+      return extractCves(prompt)[0] || null;
     }
 
     async function post(path, body) {
@@ -745,21 +827,42 @@
     form.addEventListener('submit', async (event) => {
       event.preventDefault();
       const prompt = promptEl.value.trim();
-      const cve = extractCve(prompt);
-      if (!cve) { const body = addMessage('assistant', 'Please include a CVE identifier such as CVE-2099-0001.'); body.lastChild.classList.add('error-copy'); return; }
+      const cves = extractCves(prompt);
+      if (!cves.length) { const body = addMessage('assistant', 'Paste one CVE identifier, such as CVE-2099-0001.'); body.lastChild.classList.add('error-copy'); return; }
+      if (cves.length > 1) { const body = addMessage('assistant', 'Please paste one CVE at a time so each check stays clear and exact.'); body.lastChild.classList.add('error-copy'); return; }
+      const cve = cves[0];
       runButton.disabled = true;
       addMessage('user', prompt);
-      const thinking = addMessage('assistant', 'Reviewing the synthetic evidence...');
+      const isCveReview = inputModeEl.value === 'CVE_REVIEW';
+      const thinking = addMessage('assistant', isCveReview ? 'Checking the server, stored file, and container image...' : 'Reviewing the guided example...');
       try {
-        const payload = await post('/api/run', { cve_id:cve, lab_env:labEnvEl.value });
+        const payload = isCveReview
+          ? await post('/api/cve-review', { cve_id:cve, mode:'DEMO' })
+          : await post('/api/run', { cve_id:cve, lab_env:'SYNTHETIC_LAB' });
         thinking.parentElement.remove();
-        runId = payload.result && payload.result.run_id;
-        renderAssistant(payload);
+        if (isCveReview) renderCveReview(payload);
+        else {
+          runId = payload.result && payload.result.run_id;
+          renderAssistant(payload);
+        }
       } catch (error) { thinking.textContent = error.message; }
       finally { runButton.disabled = false; }
     });
 
-    newChat.addEventListener('click', () => { messages.replaceChildren(); welcome.classList.remove('hidden'); promptEl.focus(); runId = null; lastLiveProposalId = null; lastLiveProposalHash = null; });
+    newChat.addEventListener('click', () => { messages.replaceChildren(); welcome.classList.remove('hidden'); inputModeEl.value = 'CVE_REVIEW'; promptEl.value = ''; promptEl.focus(); runId = null; lastLiveProposalId = null; lastLiveProposalHash = null; });
+
+    if (cveWelcomeButton) cveWelcomeButton.addEventListener('click', () => { inputModeEl.value = 'CVE_REVIEW'; promptEl.focus(); });
+    document.querySelectorAll('.composer-example').forEach((example) => {
+      example.addEventListener('click', () => {
+        if (example.dataset.example === 'scan') {
+          startScan(scanButton);
+          return;
+        }
+        inputModeEl.value = 'CVE_REVIEW';
+        promptEl.value = example.dataset.example;
+        promptEl.focus();
+      });
+    });
 
     scanButton.addEventListener('click', () => startScan(scanButton));
     scanWelcomeButton.addEventListener('click', () => startScan(scanWelcomeButton));

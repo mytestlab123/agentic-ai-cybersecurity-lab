@@ -362,6 +362,7 @@ class SecCopFinding(Contract):
     finding_id: str = Field(pattern=r"^FINDING_[0-9]{2}$")
     source_type: Literal["EC2_PACKAGE", "S3_ARTIFACT", "ECR_IMAGE"]
     resource_alias: Literal["LAB_SERVER_01", "ARTIFACT_01", "IMAGE_01"]
+    cve_id: str | None = Field(default=None, pattern=r"^CVE-[0-9]{4}-[0-9]{4,}$")
     reference: str = Field(pattern=r"^(CVE-[0-9]{4}-[0-9]{4,}|[A-Z]+_RULE_[0-9]{2})$")
     severity: Literal["LOW", "MEDIUM", "HIGH", "CRITICAL"]
     title: str = Field(min_length=1, max_length=100)
@@ -377,6 +378,46 @@ class SecCopFinding(Contract):
         "SECCOP_ECR_FINDING_CONFIRMED",
     ]
     action_label: Literal["Review live fix", "View suggested fix", "Review and fix"]
+
+
+class SecCopCveReviewRequest(Contract):
+    """One normalized CVE for the read-only operator lookup."""
+
+    cve_id: str = Field(pattern=r"^CVE-[0-9]{4}-[0-9]{4,}$")
+    mode: Literal["DEMO"] = "DEMO"
+
+
+class SecCopCveSourceResult(Contract):
+    """Sanitized result for one source in a pasted-CVE review."""
+
+    source_type: Literal["EC2_PACKAGE", "S3_ARTIFACT", "ECR_IMAGE"]
+    label: str = Field(min_length=1, max_length=60)
+    resource_alias: Literal["LAB_SERVER_01", "ARTIFACT_01", "IMAGE_01"]
+    status: Literal["FOUND", "NOT_FOUND", "UNAVAILABLE"]
+    reason_code: Literal[
+        "SECCOP_CVE_MATCH",
+        "SECCOP_CVE_NOT_FOUND",
+        "SECCOP_SOURCE_UNAVAILABLE",
+    ]
+    finding_id: str | None = Field(default=None, pattern=r"^FINDING_[0-9]{2}$")
+    summary: str = Field(min_length=1, max_length=180)
+    action_label: Literal["Review fix", "View suggestion", "No action"]
+
+
+class SecCopCveReviewResult(Contract):
+    """Alias-only result for one CVE checked across the demo sources."""
+
+    status: Literal["READY", "NOT_FOUND", "PARTIAL", "BLOCKED"]
+    reason_code: Literal[
+        "SECCOP_CVE_REVIEW_READY",
+        "SECCOP_CVE_NOT_FOUND",
+        "SECCOP_CVE_REVIEW_PARTIAL",
+        "CVE_INPUT_INVALID",
+    ]
+    cve_id: str = Field(pattern=r"^CVE-[0-9]{4}-[0-9]{4,}$")
+    source_results: tuple[SecCopCveSourceResult, ...]
+    match_count: int = Field(ge=0)
+    message: str = Field(min_length=1, max_length=220)
 
 
 class SecCopScanResult(Contract):

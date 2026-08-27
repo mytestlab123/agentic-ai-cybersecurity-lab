@@ -16,6 +16,7 @@ from secure_agent_harness.contracts import (
 from secure_agent_harness.poc import PocEngine
 from secure_agent_harness import poc_server
 from secure_agent_harness.poc_server import _Handler
+from secure_agent_harness.seccop_scan import review_demo_cve
 from http.server import ThreadingHTTPServer
 
 
@@ -90,6 +91,8 @@ def test_browser_surface_is_local_and_has_the_gate_controls() -> None:
     assert "/api/decision" in html
     assert "/api/live-evidence" in html
     assert "/api/scan" in html
+    assert "/api/cve-review" in html
+    assert "Check a CVE" in html
     assert "Scan environment" in html
     assert "Suggested fix only" in html
     assert "/api/live-proposal" in html
@@ -99,7 +102,23 @@ def test_browser_surface_is_local_and_has_the_gate_controls() -> None:
     assert "Generate remediation suggestion" in html
     assert "GovTech inference: not used" in html
     assert "Reject" in html
-    assert "Uploaded live results must be typed, sanitized, and read-only" in html
+    assert "A server change always needs a separate review and approval" in html
+
+
+def test_demo_cve_review_checks_three_sources_with_aliases_only() -> None:
+    result = review_demo_cve("CVE-2099-0001")
+
+    assert result.status == "READY"
+    assert result.reason_code == "SECCOP_CVE_REVIEW_READY"
+    assert result.match_count == 3
+    assert [item.status for item in result.source_results] == ["FOUND", "FOUND", "FOUND"]
+    assert "i-" not in result.model_dump_json()
+    assert "arn:" not in result.model_dump_json()
+
+    missing = review_demo_cve("CVE-2099-0002")
+    assert missing.status == "NOT_FOUND"
+    assert missing.reason_code == "SECCOP_CVE_NOT_FOUND"
+    assert missing.match_count == 0
 
 
 def test_demo_scan_returns_three_alias_only_findings_and_no_mutation_controls() -> None:

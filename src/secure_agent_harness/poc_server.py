@@ -26,6 +26,7 @@ from .contracts import (
     PocRequest,
     SecCopApprovalResult,
     SecCopComparison,
+    SecCopCveReviewRequest,
     SecCopAdvisoryComparison,
     SecCopAdvisoryRequest,
     SecCopCsvRequest,
@@ -36,7 +37,7 @@ from .contracts import (
 )
 from .poc import PocEngine
 from .seccop_csv import SecCopCsvError, parse_csv
-from .seccop_scan import run_demo_scan
+from .seccop_scan import review_demo_cve, run_demo_scan
 
 
 _HTML_PATH = Path(__file__).resolve().parents[2] / "web" / "poc_chat.html"
@@ -559,6 +560,16 @@ class _Handler(BaseHTTPRequestHandler):
                 self._send_json(400, {"status": "BLOCKED", "reason_code": "REQUEST_REJECTED"})
                 return
             result = _run_real_demo("scan") if _real_demo_enabled() else run_demo_scan().model_dump(mode="json")
+            self._send_json(200, {"result": result, "events": []})
+            return
+
+        if self.path == "/api/cve-review":
+            try:
+                request = SecCopCveReviewRequest.model_validate(payload)
+            except ValidationError:
+                self._send_json(400, {"status": "BLOCKED", "reason_code": "CVE_INPUT_INVALID"})
+                return
+            result = review_demo_cve(request.cve_id).model_dump(mode="json")
             self._send_json(200, {"result": result, "events": []})
             return
 
