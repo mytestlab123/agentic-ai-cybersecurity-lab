@@ -38,6 +38,10 @@ const shot = async (name, options = {}) => {
   await page.screenshot({ path: path.join(evidenceDir, name), ...options });
   await page.screenshot({ path: path.join(reviewDir, name), ...options });
 };
+const focusedShot = async (locator, name) => {
+  await locator.screenshot({ path: path.join(evidenceDir, name) });
+  await locator.screenshot({ path: path.join(reviewDir, name) });
+};
 
 let browser;
 let page;
@@ -93,6 +97,7 @@ try {
     })),
   });
   await shot('SecCop-CVE-01.png', { fullPage: true });
+  await focusedShot(page.locator('.result-card').last(), 'SecCop-CVE-01-slide.png');
 
   await page.locator('#new-chat').click();
   const cveReviewCallsBeforeReject = browserRequests.filter((item) => item.url.endsWith('/api/cve-review')).length;
@@ -101,6 +106,7 @@ try {
   await page.getByText('Please paste one CVE at a time so each check stays clear and exact.', { exact: true }).waitFor({ timeout: 10_000 });
   const cveReviewCallsAfterReject = browserRequests.filter((item) => item.url.endsWith('/api/cve-review')).length;
   assert(cveReviewCallsAfterReject === cveReviewCallsBeforeReject, 'Multiple CVEs reached the review endpoint');
+  await page.locator('#new-chat').click();
 
   const scanResponsePromise = page.waitForResponse(
     (item) => item.url().endsWith('/api/scan') && item.request().method() === 'POST',
@@ -147,6 +153,9 @@ try {
   const runPayload = await runResponse.json();
   assert(runPayload.result.status === 'AWAITING_APPROVAL', 'The proposal did not stop for approval');
   await page.getByRole('button', { name: 'Approve mock remediation', exact: true }).waitFor({ timeout: 10_000 });
+  await page.setViewportSize({ width: 1920, height: 1800 });
+  await focusedShot(page.locator('.result-card').last(), 'SecCop-Approval-01-slide.png');
+  await page.setViewportSize({ width: 1920, height: 1080 });
   await saveJson('positive-state.json', {
     status: runPayload.result.status,
     reason_code: runPayload.result.reason_code,
@@ -206,9 +215,11 @@ try {
     screenshots: [
       'SecCop-Scan-01.png',
       'SecCop-CVE-01.png',
+      'SecCop-CVE-01-slide.png',
       'SecCop-Scan-02.png',
       'SecCop-Scan-02-live-review.png',
       'SecCop-Scan-03.png',
+      'SecCop-Approval-01-slide.png',
       'SecCop-Scan-04.png',
       'SecCop-Scan-05-blocked.png',
     ],
