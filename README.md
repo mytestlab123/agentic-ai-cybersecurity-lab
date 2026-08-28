@@ -146,23 +146,29 @@ the app and browser profile it created.
 
 ## Repeatable three-source DEMO
 
-Issue 25 adds one guarded preparation command for the approved live rehearsal.
-It reuses the existing tagged EC2 target, creates or refreshes two small
-versioned S3 buckets, and creates or refreshes one ECR repository with a known
-old and clean image. It refuses to downgrade an already-clean EC2 target. It
-does not enable GuardDuty or create network resources.
+Issue 32 adds guarded start and cleanup commands for the approved live
+rehearsal. `start-demo.sh` applies the existing Terraform EC2 stack with a
+pinned older Amazon Linux 2 image, waits for a scan-only Patch Manager summary,
+then creates or refreshes two small versioned S3 buckets and one ECR repository
+with known old and clean artifacts. It does not enable GuardDuty or create
+network resources.
 
 ```bash
 ./scripts/start-demo.sh --profile vagent --region ap-southeast-1 --confirm
 uv run python scripts/seccop_demo.py scan --profile vagent --region ap-southeast-1
 uv run python scripts/seccop_demo.py verify --profile vagent --region ap-southeast-1 --confirm
+./scripts/cleanup-demo.sh --profile vagent --region ap-southeast-1 --confirm
 ```
 
-The first command is the only preparation mutation. S3 and ECR fixes are
+The first command is the preparation mutation. The cleanup command creates
+Terraform destroy plans and removes only the three tagged demo EC2 targets,
+their dedicated security groups, and the tag-owned S3/ECR artifacts. The shared
+VPC and SSM profile are never owned by these commands. S3 and ECR fixes remain
 explicit commands with `--confirm`; the EC2 package remains behind the
 existing SecCop approval screen. `verify` runs one bounded S3/ECR fix and clean
-rescan rehearsal, then restores the non-compliant baseline. Evidence is written under the operator-local
-`~/.AGENTS-temp/` directory and contains aliases rather than AWS identifiers.
+rescan rehearsal, then restores the non-compliant baseline. Evidence is written
+under the operator-local `~/.AGENTS-temp/` directory and contains aliases rather
+than AWS identifiers.
 
 ## Learning vocabulary
 

@@ -1,7 +1,9 @@
 # Project1 disposable SecCop EC2
 
 This stack reuses the existing Project1 default public VPC. It creates only a
-dedicated no-ingress security group and one SSM-managed Amazon Linux 2 target.
+dedicated no-ingress security group and one SSM-managed older Amazon Linux 2
+target. The pinned image is intentionally older so the Patch Manager scan has
+a small, explainable non-compliant starting point.
 The VPC, subnet, route table, Internet Gateway, and shared SSM profile are not
 owned by this stack and must remain in place.
 
@@ -20,6 +22,10 @@ terraform validate
 terraform plan -out=tfplan
 terraform apply tfplan
 ```
+
+The reusable operator wrapper is `../../scripts/start-demo.sh`; it passes the
+same profile, region, target name, and pinned image pattern to this stack before
+seeding the S3/ECR baseline.
 
 Destroy only the disposable target and its dedicated security group:
 
