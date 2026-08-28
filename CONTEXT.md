@@ -15,13 +15,19 @@ explicit `apply --confirm`, read-only `collect`, and tag-checked
 SSM path, no-ingress security group, IAM instance profile, available AMI, and
 enabled Inspector EC2 coverage.
 
-Current truth: a Singapore private SecCop VPC is applied through Terraform
-with private Inspector, SSM, and S3 endpoints and no public exposure. One old
-Amazon Linux target is running privately with the existing SSM profile. The
-repo-owned exporter produced a real Inspector CSV with active package findings;
-the selected exact-target CVE comparison returns `READY` with HIGH severity
-and one vulnerable package. The infrastructure and instance remain held for
-the human demo; cleanup has not been run.
+Current truth: Project1 reuses the existing Singapore default public VPC and
+shared SSM profile. The disposable SecCop rehearsal is currently clean: no
+running SecCop EC2 target, no tagged SecCop EBS volume, no dedicated SecCop
+security group, no SecCop S3 demo bucket, and no SecCop ECR demo repository.
+The default VPC, `redemption-eks-vpc`, and shared SSM IAM remain retained.
+
+The repo now owns repeatable wrappers: `./scripts/start-demo.sh --confirm`
+applies a pinned older Amazon Linux 2 target, waits for a scan-only Patch
+Manager summary, and seeds S3/ECR; `./scripts/cleanup-demo.sh --confirm`
+uses Terraform destroy plans and tag checks to remove only the disposable
+SecCop resources. A live start -> scan -> cleanup rehearsal passed. Evidence is
+under `~/.AGENTS-temp/agentic-ai-cybersecurity-lab/`; the public resource
+record is `docs/PROJECT1_RESOURCE_RECORD.yaml`.
 
 GovTech PlatformAI non-inference gates pass through `gtx check` and
 `gtx models`. No capability key is stored in this repository and no inference
@@ -31,5 +37,6 @@ Validation: 32 tests, Python compilation, Terraform validate/plan, private
 network preflight, live target preflight, real Inspector export, and browser
 `/api/live-csv` comparison pass locally.
 
-Next gate: Amit reviews the SecCop GUI with the exported CSV; remediation and
-SSM mutation remain a separate approval-gated milestone.
+Next gate: run `start-demo.sh --confirm` only when a live DEMO is needed, then
+use the GUI scan/review path. Any EC2 package remediation remains a separate
+human approval-gated milestone; run `cleanup-demo.sh --confirm` after the DEMO.
