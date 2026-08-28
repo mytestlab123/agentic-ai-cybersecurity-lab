@@ -3,12 +3,14 @@
 record_version: 1
 sanitized: true
 last_verified: 2026-08-28
+last_action: cleanup-complete
 profile_alias: vagent
 profile_alias_equivalent: project1
 region: ap-southeast-1
 purpose: Security Copilot learning demo
-private_evidence_root: ~/.AGENTS-temp/agentic-ai-cybersecurity-lab/ec2-ami-cleanup-inventory/20260828-152111/
+private_evidence_root: ~/.AGENTS-temp/agentic-ai-cybersecurity-lab/seccop-demo-cleanup/20260828T164006+0800/
 ids_in_private_evidence: true
+start_demo_rehearsal: ~/.AGENTS-temp/agentic-ai-cybersecurity-lab/seccop-demo-start/20260828T163003+0800/
 observed_empty_classes:
   - nat_gateway
   - vpc_endpoint
@@ -20,83 +22,83 @@ resources:
   - kind: ec2
     alias: SECCOP_EC2_INSPECTOR_R01
     name: seccop-project1-inspector-host-r01
-    state: running
+    state: terminated
     instance_type: t3.small
     root_volume: 20 GiB gp3
-    ssm: online
-    public_ipv4: present
+    ssm: offline
+    public_ipv4: released
     ttl: 01-09-26
-    cleanup_status: pending-approval
+    cleanup_status: cleaned
     lifecycle: disposable-demo-host
 
   - kind: ec2
     alias: SECCOP_EC2_OLD_AMI_R01
     name: seccop-project1-old-ami-host-r01
-    state: running
+    state: terminated
     instance_type: t3.small
     root_volume: 20 GiB gp3
-    ssm: online
-    public_ipv4: present
+    ssm: offline
+    public_ipv4: released
     ttl: 01-09-26
-    cleanup_status: pending-approval
+    cleanup_status: cleaned
     lifecycle: disposable-demo-host
 
   - kind: ec2
     alias: SECCOP_EC2_OLD_AMI_R02
     name: seccop-project1-old-ami-host-r02
-    state: running
+    state: terminated
     instance_type: t3.small
     root_volume: 20 GiB gp3
-    ssm: online
-    public_ipv4: present
+    ssm: offline
+    public_ipv4: released
     ttl: 01-09-26
-    cleanup_status: pending-approval
+    cleanup_status: cleaned
     lifecycle: disposable-demo-host
 
   - kind: ecr
     alias: SECCOP_ECR_DEMO_IMAGES
     name: seccop-demo-images
-    state: available
-    image_count: 4
+    state: absent
+    image_count: 0
     tags: [demo-bad, demo-clean, demo-current, untagged]
-    cleanup_status: retain-for-next-demo-or-approval
+    cleanup_status: cleaned
     lifecycle: reusable-demo-artifact
 
   - kind: security_group
     alias: SECCOP_SG_INSPECTOR_R01
     name: seccop-project1-inspector-host-r01-sg
-    state: present
+    state: absent
     ingress: none
     egress: outbound-https-only
-    cleanup_status: pending-approval
+    cleanup_status: cleaned
     lifecycle: disposable-demo-host
 
   - kind: security_group
     alias: SECCOP_SG_OLD_AMI_R01
     name: seccop-project1-old-ami-host-r01-sg
-    state: present
+    state: absent
     ingress: none
     egress: outbound-https-only
     attached_to: [SECCOP_EC2_OLD_AMI_R01, SECCOP_EC2_OLD_AMI_R02]
-    cleanup_status: pending-approval
+    cleanup_status: cleaned
     lifecycle: disposable-demo-host
 
   - kind: s3
     alias: SECCOP_S3_ARTIFACT_CURRENT
     name: sanitized-current-demo-bucket
-    state: available
-    object_count: 1
+    state: absent
+    object_count: 0
     cleanup_tag: seccop-demo-only
-    cleanup_status: retain-for-next-demo-or-approval
+    cleanup_status: cleaned
     lifecycle: reusable-demo-artifact
 
   - kind: s3
     alias: SECCOP_S3_ARTIFACT_RESET
     name: sanitized-reset-demo-bucket
-    state: available
-    object_count: 2
+    state: absent
+    object_count: 0
     cleanup_tag: seccop-demo-only
-    cleanup_status: retain-for-next-demo-or-approval
+    cleanup_status: cleaned
     lifecycle: reusable-demo-artifact
 
   - kind: iam
@@ -129,8 +131,8 @@ historical:
     evidence: ~/.AGENTS-temp/agentic-ai-cybersecurity-lab/terraform-terragrunt-cleanup/20260826-224000/RESULT.md
 
 cleanup_policy:
-  status: review-only
-  no_mutation_performed: true
+  status: cleanup-complete
+  last_run_mutation_performed: true
   approval_required_for:
     - EC2 termination
     - dedicated security-group removal

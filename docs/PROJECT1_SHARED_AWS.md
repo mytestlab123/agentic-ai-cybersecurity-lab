@@ -62,6 +62,18 @@ At the end of the demo, terminate the exact tagged EC2 instance and remove
 its dedicated security group when no longer referenced. Leave the shared VPC,
 public subnets, routes, and Internet Gateway intact.
 
+The repeatable Project1 wrappers are:
+
+```bash
+./scripts/start-demo.sh --profile vagent --region ap-southeast-1 --confirm
+./scripts/cleanup-demo.sh --profile vagent --region ap-southeast-1 --confirm
+```
+
+The start wrapper applies the pinned older Amazon Linux 2 target and seeds the
+small S3/ECR fixtures. The cleanup wrapper verifies the SecCop ownership tags,
+uses Terraform destroy plans for EC2/security groups, and then removes only the
+tag-owned artifacts. Both commands leave the shared VPC and SSM profile alone.
+
 ## Read-only preflight
 
 ```bash

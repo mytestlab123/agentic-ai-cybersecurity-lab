@@ -1,9 +1,11 @@
 #!/usr/bin/env python3
 """Small, repeatable SecCop DEMO baseline for Project1.
 
-The script owns only tagged demo artifacts.  It deliberately does not enable
-GuardDuty, create networking, or change the EC2 package.  The existing SecCop
-EC2 approval path remains authoritative for the server fix.
+The script owns only tagged demo artifacts. It deliberately does not enable
+GuardDuty, create networking, or change the EC2 package. The existing SecCop
+EC2 approval path remains authoritative for the server fix. Its ``cleanup``
+command deletes only the two tag-owned S3 buckets and the tag-owned ECR
+repository; EC2 cleanup remains in the Terraform wrapper.
 """
 
 from __future__ import annotations
@@ -581,6 +583,108 @@ def _fix(aws: AwsCli, source: str, directory: Path) -> dict[str, Any]:
     raise DemoError("Choose one source: ec2, s3, or ecr.")
 
 
+def _tag_map(tags: Any) -> dict[str, str]:
+    if not isinstance(tags, list):
+        return {}
+    return {
+        str(item["Key"]): str(item["Value"])
+        for item in tags
+        if isinstance(item, dict) and isinstance(item.get("Key"), str) and isinstance(item.get("Value"), str)
+    }
+
+
+def _bucket_cleanup_state(aws: AwsCli, bucket: str) -> bool:
+    try:
+        aws.run("s3api", "head-bucket", "--bucket", bucket)
+    except DemoError as error:
+        if "404" in str(error) or "Not Found" in str(error):
+            return False
+        raise DemoError("The DEMO bucket could not be checked safely.") from error
+    try:
+        response = aws.json("s3api", "get-bucket-tagging", "--bucket", bucket)
+    except DemoError as error:
+        raise DemoError("The DEMO bucket tags could not be checked safely.") from error
+    tags = _tag_map(response.get("TagSet"))
+    if tags.get("Project") != "Security Copilot" or tags.get("Cleanup") != "seccop-demo-only":
+        raise DemoError("A DEMO bucket did not have the expected ownership tags.")
+    return True
+
+
+def _delete_bucket(aws: AwsCli, bucket: str) -> dict[str, Any]:
+    if not _bucket_cleanup_state(aws, bucket):
+        return {"bucket": bucket, "state": "ABSENT", "reason_code": "SECCOP_S3_ALREADY_CLEAN"}
+    versions = aws.json("s3api", "list-object-versions", "--bucket", bucket)
+    if versions.get("IsTruncated") is True:
+        raise DemoError("The DEMO bucket contains too many versions for one safe cleanup pass.")
+    objects: list[dict[str, str]] = []
+    for field in ("Versions", "DeleteMarkers"):
+        entries = versions.get(field, [])
+        if not isinstance(entries, list):
+            raise DemoError("The DEMO bucket returned an invalid version list.")
+        for item in entries:
+            if not isinstance(item, dict) or not isinstance(item.get("Key"), str) or not isinstance(item.get("VersionId"), str):
+                raise DemoError("The DEMO bucket returned an invalid object version.")
+            objects.append({"Key": item["Key"], "VersionId": item["VersionId"]})
+    if objects:
+        payload = _write_json(aws.config.evidence_root, f"delete-{bucket}.json", {"Objects": objects, "Quiet": True})
+        aws.run("s3api", "delete-objects", "--bucket", bucket, "--delete", f"file://{payload}")
+    aws.run("s3api", "delete-bucket", "--bucket", bucket)
+    try:
+        aws.run("s3api", "head-bucket", "--bucket", bucket)
+    except DemoError as error:
+        if "404" in str(error) or "Not Found" in str(error):
+            return {"bucket": bucket, "state": "DELETED", "reason_code": "SECCOP_S3_DELETED"}
+        raise DemoError("The DEMO bucket deletion could not be verified safely.") from error
+    raise DemoError("The DEMO bucket still exists after cleanup.")
+
+
+def _repository_cleanup_state(aws: AwsCli) -> tuple[bool, str | None]:
+    try:
+        response = aws.json("ecr", "describe-repositories", "--repository-names", ECR_REPOSITORY)
+    except DemoError as error:
+        if "RepositoryNotFoundException" in str(error):
+            return False, None
+        raise DemoError("The DEMO ECR repository could not be checked safely.") from error
+    items = response.get("repositories")
+    if not isinstance(items, list) or len(items) != 1 or not isinstance(items[0], dict):
+        raise DemoError("The DEMO ECR repository returned an invalid description.")
+    arn = items[0].get("repositoryArn")
+    if not isinstance(arn, str) or not arn:
+        raise DemoError("The DEMO ECR repository did not return an ownership ARN.")
+    tags = _tag_map(aws.json("ecr", "list-tags-for-resource", "--resource-arn", arn).get("tags"))
+    if tags.get("Project") != "Security Copilot" or tags.get("Cleanup") != "seccop-demo-only":
+        raise DemoError("The DEMO ECR repository did not have the expected ownership tags.")
+    return True, arn
+
+
+def _cleanup(aws: AwsCli, directory: Path) -> dict[str, Any]:
+    """Delete only the tag-owned S3/ECR DEMO artifacts after preflight."""
+
+    current, reset = _bucket_names(aws)
+    current_exists = _bucket_cleanup_state(aws, current)
+    reset_exists = _bucket_cleanup_state(aws, reset)
+    repository_exists, _ = _repository_cleanup_state(aws)
+    artifacts: list[dict[str, Any]] = []
+    if current_exists:
+        artifacts.append(_delete_bucket(aws, current))
+    if reset_exists:
+        artifacts.append(_delete_bucket(aws, reset))
+    if repository_exists:
+        aws.run("ecr", "delete-repository", "--repository-name", ECR_REPOSITORY, "--force")
+        try:
+            aws.json("ecr", "describe-repositories", "--repository-names", ECR_REPOSITORY)
+        except DemoError as error:
+            if "RepositoryNotFoundException" in str(error):
+                artifacts.append({"repository": ECR_REPOSITORY, "state": "DELETED", "reason_code": "SECCOP_ECR_DELETED"})
+            else:
+                raise DemoError("The DEMO ECR deletion could not be verified safely.") from error
+        else:
+            raise DemoError("The DEMO ECR repository still exists after cleanup.")
+    if not artifacts:
+        artifacts = [{"state": "ABSENT", "reason_code": "SECCOP_ARTIFACTS_ALREADY_CLEAN"}]
+    return {"status": "CLEANED", "reason_code": "SECCOP_ARTIFACTS_CLEANED", "artifacts": artifacts}
+
+
 def _start(aws: AwsCli, directory: Path) -> dict[str, Any]:
     # Do the non-mutating EC2 gate first.  Never downgrade a clean host just
     # to make a presentation finding appear.
@@ -629,15 +733,15 @@ def _verify(aws: AwsCli, directory: Path) -> dict[str, Any]:
 
 def main() -> int:
     parser = argparse.ArgumentParser(description="Prepare and verify the SecCop three-source DEMO.")
-    parser.add_argument("command", choices=("start", "scan", "rescan", "fix", "status", "verify"))
+    parser.add_argument("command", choices=("start", "scan", "rescan", "fix", "status", "verify", "cleanup"))
     parser.add_argument("--source", choices=("ec2", "s3", "ecr"))
     parser.add_argument("--profile", default=os.environ.get("SECCOP_PROFILE", "vagent"))
     parser.add_argument("--region", default=os.environ.get("SECCOP_REGION", "ap-southeast-1"))
     parser.add_argument("--target-name", default=os.environ.get("SECCOP_TARGET_NAME", DEFAULT_TARGET_NAME))
     parser.add_argument("--confirm", action="store_true", help="allow the requested DEMO preparation/fix")
     args = parser.parse_args()
-    if args.command in {"start", "fix", "verify"} and not args.confirm:
-        print(json.dumps({"status": "BLOCKED", "reason_code": "CONFIRM_REQUIRED", "message": "Use --confirm for DEMO preparation or a fix."}))
+    if args.command in {"start", "fix", "verify", "cleanup"} and not args.confirm:
+        print(json.dumps({"status": "BLOCKED", "reason_code": "CONFIRM_REQUIRED", "message": "Use --confirm for DEMO preparation, cleanup, or a fix."}))
         return 2
     root = Path.home() / ".AGENTS-temp" / "agentic-ai-cybersecurity-lab" / "seccop-demo"
     root.mkdir(parents=True, exist_ok=True)
@@ -648,6 +752,8 @@ def main() -> int:
             aws.run("sts", "get-caller-identity")
             if args.command == "start":
                 result = _start(aws, Path(run_dir))
+            elif args.command == "cleanup":
+                result = _cleanup(aws, Path(run_dir))
             elif args.command == "verify":
                 result = _verify(aws, Path(run_dir))
             elif args.command in {"scan", "rescan", "status"}:

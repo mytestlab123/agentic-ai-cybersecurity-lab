@@ -29,9 +29,9 @@ variable "instance_type" {
 }
 
 variable "ami_name_pattern" {
-  description = "Amazon Linux 2 pattern retained for the old-package demo."
+  description = "Pinned older Amazon Linux 2 image pattern for the old-package demo."
   type        = string
-  default     = "amzn2-ami-hvm-*-x86_64-gp2"
+  default     = "amzn2-ami-hvm-2.0.20260608.0-x86_64-gp2"
 }
 
 variable "name" {
