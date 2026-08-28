@@ -6,6 +6,8 @@ The existing EC2 advisory and SSM path remains the only real mutation path.
 """
 
 from .contracts import (
+    SecCopCveReviewResult,
+    SecCopCveSourceResult,
     SecCopFinding,
     SecCopScanResult,
     SecCopScanSourceStatus,
@@ -44,6 +46,7 @@ def run_demo_scan() -> SecCopScanResult:
                 finding_id="FINDING_01",
                 source_type="EC2_PACKAGE",
                 resource_alias="LAB_SERVER_01",
+                cve_id="CVE-2099-0001",
                 reference="CVE-2099-0001",
                 severity="HIGH",
                 title="Old server package",
@@ -58,6 +61,7 @@ def run_demo_scan() -> SecCopScanResult:
                 finding_id="FINDING_02",
                 source_type="S3_ARTIFACT",
                 resource_alias="ARTIFACT_01",
+                cve_id="CVE-2099-0001",
                 reference="ARTIFACT_RULE_01",
                 severity="MEDIUM",
                 title="Old stored artifact",
@@ -72,6 +76,7 @@ def run_demo_scan() -> SecCopScanResult:
                 finding_id="FINDING_03",
                 source_type="ECR_IMAGE",
                 resource_alias="IMAGE_01",
+                cve_id="CVE-2099-0001",
                 reference="IMAGE_RULE_01",
                 severity="HIGH",
                 title="Old container package",
@@ -85,3 +90,82 @@ def run_demo_scan() -> SecCopScanResult:
         ),
         message="Three demo findings are ready. Only the server path can request a real approved fix.",
     )
+
+
+def review_demo_cve(cve_id: str) -> SecCopCveReviewResult:
+    """Check one normalized CVE against every deterministic demo source."""
+
+    scan = run_demo_scan()
+    findings_by_source = {finding.source_type: finding for finding in scan.findings}
+    source_results: list[SecCopCveSourceResult] = []
+    for source in scan.source_status:
+        finding = findings_by_source.get(source.source_type)
+        if source.state != "COMPLETE":
+            source_results.append(
+                SecCopCveSourceResult(
+                    source_type=source.source_type,
+                    label=source.label,
+                    resource_alias=(finding.resource_alias if finding else _source_alias(source.source_type)),
+                    status="UNAVAILABLE",
+                    reason_code="SECCOP_SOURCE_UNAVAILABLE",
+                    summary="This source did not complete its check.",
+                    action_label="No action",
+                )
+            )
+            continue
+        if finding and finding.cve_id == cve_id:
+            source_results.append(
+                SecCopCveSourceResult(
+                    source_type=source.source_type,
+                    label=source.label,
+                    resource_alias=finding.resource_alias,
+                    status="FOUND",
+                    reason_code="SECCOP_CVE_MATCH",
+                    finding_id=finding.finding_id,
+                    summary=f"{finding.title}: {finding.problem_summary}",
+                    action_label=("Review fix" if source.source_type == "EC2_PACKAGE" else "View suggestion"),
+                )
+            )
+        else:
+            source_results.append(
+                SecCopCveSourceResult(
+                    source_type=source.source_type,
+                    label=source.label,
+                    resource_alias=(finding.resource_alias if finding else _source_alias(source.source_type)),
+                    status="NOT_FOUND",
+                    reason_code="SECCOP_CVE_NOT_FOUND",
+                    summary=f"No matching CVE in the completed {source.label.lower()} check.",
+                    action_label="No action",
+                )
+            )
+
+    matches = sum(1 for item in source_results if item.status == "FOUND")
+    unavailable = any(item.status == "UNAVAILABLE" for item in source_results)
+    if unavailable:
+        status = "PARTIAL"
+        reason_code = "SECCOP_CVE_REVIEW_PARTIAL"
+        message = f"{cve_id} was checked, but one or more sources were unavailable."
+    elif matches:
+        status = "READY"
+        reason_code = "SECCOP_CVE_REVIEW_READY"
+        message = f"{cve_id} was found in {matches} demo source(s). Review the suggested next step."
+    else:
+        status = "NOT_FOUND"
+        reason_code = "SECCOP_CVE_NOT_FOUND"
+        message = f"{cve_id} was not found in the completed demo source checks."
+    return SecCopCveReviewResult(
+        status=status,
+        reason_code=reason_code,
+        cve_id=cve_id,
+        source_results=tuple(source_results),
+        match_count=matches,
+        message=message,
+    )
+
+
+def _source_alias(source_type: str) -> str:
+    return {
+        "EC2_PACKAGE": "LAB_SERVER_01",
+        "S3_ARTIFACT": "ARTIFACT_01",
+        "ECR_IMAGE": "IMAGE_01",
+    }[source_type]

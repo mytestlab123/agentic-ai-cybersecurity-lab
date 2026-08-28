@@ -125,7 +125,9 @@ The operator-facing multi-source POC is documented in
 [docs/SECCOP_OPERATOR_DEMO.md](docs/SECCOP_OPERATOR_DEMO.md). One Scan action
 shows server, stored-artifact, and container findings. Only the server card
 can open the existing real approval and SSM path; the other two are explicitly
-read-only suggestions.
+read-only suggestions. The composer also starts with a one-CVE check: paste a
+single CVE to see which of the three demo sources contains it. This lookup is
+read-only and does not start approval or remediation.
 
 The latest browser proof is in the
 [SecCop DEMO evidence report](docs/evidence/seccop-demo/report.md), with

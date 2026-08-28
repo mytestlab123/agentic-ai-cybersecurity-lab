@@ -2,150 +2,134 @@
 marp: true
 theme: default
 paginate: true
-backgroundColor: '#07111f'
-color: '#f4f7fb'
+backgroundColor: '#f7f9fc'
+color: '#132238'
 style: |
   section {
     font-family: Arial, Helvetica, sans-serif;
-    padding: 54px 64px;
+    padding: 54px 64px 120px;
   }
-  h1, h2 {
-    color: #5eead4;
-  }
-  strong {
-    color: #67e8f9;
-  }
-  table {
-    width: 100%;
-    border-collapse: collapse;
-    background: #0f1c2f !important;
-    color: #f4f7fb !important;
-    font-size: 0.78em;
-  }
-  th, td {
-    border: 1px solid #334155 !important;
-    padding: 12px 14px;
-    background: #0f1c2f !important;
-    color: #f4f7fb !important;
-    text-align: left;
-    vertical-align: top;
-  }
-  th {
-    background: #13243a !important;
-    color: #67e8f9 !important;
-  }
-  code {
-    color: #fbbf24;
-  }
-  img {
-    display: block;
-    max-width: 86%;
-    max-height: 390px;
-    object-fit: contain;
-    margin: 12px auto 0;
-  }
-  p { line-height: 1.2; }
-  footer {
-    color: #94a3b8;
-  }
+  h1, h2 { color: #0f766e; }
+  h1 { font-size: 2.2em; }
+  h2 { font-size: 1.65em; }
+  strong { color: #0369a1; }
+  p, li { line-height: 1.35; }
+  .promise { color: #0f766e; font-size: 2.8em; font-weight: 700; text-align: center; margin: 130px 0 30px; }
+  .subtitle { text-align: center; font-size: 1.25em; }
+  .flow { color: #0369a1; font-size: 1.8em; font-weight: 700; text-align: center; margin: 80px 0 45px; }
+  .panels { display: flex; gap: 18px; margin-top: 40px; }
+  .panel { flex: 1; padding: 22px; background: #e8f1f7; border-left: 6px solid #0f766e; border-radius: 8px; }
+  .panel h3 { margin-top: 0; color: #0f766e; }
+  img { display: block; max-width: 86%; max-height: 500px; object-fit: contain; margin: 18px auto 0; }
+  .caption { text-align: center; color: #475569; font-size: .82em; margin-top: 10px; }
+  code { color: #9a3412; }
 ---
 
-# Find. Approve. Verify.
+<div class="promise">Find. Approve. Verify.</div>
 
-Security Copilot helps a team turn a security finding into a clear, controlled decision.
+<div class="subtitle">Security Copilot turns one security concern into a clear, controlled next step.</div>
 
-<!-- The promise is speed with accountability, not autonomous change. -->
+<!-- Speaker note: The promise is faster review with accountability. This is an operator aid, not autonomous infrastructure access. -->
 
 ---
 
-## Why this matters now
+## Why this matters
 
-- Security tools find more issues, faster.
-- Fast action can also mean the wrong server or the wrong change.
-- Leaders need a simple record of what was found, approved, changed, and checked.
+Security teams receive findings from many places: scanners, advisories, tickets, and messages.
 
-**Goal:** make safe action easy to explain.
+The difficult part is not only finding a CVE. It is answering quickly:
+
+- Is it present in our environment?
+- Which source is affected?
+- What should happen next?
+- Was anything actually changed?
+
+Without one clear record, investigation and hand-offs become slow and inconsistent.
 
 ---
 
-## One simple operating loop
+## The gap we are closing
 
-<div style="font-size: 2.2em; text-align: center; margin: 70px 0 35px; color: #67e8f9;">
-Find &rarr; Recommend &rarr; Approve &rarr; Act &rarr; Verify
+<div class="flow">Finding &rarr; Explain &rarr; Recommend &rarr; Approve &rarr; Verify</div>
+
+The POC shortens the distance between a reported vulnerability and a safe decision.
+
+The operator stays in control of the sensitive step. The system keeps the evidence and checks the result.
+
+---
+
+## The proposed experience
+
+<div class="panels">
+<div class="panel"><h3>Paste one CVE</h3><p>Copy a CVE from an email, ticket, or advisory into the chat.</p></div>
+<div class="panel"><h3>See the scope</h3><p>SecCop checks the server, stored file, and container image together.</p></div>
+<div class="panel"><h3>Choose the next step</h3><p>Review a suggested fix. Any server change needs separate approval.</p></div>
 </div>
 
-The person stays in control of the sensitive step. The system checks the result afterwards.
+<p><strong>DEMO-PROVEN:</strong> the current browser flow checks one CVE across all three demo sources.</p>
 
 ---
 
-## What this POC built
+## What this POC now shows
 
-<table style="width:100%;border-collapse:collapse;background:#0f1c2f;color:#f4f7fb;font-size:.78em;">
-<thead><tr>
-<th style="border:1px solid #334155;padding:12px 14px;background:#13243a;color:#67e8f9;text-align:left;">Capability</th>
-<th style="border:1px solid #334155;padding:12px 14px;background:#13243a;color:#67e8f9;text-align:left;">Evidence</th>
-<th style="border:1px solid #334155;padding:12px 14px;background:#13243a;color:#67e8f9;text-align:left;">What it means</th>
-</tr></thead>
-<tbody>
-<tr><td style="border:1px solid #334155;padding:12px 14px;background:#0f1c2f;color:#f4f7fb;vertical-align:top;">One scan for server, file, and image</td><td style="border:1px solid #334155;padding:12px 14px;background:#0f1c2f;color:#f4f7fb;vertical-align:top;"><code>DEMO-PROVEN</code></td><td style="border:1px solid #334155;padding:12px 14px;background:#0f1c2f;color:#f4f7fb;vertical-align:top;">One conversation starts the review.</td></tr>
-<tr><td style="border:1px solid #334155;padding:12px 14px;background:#0f1c2f;color:#f4f7fb;vertical-align:top;">Plain-language recommendation</td><td style="border:1px solid #334155;padding:12px 14px;background:#0f1c2f;color:#f4f7fb;vertical-align:top;"><code>DEMO-PROVEN</code></td><td style="border:1px solid #334155;padding:12px 14px;background:#0f1c2f;color:#f4f7fb;vertical-align:top;">The operator sees the problem and the safe next step.</td></tr>
-<tr><td style="border:1px solid #334155;padding:12px 14px;background:#0f1c2f;color:#f4f7fb;vertical-align:top;">Typed, deterministic controls</td><td style="border:1px solid #334155;padding:12px 14px;background:#0f1c2f;color:#f4f7fb;vertical-align:top;"><code>TEST-PROVEN</code></td><td style="border:1px solid #334155;padding:12px 14px;background:#0f1c2f;color:#f4f7fb;vertical-align:top;">Bad or unknown requests stop before tools run.</td></tr>
-<tr><td style="border:1px solid #334155;padding:12px 14px;background:#0f1c2f;color:#f4f7fb;vertical-align:top;">Small AWS rehearsal</td><td style="border:1px solid #334155;padding:12px 14px;background:#0f1c2f;color:#f4f7fb;vertical-align:top;"><code>TEST-PROVEN</code></td><td style="border:1px solid #334155;padding:12px 14px;background:#0f1c2f;color:#f4f7fb;vertical-align:top;">S3 and ECR replacement paths were exercised and rescanned.</td></tr>
-</tbody></table>
+<div class="panels">
+<div class="panel"><h3>One-CVE lookup</h3><p><strong>DEMO-PROVEN</strong><br>One pasted CVE returns a result for each source.</p></div>
+<div class="panel"><h3>Environment scan</h3><p><strong>DEMO-PROVEN</strong><br>One Scan action shows three source findings.</p></div>
+<div class="panel"><h3>Safe stopping points</h3><p><strong>TEST-PROVEN</strong><br>Missing or multiple CVEs stop before review.</p></div>
+</div>
 
-**Status:** `READ-ONLY PROVEN` for the EC2 rehearsal; `TEST-PROVEN` for the
-S3/ECR replace-and-rescan path; EC2 package fix `PLANNED`.
+<p class="caption">The current POC uses deterministic local evidence. No new AWS service or AI model is required for this proof.</p>
 
 ---
 
-## The trust boundary
+## Proof: the scan shows the scope
 
-> AI may investigate and recommend.
->
-> Trusted controls decide what is allowed.
->
-> A person approves a sensitive change.
->
-> The system verifies and records the result.
+<strong>DEMO-PROVEN</strong> — one Scan action shows the server package, stored artifact, and container image findings.
 
-The current POC uses a deterministic Python path. GovTech inference is not required for this proof.
+<img src="demo-proof/SecCop-Scan-02.png" alt="Security Copilot three-source scan">
+
+<div class="caption">The focused pasted-CVE capture is included in the Windows MarkView copy of this deck.</div>
 
 ---
 
-## Proof: one scan, three places to look
+## Proof: approval is a separate step
 
-`DEMO-PROVEN` — the visible flow shows a server package, a stored artifact, and a container image as separate findings.
+<strong>DEMO-PROVEN</strong> — the guided example shows a human decision before the mock action is recorded.
 
-<img src="demo-proof/SecCop-Scan-02.png" alt="SecCop three-source scan" style="display:block;max-width:86%;max-height:390px;object-fit:contain;margin:12px auto 0;">
+<img src="demo-proof/SecCop-Scan-03.png" alt="Security Copilot approval gate">
 
----
-
-## Proof: approval is visible
-
-`DEMO-PROVEN` — the proposed change is shown before approval. Rejecting it keeps the system read-only.
-
-<img src="demo-proof/SecCop-Scan-03.png" alt="SecCop approval gate" style="display:block;max-width:86%;max-height:390px;object-fit:contain;margin:12px auto 0;">
+<div class="caption">The demonstration records a no-op approval. It does not claim that an AWS package changed.</div>
 
 ---
 
-## Proof: unsafe paths stop
+## Why the direction is controlled
 
-`DEMO-PROVEN` — an unknown finding stops with a stable reason code and no tool calls.
+<div class="panels">
+<div class="panel"><h3>Least privilege</h3><p>Sources expose aliases and summaries, not raw cloud identifiers.</p></div>
+<div class="panel"><h3>Deterministic checks</h3><p>Typed input and stable reason codes make stop/go decisions repeatable.</p></div>
+<div class="panel"><h3>Human accountability</h3><p>A suggestion cannot approve itself or widen its authority.</p></div>
+<div class="panel"><h3>Evidence</h3><p>Before, action, and outcome remain visible for review.</p></div>
+</div>
 
-<img src="demo-proof/SecCop-Scan-05-blocked.png" alt="SecCop blocked request" style="display:block;max-width:86%;max-height:390px;object-fit:contain;margin:12px auto 0;">
+<p><strong>TEST-PROVEN:</strong> the browser E2E uses Playwright Core, checks the API and DOM, and confirms no external request or console error.</p>
 
 ---
 
-## Value and one next decision
+## Value and next decision
 
-**Value:** Faster review, a smaller explainable change, and a clear approval record.
+### Management value
 
-**Limitations:** Demo fixtures; GuardDuty, real malware, AgentCore, and new networking are outside this POC.
+- Faster first review of a reported CVE.
+- Fewer hand-offs between security and operations.
+- A simple explanation of what is affected and what happens next.
+- A visible approval and verification record.
 
-**Next:** Approve one exact package update on the disposable old-AMI server so the DEMO can show:
+### Honest boundary
 
-**Old package** &rarr; **approved fix** &rarr; **verified clean**
+Daily scheduling, real S3/ECR remediation, and production rollout are **PLANNED**, not proven by this POC.
 
-This remains a learning POC, not an enterprise remediation platform.
+### Next decision
 
-<!-- Ask for one bounded approval, not approval for autonomous remediation. -->
+Approve the direction for the next small evaluation: reuse this same CVE review experience for a scheduled daily scan, while keeping human approval for every sensitive change.
+
+<!-- Speaker note: Ask for approval to continue the bounded evaluation, not production authorization. -->

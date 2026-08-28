@@ -38,6 +38,10 @@ const shot = async (name, options = {}) => {
   await page.screenshot({ path: path.join(evidenceDir, name), ...options });
   await page.screenshot({ path: path.join(reviewDir, name), ...options });
 };
+const focusedShot = async (locator, name) => {
+  await locator.screenshot({ path: path.join(evidenceDir, name) });
+  await locator.screenshot({ path: path.join(reviewDir, name) });
+};
 
 let browser;
 let page;
@@ -65,11 +69,50 @@ try {
   assert((await page.locator('body').innerText()).includes('Safe demo boundary.'), 'Safety banner was not visible');
   await shot('SecCop-Scan-01.png');
 
+  const cveReviewResponsePromise = page.waitForResponse(
+    (item) => item.url().endsWith('/api/cve-review') && item.request().method() === 'POST',
+    { timeout: 10_000 },
+  );
+  await page.locator('#prompt').fill('CVE-2099-0001');
+  await page.locator('#run').click();
+  const cveReviewResponse = await cveReviewResponsePromise;
+  assert(cveReviewResponse.ok(), 'The CVE review endpoint did not return HTTP success');
+  const cveReviewPayload = await cveReviewResponse.json();
+  assert(cveReviewPayload.result.status === 'READY', 'The pasted CVE review was not READY');
+  assert(cveReviewPayload.result.match_count === 3, 'The pasted CVE did not check all three demo sources');
+  assert(cveReviewPayload.result.source_results.length === 3, 'The pasted CVE review did not return three sources');
+  assert(!JSON.stringify(cveReviewPayload).match(/arn:|i-[0-9a-f]{8,17}/), 'A private AWS identifier was exposed in CVE review');
+  await page.locator('.cve-source').nth(0).waitFor({ state: 'visible', timeout: 10_000 });
+  assert(await page.locator('.cve-source').count() === 3, 'Three CVE source rows were not rendered');
+  await saveJson('cve-review-state.json', {
+    status: cveReviewPayload.result.status,
+    reason_code: cveReviewPayload.result.reason_code,
+    cve_id: cveReviewPayload.result.cve_id,
+    match_count: cveReviewPayload.result.match_count,
+    source_results: cveReviewPayload.result.source_results.map((item) => ({
+      source_type: item.source_type,
+      resource_alias: item.resource_alias,
+      status: item.status,
+      reason_code: item.reason_code,
+    })),
+  });
+  await shot('SecCop-CVE-01.png', { fullPage: true });
+  await focusedShot(page.locator('.result-card').last(), 'SecCop-CVE-01-slide.png');
+
+  await page.locator('#new-chat').click();
+  const cveReviewCallsBeforeReject = browserRequests.filter((item) => item.url.endsWith('/api/cve-review')).length;
+  await page.locator('#prompt').fill('CVE-2099-0001 and CVE-2099-0002');
+  await page.locator('#run').click();
+  await page.getByText('Please paste one CVE at a time so each check stays clear and exact.', { exact: true }).waitFor({ timeout: 10_000 });
+  const cveReviewCallsAfterReject = browserRequests.filter((item) => item.url.endsWith('/api/cve-review')).length;
+  assert(cveReviewCallsAfterReject === cveReviewCallsBeforeReject, 'Multiple CVEs reached the review endpoint');
+  await page.locator('#new-chat').click();
+
   const scanResponsePromise = page.waitForResponse(
     (item) => item.url().endsWith('/api/scan') && item.request().method() === 'POST',
     { timeout: 10_000 },
   );
-  await page.locator('#scan-welcome').click();
+  await page.locator('#scan-environment').click();
   const scanResponse = await scanResponsePromise;
   assert(scanResponse.ok(), 'The scan endpoint did not return HTTP success');
   const scanPayload = await scanResponse.json();
@@ -98,6 +141,7 @@ try {
   await shot('SecCop-Scan-02-live-review.png', { fullPage: true });
 
   await page.locator('#new-chat').click();
+  await page.locator('#input-mode').selectOption('SYNTHETIC_LAB');
   await page.locator('#prompt').fill('Inspect CVE-2099-0001 in my synthetic lab.');
   const runResponsePromise = page.waitForResponse(
     (item) => item.url().endsWith('/api/run') && item.request().method() === 'POST',
@@ -109,6 +153,9 @@ try {
   const runPayload = await runResponse.json();
   assert(runPayload.result.status === 'AWAITING_APPROVAL', 'The proposal did not stop for approval');
   await page.getByRole('button', { name: 'Approve mock remediation', exact: true }).waitFor({ timeout: 10_000 });
+  await page.setViewportSize({ width: 1920, height: 1800 });
+  await focusedShot(page.locator('.result-card').last(), 'SecCop-Approval-01-slide.png');
+  await page.setViewportSize({ width: 1920, height: 1080 });
   await saveJson('positive-state.json', {
     status: runPayload.result.status,
     reason_code: runPayload.result.reason_code,
@@ -136,6 +183,7 @@ try {
   await shot('SecCop-Scan-04.png', { fullPage: true });
 
   await page.locator('#new-chat').click();
+  await page.locator('#input-mode').selectOption('SYNTHETIC_LAB');
   await page.locator('#prompt').fill('Inspect CVE-2099-0002 in my synthetic lab.');
   const blockedResponsePromise = page.waitForResponse(
     (item) => item.url().endsWith('/api/run') && item.request().method() === 'POST',
@@ -166,9 +214,12 @@ try {
     viewport: { width: 1920, height: 1080 },
     screenshots: [
       'SecCop-Scan-01.png',
+      'SecCop-CVE-01.png',
+      'SecCop-CVE-01-slide.png',
       'SecCop-Scan-02.png',
       'SecCop-Scan-02-live-review.png',
       'SecCop-Scan-03.png',
+      'SecCop-Approval-01-slide.png',
       'SecCop-Scan-04.png',
       'SecCop-Scan-05-blocked.png',
     ],
