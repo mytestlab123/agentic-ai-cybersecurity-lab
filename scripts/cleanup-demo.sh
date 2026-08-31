@@ -7,6 +7,11 @@ tf_dir="$repo_dir/infra/project1-seccop-ec2"
 profile=${SECCOP_PROFILE:-vagent}
 region=${SECCOP_REGION:-ap-southeast-1}
 ami_name_pattern=${SECCOP_AMI_NAME_PATTERN:-amzn2-ami-hvm-2.0.20260608.0-x86_64-gp2}
+expected_principal=project1
+target_name=seccop-project1-old-ami-host-r01
+instance_profile=seccop-project1-ssm-r01
+subnet_id=
+ec2_only=0
 confirm=0
 
 while (($#)); do
@@ -15,11 +20,19 @@ while (($#)); do
       confirm=1
       shift
       ;;
-    --profile|--region)
+    --ec2-only)
+      ec2_only=1
+      shift
+      ;;
+    --profile|--region|--target-name|--expected-principal|--instance-profile|--subnet-id)
       [[ $# -ge 2 ]] || { printf '%s needs a value\n' "$1" >&2; exit 2; }
       case "$1" in
         --profile) profile=$2 ;;
         --region) region=$2 ;;
+        --target-name) target_name=$2 ;;
+        --expected-principal) expected_principal=$2 ;;
+        --instance-profile) instance_profile=$2 ;;
+        --subnet-id) subnet_id=$2 ;;
       esac
       shift 2
       ;;
@@ -49,10 +62,105 @@ aws=(aws --profile "$profile" --region "$region")
 
 "${aws[@]}" sts get-caller-identity >"$evidence_dir/identity.json"
 caller_arn=$(jq -r '.Arn // empty' "$evidence_dir/identity.json")
-[[ "$caller_arn" == */project1 ]] || {
-  printf '%s\n' 'The selected profile is not the Project1 operator identity.' >&2
+[[ "$caller_arn" == */"$expected_principal" ]] || {
+  printf '%s\n' 'The selected profile does not match the expected operator identity.' >&2
   exit 1
 }
+
+if ((ec2_only == 1)); then
+  [[ "$profile" == amit && "$expected_principal" == amit && "$region" == ap-southeast-1 ]] || {
+    printf '%s\n' 'The EC2-only cleanup is restricted to the approved amit identity.' >&2
+    exit 1
+  }
+  [[ "$target_name" == seccop-amit-inspector-host-r01 ]] || {
+    printf '%s\n' 'The EC2-only cleanup target is not allowlisted.' >&2
+    exit 1
+  }
+  [[ "$instance_profile" == AmazonSSMRoleForInstancesQuickSetup && "$subnet_id" == subnet-* ]] || {
+    printf '%s\n' 'The EC2-only cleanup reuse inputs are not allowlisted.' >&2
+    exit 1
+  }
+  ttl=$(date '+%d-%m-%y')
+  created=$(date '+%Y-%m-%d')
+  expires_at=$(date --iso-8601=seconds --date='+2 hours')
+  instance_id=$(terraform -chdir="$tf_dir" output -raw instance_id 2>/dev/null || true)
+  volume_id=
+  group_id=
+  if [[ -n "$instance_id" ]]; then
+    "${aws[@]}" ec2 describe-instances --instance-ids "$instance_id" >"$evidence_dir/instance-before.json"
+    jq -e --arg name "$target_name" '
+      .Reservations[0].Instances[0] as $i
+      | any($i.Tags[]?; .Key == "Name" and .Value == $name)
+      and any($i.Tags[]?; .Key == "Repo" and .Value == "agentic-ai-cybersecurity-lab")
+      and ($i.SecurityGroups | length == 1)
+    ' "$evidence_dir/instance-before.json" >/dev/null || {
+      printf '%s\n' 'The EC2-only cleanup ownership gate failed.' >&2
+      exit 1
+    }
+    volume_id=$(jq -r '.Reservations[0].Instances[0].BlockDeviceMappings[0].Ebs.VolumeId // empty' "$evidence_dir/instance-before.json")
+    group_id=$(jq -r '.Reservations[0].Instances[0].SecurityGroups[0].GroupId // empty' "$evidence_dir/instance-before.json")
+    "${aws[@]}" ec2 describe-security-groups --group-ids "$group_id" >"$evidence_dir/security-group-before.json"
+    jq -e '.SecurityGroups | length == 1 and .[0].IpPermissions == []' "$evidence_dir/security-group-before.json" >/dev/null || {
+      printf '%s\n' 'The EC2-only cleanup security-group gate failed.' >&2
+      exit 1
+    }
+  fi
+  tf_args=(
+    -var="profile=$profile"
+    -var="region=$region"
+    -var="name=$target_name"
+    -var="ami_name_pattern=$ami_name_pattern"
+    -var="operator=amit"
+    -var="issue=40"
+    -var="created=$created"
+    -var="ttl=$ttl"
+    -var="expires_at=$expires_at"
+    -var="subnet_id=$subnet_id"
+    -var="instance_profile_name=$instance_profile"
+  )
+  if [[ -n "$instance_id" ]]; then
+    terraform -chdir="$tf_dir" plan -destroy -input=false -out="$evidence_dir/terraform-destroy.tfplan" \
+      "${tf_args[@]}" >"$evidence_dir/terraform-destroy-plan.txt"
+    terraform -chdir="$tf_dir" show -json "$evidence_dir/terraform-destroy.tfplan" >"$evidence_dir/terraform-destroy-plan.json"
+    jq -e '
+      [.resource_changes[] | select(.change.actions != ["no-op"]) | {address, actions: .change.actions}]
+      | sort_by(.address)
+      == [
+        {"address":"aws_instance.target","actions":["delete"]},
+        {"address":"aws_security_group.target","actions":["delete"]}
+      ]
+    ' "$evidence_dir/terraform-destroy-plan.json" >/dev/null || {
+      printf '%s\n' 'The EC2-only destroy plan exceeded the two-resource allowlist.' >&2
+      exit 1
+    }
+    terraform -chdir="$tf_dir" apply -input=false "$evidence_dir/terraform-destroy.tfplan" >"$evidence_dir/terraform-destroy-apply.txt"
+    "${aws[@]}" ec2 wait instance-terminated --instance-ids "$instance_id"
+  fi
+  active_count=$("${aws[@]}" ec2 describe-instances --filters \
+    "Name=tag:Name,Values=$target_name" \
+    'Name=tag:Repo,Values=agentic-ai-cybersecurity-lab' \
+    'Name=instance-state-name,Values=pending,running,stopping,stopped' \
+    --query 'length(Reservations[].Instances[])' --output text)
+  [[ "$active_count" == 0 ]] || {
+    printf '%s\n' 'The EC2-only target remains active after cleanup.' >&2
+    exit 1
+  }
+  if [[ -n "$volume_id" ]]; then
+    [[ $("${aws[@]}" ec2 describe-volumes --filters "Name=volume-id,Values=$volume_id" --query 'length(Volumes)' --output text) == 0 ]] || {
+      printf '%s\n' 'The EC2-only root volume remains after cleanup.' >&2
+      exit 1
+    }
+  fi
+  if [[ -n "$group_id" ]]; then
+    ! "${aws[@]}" ec2 describe-security-groups --group-ids "$group_id" >"$evidence_dir/security-group-after.json" 2>"$evidence_dir/security-group-after.stderr" || {
+      printf '%s\n' 'The EC2-only security group remains after cleanup.' >&2
+      exit 1
+    }
+  fi
+  jq -nc '{status:"CLEANED",reason_code:"SECCOP_EC2_ONLY_CLEANED",resource_alias:"EC2_RESOURCE_01"}'
+  printf 'Evidence: %s\n' "$evidence_dir" >&2
+  exit 0
+fi
 
 expected_names=(
   seccop-project1-inspector-host-r01

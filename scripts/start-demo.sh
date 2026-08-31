@@ -8,6 +8,10 @@ profile=${SECCOP_PROFILE:-vagent}
 region=${SECCOP_REGION:-ap-southeast-1}
 target_name=${SECCOP_TARGET_NAME:-seccop-project1-old-ami-host-r01}
 ami_name_pattern=${SECCOP_AMI_NAME_PATTERN:-amzn2-ami-hvm-2.0.20260608.0-x86_64-gp2}
+expected_principal=project1
+instance_profile=seccop-project1-ssm-r01
+subnet_id=
+ec2_only=0
 confirm=0
 forward_args=()
 
@@ -18,12 +22,19 @@ while (($#)); do
       forward_args+=("$1")
       shift
       ;;
-    --profile|--region|--target-name)
+    --ec2-only)
+      ec2_only=1
+      shift
+      ;;
+    --profile|--region|--target-name|--expected-principal|--instance-profile|--subnet-id)
       [[ $# -ge 2 ]] || { printf '%s needs a value\n' "$1" >&2; exit 2; }
       case "$1" in
         --profile) profile=$2 ;;
         --region) region=$2 ;;
         --target-name) target_name=$2 ;;
+        --expected-principal) expected_principal=$2 ;;
+        --instance-profile) instance_profile=$2 ;;
+        --subnet-id) subnet_id=$2 ;;
       esac
       forward_args+=("$1" "$2")
       shift 2
@@ -54,22 +65,72 @@ cd "$repo_dir"
 
 AWS_PROFILE="$profile" AWS_REGION="$region" aws sts get-caller-identity >"$evidence_dir/identity.json"
 caller_arn=$(jq -r '.Arn // empty' "$evidence_dir/identity.json")
-[[ "$caller_arn" == */project1 ]] || {
-  printf '%s\n' 'The selected profile is not the Project1 operator identity.' >&2
+[[ "$caller_arn" == */"$expected_principal" ]] || {
+  printf '%s\n' 'The selected profile does not match the expected operator identity.' >&2
   exit 1
 }
 
+tf_args=(
+  -var="profile=$profile"
+  -var="region=$region"
+  -var="name=$target_name"
+  -var="ami_name_pattern=$ami_name_pattern"
+)
+if ((ec2_only == 1)); then
+  [[ "$profile" == amit && "$expected_principal" == amit && "$region" == ap-southeast-1 ]] || {
+    printf '%s\n' 'The EC2-only lane is restricted to the approved amit identity.' >&2
+    exit 1
+  }
+  [[ "$target_name" == seccop-amit-inspector-host-r01 ]] || {
+    printf '%s\n' 'The EC2-only target name is not allowlisted.' >&2
+    exit 1
+  }
+  [[ "$instance_profile" == AmazonSSMRoleForInstancesQuickSetup && "$subnet_id" == subnet-* ]] || {
+    printf '%s\n' 'The EC2-only reuse inputs are not allowlisted.' >&2
+    exit 1
+  }
+  ttl=$(date '+%d-%m-%y')
+  created=$(date '+%Y-%m-%d')
+  expires_at=$(date --iso-8601=seconds --date='+2 hours')
+  tf_args+=(
+    -var="operator=amit"
+    -var="issue=40"
+    -var="created=$created"
+    -var="ttl=$ttl"
+    -var="expires_at=$expires_at"
+    -var="subnet_id=$subnet_id"
+    -var="instance_profile_name=$instance_profile"
+  )
+fi
+
 terraform -chdir="$tf_dir" init -input=false >"$evidence_dir/terraform-init.txt"
 terraform -chdir="$tf_dir" plan -input=false -out="$evidence_dir/terraform-apply.tfplan" \
-  -var="profile=$profile" \
-  -var="region=$region" \
-  -var="name=$target_name" \
-  -var="ami_name_pattern=$ami_name_pattern" >"$evidence_dir/terraform-plan.txt"
+  "${tf_args[@]}" >"$evidence_dir/terraform-plan.txt"
 terraform -chdir="$tf_dir" show -no-color "$evidence_dir/terraform-apply.tfplan" >"$evidence_dir/terraform-plan-expanded.txt"
+terraform -chdir="$tf_dir" show -json "$evidence_dir/terraform-apply.tfplan" >"$evidence_dir/terraform-plan.json"
+if ((ec2_only == 1)); then
+  jq -e '
+    [.resource_changes[] | select(.change.actions != ["no-op"]) | {address, actions: .change.actions}]
+    | sort_by(.address)
+    == [
+      {"address":"aws_instance.target","actions":["create"]},
+      {"address":"aws_security_group.target","actions":["create"]}
+    ]
+  ' "$evidence_dir/terraform-plan.json" >/dev/null || {
+    printf '%s\n' 'The EC2-only Terraform plan exceeded the two-resource allowlist.' >&2
+    exit 1
+  }
+fi
 terraform -chdir="$tf_dir" apply -input=false "$evidence_dir/terraform-apply.tfplan" >"$evidence_dir/terraform-apply.txt"
 
 instance_id=$(terraform -chdir="$tf_dir" output -raw instance_id)
 printf '%s\n' "$instance_id" >"$evidence_dir/instance-id.txt"
+
+if ((ec2_only == 1)); then
+  jq -nc '{status:"CREATED",reason_code:"SECCOP_EC2_ONLY_CREATED",resource_alias:"EC2_RESOURCE_01",mutation_performed:true}'
+  printf 'Evidence: %s\n' "$evidence_dir" >&2
+  exit 0
+fi
 
 # SSM registration and Patch Manager state can lag a successful EC2 launch.
 # Start a scan-only Patch Manager operation once SSM is online, then wait for

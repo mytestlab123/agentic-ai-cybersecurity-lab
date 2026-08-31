@@ -16,6 +16,12 @@ variable "availability_zone" {
   default     = "ap-southeast-1a"
 }
 
+variable "subnet_id" {
+  description = "Optional exact existing public subnet; empty preserves Project1 discovery."
+  type        = string
+  default     = ""
+}
+
 variable "instance_profile_name" {
   description = "Reusable SSM instance profile created by the shared stack."
   type        = string
@@ -38,6 +44,30 @@ variable "name" {
   description = "Unique disposable target name."
   type        = string
   default     = "seccop-project1-inspector-host-r01"
+}
+
+variable "operator" {
+  description = "Expected personal-lab operator alias used in tags."
+  type        = string
+  default     = "project1"
+}
+
+variable "issue" {
+  description = "Owning GitHub issue number."
+  type        = string
+  default     = "17"
+}
+
+variable "created" {
+  description = "Creation date in YYYY-MM-DD form."
+  type        = string
+  default     = "2026-08-26"
+}
+
+variable "expires_at" {
+  description = "Required bounded expiry timestamp."
+  type        = string
+  default     = "2026-09-01T23:59:00+08:00"
 }
 
 variable "ttl" {
