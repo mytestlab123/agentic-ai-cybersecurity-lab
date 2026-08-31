@@ -1,7 +1,28 @@
+locals {
+  runtime_tags = {
+    Project     = "Security Copilot"
+    project     = "Security Copilot"
+    Repo        = "agentic-ai-cybersecurity-lab"
+    dev         = "amit"
+    created     = var.created
+    tools       = "cdx"
+    environment = "dev"
+    Environment = "seccop-demo"
+    owner       = "amit"
+    version     = "seccop-${var.operator}-r01"
+    TTL         = var.ttl
+    Purpose     = "Inspector-to-SSM old-package learning demo"
+    purpose     = "Inspector-to-SSM old-package learning demo"
+    phase       = "seccop-${var.operator}-demo"
+    Cleanup     = "terminate-ec2-only"
+    cleanup     = "delete"
+  }
+}
+
 resource "aws_security_group" "target" {
   name        = "${var.name}-sg"
   description = "No-ingress SecCop demo target; outbound HTTPS only"
-  vpc_id      = data.aws_vpc.shared.id
+  vpc_id      = data.aws_vpc.selected.id
 
   egress {
     description = "HTTPS to AWS and package repositories"
@@ -16,7 +37,7 @@ resource "aws_security_group" "target" {
     from_port   = 53
     to_port     = 53
     protocol    = "udp"
-    cidr_blocks = [data.aws_vpc.shared.cidr_block]
+    cidr_blocks = [data.aws_vpc.selected.cidr_block]
   }
 
   egress {
@@ -24,18 +45,16 @@ resource "aws_security_group" "target" {
     from_port   = 53
     to_port     = 53
     protocol    = "tcp"
-    cidr_blocks = [data.aws_vpc.shared.cidr_block]
+    cidr_blocks = [data.aws_vpc.selected.cidr_block]
   }
 
-  tags = {
-    Name = "${var.name}-sg"
-  }
+  tags = merge(local.runtime_tags, { Name = "${var.name}-sg" })
 }
 
 resource "aws_instance" "target" {
   ami                         = data.aws_ami.amazon_linux_2.id
   instance_type               = var.instance_type
-  subnet_id                   = data.aws_subnet.public.id
+  subnet_id                   = data.aws_subnet.selected.id
   vpc_security_group_ids      = [aws_security_group.target.id]
   iam_instance_profile        = data.aws_iam_instance_profile.shared.name
   associate_public_ip_address = true
@@ -54,13 +73,11 @@ resource "aws_instance" "target" {
     delete_on_termination = true
   }
 
-  tags = {
+  volume_tags = merge(local.runtime_tags, { Name = "${var.name}-root" })
+
+  tags = merge(local.runtime_tags, {
     Name      = var.name
-    Project   = "Security Copilot"
-    Repo      = "agentic-ai-cybersecurity-lab"
-    Issue     = "17"
-    Cleanup   = "terminate-ec2-only"
-    Purpose   = "Inspector-to-SSM old-package learning demo"
-    ExpiresAt = "2026-09-01T23:59:00+08:00"
-  }
+    Issue     = var.issue
+    ExpiresAt = var.expires_at
+  })
 }

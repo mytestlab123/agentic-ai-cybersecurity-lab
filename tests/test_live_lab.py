@@ -1,4 +1,5 @@
 import argparse
+import subprocess
 import sys
 from pathlib import Path
 
@@ -101,3 +102,29 @@ def test_apply_requires_confirmation_before_run_instances() -> None:
 
     assert apply_plan(args(), fake, plan) == 2
     assert all(operation != "run-instances" for _service, operation, _payload in fake.calls)
+
+
+def test_ec2_only_wrapper_keeps_confirmation_gate() -> None:
+    script = Path(__file__).parents[1] / "scripts" / "start-demo.sh"
+    completed = subprocess.run(
+        [
+            str(script),
+            "--ec2-only",
+            "--profile",
+            "amit",
+            "--expected-principal",
+            "amit",
+            "--instance-profile",
+            "AmazonSSMRoleForInstancesQuickSetup",
+            "--subnet-id",
+            "subnet-private-test-value",
+            "--target-name",
+            "seccop-amit-inspector-host-r01",
+        ],
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+
+    assert completed.returncode == 2
+    assert "CONFIRM_REQUIRED" in completed.stdout
