@@ -1,5 +1,6 @@
 from pathlib import Path
 import json
+import sys
 from threading import Thread
 from urllib.error import HTTPError
 from urllib.request import Request, urlopen
@@ -21,6 +22,9 @@ from secure_agent_harness import poc_server
 from secure_agent_harness.poc_server import _Handler
 from secure_agent_harness.seccop_scan import review_demo_cve
 from http.server import ThreadingHTTPServer
+
+sys.path.insert(0, str(Path(__file__).parents[1] / "scripts"))
+import seccop_demo  # noqa: E402
 
 
 def _request(cve_id: str = "CVE-2099-0001") -> PocRequest:
@@ -247,6 +251,24 @@ def test_demo_scan_returns_three_alias_only_findings_and_no_mutation_controls() 
         server.shutdown()
         server.server_close()
         thread.join(timeout=2)
+
+
+def test_ecr_scan_names_storage_and_scanner(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    class FakeAws:
+        def run(self, *args: str, input_text: str | None = None) -> str:
+            assert args == ("ecr", "get-login-password")
+            return "SYNTHETIC_TOKEN"
+
+    def fake_trivy(args: list[str], *, input_text: str | None = None) -> dict[str, object]:
+        assert args[-1].endswith(":demo-current")
+        assert "--image-src" in args and "remote" in args
+        return {"Results": [{"Vulnerabilities": [{}]}]}
+
+    monkeypatch.setattr(seccop_demo, "_run_trivy", fake_trivy)
+    result = seccop_demo._scan_ecr(FakeAws(), tmp_path, "registry.invalid/demo")
+
+    assert result["storage_provider"] == "AWS_ECR"
+    assert result["scanner_provider"] == "LOCAL_TRIVY"
 
 
 def test_live_evidence_upload_validates_without_echoing_untrusted_payload() -> None:

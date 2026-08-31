@@ -51,6 +51,10 @@ Online, but it is publicly addressed and Inspector EC2 coverage is not enabled
 for this account. Patch Manager non-compliance counts are not accepted as a
 real CVE finding. A real package remediation is therefore blocked.
 
+The existing ECR scan remains the KISS fallback: AWS ECR stores the retained
+image, while local Trivy produces the dependency finding. The scan output names
+both providers explicitly and performs no AWS mutation.
+
 Next gate: move or replace the disposable target with an approved private SSM
 path and enable Inspector coverage, then obtain one exact proposal-specific
 approval. Do not infer a CVE from Patch Manager counts. Cleanup remains a

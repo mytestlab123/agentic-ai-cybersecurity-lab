@@ -493,6 +493,8 @@ def _scan_ecr(aws: AwsCli, directory: Path, uri: str) -> dict[str, Any]:
         "alias": "IMAGE_01",
         "state": "NON_COMPLIANT" if vulnerabilities else "COMPLIANT",
         "reason_code": "SECCOP_ECR_NON_COMPLIANT" if vulnerabilities else "SECCOP_ECR_COMPLIANT",
+        "storage_provider": "AWS_ECR",
+        "scanner_provider": "LOCAL_TRIVY",
         "vulnerabilities": vulnerabilities,
     }
 
