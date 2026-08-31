@@ -147,11 +147,26 @@ the app and browser profile it created.
 ## Repeatable three-source DEMO
 
 Issue 32 adds guarded start and cleanup commands for the approved live
-rehearsal. `start-demo.sh` applies the existing Terraform EC2 stack with a
+rehearsal. The normal operator path is one command:
+
+```bash
+./scripts/demo-ready.sh
+```
+
+Invoking that exact script is the bounded startup authorization. It does not
+ask for a second confirmation. It prepares and verifies the three findings,
+starts or reuses the AWS-backed GUI in tmux, and prints the URL. It performs no
+remediation and no cleanup. If a previous demo already fixed the disposable
+server, it may recycle only that tagged EC2 target from the pinned old AMI so
+the server finding is ready again; shared infrastructure is retained.
+
+Internally, `start-demo.sh` applies the existing Terraform EC2 stack with a
 pinned older Amazon Linux 2 image, waits for a scan-only Patch Manager summary,
 then creates or refreshes two small versioned S3 buckets and one ECR repository
 with known old and clean artifacts. It does not enable GuardDuty or create
 network resources.
+
+Lower-level operator and validation commands remain available:
 
 ```bash
 ./scripts/start-demo.sh --profile vagent --region ap-southeast-1 --confirm
@@ -160,7 +175,7 @@ uv run python scripts/seccop_demo.py verify --profile vagent --region ap-southea
 ./scripts/cleanup-demo.sh --profile vagent --region ap-southeast-1 --confirm
 ```
 
-The first command is the preparation mutation. The cleanup command creates
+The lower-level first command is the preparation mutation. The cleanup command creates
 Terraform destroy plans and removes only the three tagged demo EC2 targets,
 their dedicated security groups, and the tag-owned S3/ECR artifacts. The shared
 VPC and SSM profile are never owned by these commands. S3 and ECR fixes remain

@@ -6,6 +6,7 @@ API, AgentCore runtime, or mutation path exists here.
 """
 
 from dataclasses import dataclass
+from datetime import datetime, timedelta, timezone
 
 from .contracts import (
     AgentPlan,
@@ -16,6 +17,7 @@ from .contracts import (
     PocRemediationProposal,
     PocResult,
     PocSsmNode,
+    PocVerificationResult,
     SanitizedInstance,
     ToolCallProposal,
     ToolResult,
@@ -195,9 +197,14 @@ class PocEngine:
 
         evidence = _evidence(harness_result.tool_results)
         proposal = PocRemediationProposal(
+            proposal_id=f"POC_PROPOSAL_{request_number:02d}",
             cve_id=evidence.cve_id,
             resource_alias=evidence.resource_alias,
+            package_name="demo-package",
+            observed_version="1.0.0",
+            expected_fixed_version="1.1.0",
             action="MOCK_PATCH",
+            approval_expires_at=datetime.now(timezone.utc) + timedelta(minutes=15),
             requires_approval=True,
             mutation_performed=False,
         )
@@ -224,6 +231,39 @@ class PocEngine:
         session = _PocSession(result=result, events=events.items)
         self._sessions[run_id] = session
         return session
+
+    def verify(self, run_id: str) -> PocVerificationResult:
+        """Prove approval binding and honest post-SSM verification locally."""
+
+        session = self._sessions[run_id]
+        proposal = session.result.proposal
+        if proposal is None or session.result.status != "MOCK_COMPLETED":
+            return PocVerificationResult(
+                run_id=run_id,
+                status="BLOCKED",
+                reason_code="APPROVAL_BYPASS_DENIED",
+                resource_alias=proposal.resource_alias if proposal else "EC2_RESOURCE_01",
+                package_name=proposal.package_name if proposal else "demo-package",
+                ssm_status="NOT_RUN",
+                package_state="NOT_CHECKED",
+                inspector_state="NOT_CHECKED",
+                verification_status="NOT_AVAILABLE",
+                mutation_performed=False,
+                message="Verification was denied because the exact proposal has not been approved.",
+            )
+        return PocVerificationResult(
+            run_id=run_id,
+            status="COMPLETED",
+            reason_code="INSPECTOR_RESCAN_PENDING",
+            resource_alias=proposal.resource_alias,
+            package_name=proposal.package_name,
+            ssm_status="SUCCESS",
+            package_state="FIXED",
+            inspector_state="ACTIVE",
+            verification_status="PENDING_RESCAN",
+            mutation_performed=False,
+            message="The mocked SSM step succeeded, but Inspector is still active; closure remains pending.",
+        )
 
     def decide(self, run_id: str, approve: bool) -> _PocSession:
         session = self._sessions[run_id]

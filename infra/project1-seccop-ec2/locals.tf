@@ -5,7 +5,7 @@ locals {
     project     = "Security Copilot"
     Repo        = "agentic-ai-cybersecurity-lab"
     dev         = "amit"
-    created     = "2026-08-26"
+    created     = var.created
     tools       = "cdx"
     environment = "dev"
     Environment = "seccop-demo"
@@ -15,6 +15,7 @@ locals {
     Purpose     = "Inspector-to-SSM old-package learning demo"
     purpose     = "Inspector-to-SSM old-package learning demo"
     phase       = "seccop-project1-demo"
+    cleanup     = "delete"
     Cleanup     = "terminate-ec2-only"
   }
 }

@@ -133,11 +133,35 @@ class PocEvidence(Contract):
 
 
 class PocRemediationProposal(Contract):
+    proposal_id: str = Field(pattern=r"^POC_PROPOSAL_[0-9]{2}$")
+    proposal_version: Literal["1"] = "1"
     cve_id: str = Field(pattern=r"^CVE-[0-9]{4}-[0-9]{4,}$")
     resource_alias: str = Field(pattern=r"^EC2_RESOURCE_[0-9]{2}$")
+    package_name: str = Field(pattern=r"^[A-Za-z0-9][A-Za-z0-9._+:/@-]{0,79}$")
+    observed_version: str = Field(pattern=r"^[A-Za-z0-9][A-Za-z0-9._+:/@~-]{0,63}$")
+    expected_fixed_version: str = Field(pattern=r"^[A-Za-z0-9][A-Za-z0-9._+:/@~-]{0,63}$")
     action: Literal["MOCK_PATCH"]
+    ssm_document: Literal["AWS-RunShellScript"] = "AWS-RunShellScript"
+    ssm_operation: Literal["REPO_OWNED_ONE_PACKAGE_UPDATE"] = "REPO_OWNED_ONE_PACKAGE_UPDATE"
+    reboot_option: Literal["NoReboot"] = "NoReboot"
+    approval_state: Literal["AWAITING_APPROVAL"] = "AWAITING_APPROVAL"
+    approval_expires_at: datetime
     requires_approval: Literal[True]
     mutation_performed: Literal[False]
+
+
+class PocVerificationResult(Contract):
+    run_id: str = Field(pattern=r"^POC_RUN_[0-9]{2}$")
+    status: Literal["COMPLETED", "BLOCKED"]
+    reason_code: Literal["INSPECTOR_RESCAN_PENDING", "APPROVAL_BYPASS_DENIED"]
+    resource_alias: str = Field(pattern=r"^EC2_RESOURCE_[0-9]{2}$")
+    package_name: str = Field(pattern=r"^[A-Za-z0-9][A-Za-z0-9._+:/@-]{0,79}$")
+    ssm_status: Literal["SUCCESS", "NOT_RUN"]
+    package_state: Literal["FIXED", "NOT_CHECKED"]
+    inspector_state: Literal["ACTIVE", "NOT_CHECKED"]
+    verification_status: Literal["PENDING_RESCAN", "NOT_AVAILABLE"]
+    mutation_performed: Literal[False]
+    message: str = Field(min_length=1, max_length=220)
 
 
 class PocResult(Contract):
@@ -461,6 +485,7 @@ class SecCopRemediationProposal(Contract):
     """Deterministic, approval-required proposal; never an AWS mutation."""
 
     proposal_id: str = Field(pattern=r"^SECCOP_PROPOSAL_[0-9]{2}$")
+    proposal_version: Literal["1"] = "1"
     status: Literal["READY", "BLOCKED"]
     reason_code: Literal[
         "SECCOP_REMEDIATION_PROPOSAL_READY",
@@ -492,9 +517,12 @@ class SecCopRemediationProposal(Contract):
     fixed_version: str | None = Field(default=None, pattern=r"^[A-Za-z0-9][A-Za-z0-9._+:/@~-]{0,63}$")
     action: Literal["SSM_INSTALL_SECURITY_UPDATE", "NONE"]
     reboot_policy: Literal["NO_REBOOT", "EXPLICIT_APPROVAL_REQUIRED", "UNKNOWN"]
+    ssm_document: Literal["AWS-RunShellScript", "NONE"] = "NONE"
+    ssm_operation: Literal["REPO_OWNED_ONE_PACKAGE_UPDATE", "NONE"] = "NONE"
+    reboot_option: Literal["NoReboot", "NONE"] = "NONE"
+    approval_state: Literal["AWAITING_APPROVAL", "NOT_APPROVABLE"] = "NOT_APPROVABLE"
     requires_approval: bool
     mutation_performed: Literal[False]
-    proposal_hash: str = Field(default="0" * 64, pattern=r"^[0-9a-f]{64}$")
     approval_expires_at: datetime | None = None
     read_executed_calls: tuple[str, ...] = ()
     message: str = Field(min_length=1, max_length=220)
@@ -507,17 +535,22 @@ class SecCopApprovalResult(Contract):
     reason_code: Literal["HUMAN_APPROVED_NO_MUTATION", "HUMAN_REJECTED"]
     proposal_id: str = Field(pattern=r"^SECCOP_PROPOSAL_[0-9]{2}$")
     mutation_performed: Literal[False]
-    proposal_hash: str = Field(default="0" * 64, pattern=r"^[0-9a-f]{64}$")
     approval_expires_at: datetime | None = None
     executed_calls: tuple[str, ...] = ()
     message: str = Field(min_length=1, max_length=220)
+
+
+class SecCopDecisionRequest(Contract):
+    """Human decision input; binding hashes remain server-side."""
+
+    proposal_id: str = Field(pattern=r"^SECCOP_PROPOSAL_[0-9]{2}$")
+    decision: Literal["APPROVE", "REJECT"]
 
 
 class SecCopRemediationRequest(Contract):
     """Approval-bound request for the one-target Phase 2B operation."""
 
     proposal_id: str = Field(pattern=r"^SECCOP_PROPOSAL_[0-9]{2}$")
-    proposal_hash: str = Field(pattern=r"^[0-9a-f]{64}$")
     reboot_approved: Literal[False] = False
 
 
@@ -547,7 +580,7 @@ class SecCopRemediationResult(Contract):
     before_version: str | None = Field(default=None, pattern=r"^[A-Za-z0-9][A-Za-z0-9._+:/@~-]{0,63}$")
     after_version: str | None = Field(default=None, pattern=r"^[A-Za-z0-9][A-Za-z0-9._+:/@~-]{0,63}$")
     change_state: Literal["NOT_STARTED", "ATTEMPTED", "COMPLETED"]
-    verification_status: Literal["VERIFIED", "PENDING_RESCAN", "NOT_AVAILABLE"]
+    verification_status: Literal["VERIFIED", "PENDING_RESCAN", "FAILED", "NOT_AVAILABLE"]
     reboot_approved: Literal[False]
     mutation_performed: bool
     executed_calls: tuple[str, ...] = ()

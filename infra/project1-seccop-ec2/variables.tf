@@ -50,3 +50,14 @@ variable "ttl" {
     error_message = "ttl must use DD-MM-YY format."
   }
 }
+
+variable "created" {
+  description = "Resource creation date in YYYY-MM-DD form. The start wrapper supplies the current date."
+  type        = string
+  default     = "2026-08-26"
+
+  validation {
+    condition     = can(regex("^[0-9]{4}-[0-9]{2}-[0-9]{2}$", var.created))
+    error_message = "created must use YYYY-MM-DD format."
+  }
+}

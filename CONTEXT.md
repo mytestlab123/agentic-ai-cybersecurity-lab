@@ -16,27 +16,42 @@ SSM path, no-ingress security group, IAM instance profile, available AMI, and
 enabled Inspector EC2 coverage.
 
 Current truth: Project1 reuses the existing Singapore default public VPC and
-shared SSM profile. The disposable SecCop rehearsal is currently clean: no
-running SecCop EC2 target, no tagged SecCop EBS volume, no dedicated SecCop
-security group, no SecCop S3 demo bucket, and no SecCop ECR demo repository.
-The default VPC, `redemption-eks-vpc`, and shared SSM IAM remain retained.
+shared SSM profile. The disposable SecCop DEMO is active for human review: one
+tagged `t3.small` EC2 target is running and SSM Online, its dedicated security
+group has no ingress, two protected/versioned S3 baseline buckets are present,
+and the tagged ECR repository contains the three small DEMO image tags. All
+disposable resources have TTL `01-09-26`. The default VPC,
+`redemption-eks-vpc`, and shared SSM IAM remain retained.
 
-The repo now owns repeatable wrappers: `./scripts/start-demo.sh --confirm`
-applies a pinned older Amazon Linux 2 target, waits for a scan-only Patch
-Manager summary, and seeds S3/ECR; `./scripts/cleanup-demo.sh --confirm`
-uses Terraform destroy plans and tag checks to remove only the disposable
-SecCop resources. A live start -> scan -> cleanup rehearsal passed. Evidence is
-under `~/.AGENTS-temp/agentic-ai-cybersecurity-lab/`; the public resource
-record is `docs/PROJECT1_RESOURCE_RECORD.yaml`.
+The canonical future startup is now one command: `./scripts/demo-ready.sh`.
+Invoking it is the bounded startup authorization; it internally applies the
+pinned Amazon Linux 2 target, waits for Patch Manager, refreshes S3/ECR,
+verifies three non-compliant findings, and ensures the AWS GUI is running in
+tmux. It performs no remediation or cleanup. If the disposable EC2 target is
+already compliant, the startup contract permits replacing only that tagged
+instance from the pinned old AMI. The lower-level guarded wrappers remain
+available, and `./scripts/cleanup-demo.sh --confirm` removes only the disposable
+SecCop resources after the DEMO. A live start -> scan -> cleanup
+rehearsal passed. Evidence is under
+`~/.AGENTS-temp/agentic-ai-cybersecurity-lab/`; the public resource record is
+`docs/PROJECT1_RESOURCE_RECORD.yaml`.
 
 GovTech PlatformAI non-inference gates pass through `gtx check` and
 `gtx models`. No capability key is stored in this repository and no inference
 is required for the read-only comparison.
 
-Validation: 32 tests, Python compilation, Terraform validate/plan, private
-network preflight, live target preflight, real Inspector export, and browser
-`/api/live-csv` comparison pass locally.
+Issue 36 now has a local code-owned checkpoint: the exact proposal keeps its
+binding data server-side, the browser can submit only a proposal decision, and
+independent verification cannot report `VERIFIED` from SSM success alone. The
+Playwright Core proof covers proposal review, approval-required, bypass denied,
+and Inspector-rescan-pending states without AWS mutation.
 
-Next gate: run `start-demo.sh --confirm` only when a live DEMO is needed, then
-use the GUI scan/review path. Any EC2 package remediation remains a separate
-human approval-gated milestone; run `cleanup-demo.sh --confirm` after the DEMO.
+Current live gate: read-only inspection confirms the disposable server is SSM
+Online, but it is publicly addressed and Inspector EC2 coverage is not enabled
+for this account. Patch Manager non-compliance counts are not accepted as a
+real CVE finding. A real package remediation is therefore blocked.
+
+Next gate: move or replace the disposable target with an approved private SSM
+path and enable Inspector coverage, then obtain one exact proposal-specific
+approval. Do not infer a CVE from Patch Manager counts. Cleanup remains a
+separate operator action after Amit finishes the DEMO.

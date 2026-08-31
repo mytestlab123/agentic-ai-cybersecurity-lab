@@ -174,6 +174,10 @@ for screenshot in \
   SecCop-CVE-01-slide.png \
   SecCop-Scan-02.png \
   SecCop-Approval-01-slide.png \
+  SecCop-Issue36-Finding-Proposal.png \
+  SecCop-Issue36-Approval-Required.png \
+  SecCop-Issue36-Bypass-Denied.png \
+  SecCop-Issue36-Verification-Pending.png \
   SecCop-Scan-02-live-review.png \
   SecCop-Scan-03.png \
   SecCop-Scan-04.png \
@@ -193,6 +197,12 @@ if [[ -n "$debug_port" ]] && curl --silent --max-time 1 "http://localhost:${debu
 fi
 jq -e '.status == "PASS" and .externalRequests == 0 and .consoleErrors == 0' \
   "$evidence_dir/result.json" >/dev/null
+jq -e '.status == "AWAITING_APPROVAL" and .mutation_performed == false and .proposal.reboot_option == "NoReboot"' \
+  "$evidence_dir/issue36-proposal-state.json" >/dev/null
+jq -e '.status == "BLOCKED" and .reason_code == "APPROVAL_BYPASS_DENIED" and .mutation_performed == false and .ssm_status == "NOT_RUN"' \
+  "$evidence_dir/issue36-bypass-state.json" >/dev/null
+jq -e '.ssm_status == "SUCCESS" and .inspector_state == "ACTIVE" and .verification_status == "PENDING_RESCAN" and .mutation_performed == false' \
+  "$evidence_dir/issue36-verification-state.json" >/dev/null
 printf 'PASS: SecCop browser screenshot evidence\n'
 printf 'Evidence: %s\n' "$evidence_dir"
 printf 'Screenshots: %s\n' "$review_dir"

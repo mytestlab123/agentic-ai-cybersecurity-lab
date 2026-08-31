@@ -235,7 +235,6 @@
     let runId = null;
     let lastLiveRequest = null;
     let lastLiveProposalId = null;
-    let lastLiveProposalHash = null;
     let demoBackend = 'LOCAL';
     const labels = {
       mock_inspector_finding: 'Inspector finding lookup',
@@ -325,6 +324,24 @@
         if (evidence.packages) evidenceCell(grid, 'Packages', evidence.packages.length);
         card.appendChild(grid);
       }
+      const proposal = result.proposal;
+      if (proposal) {
+        const proposalHead = node('div', 'result-title', 'Exact proposal');
+        proposalHead.style.marginTop = '14px';
+        card.appendChild(proposalHead);
+        const proposalGrid = node('div', 'evidence-grid');
+        proposalGrid.style.marginTop = '10px';
+        evidenceCell(proposalGrid, 'Proposal', proposal.proposal_id);
+        evidenceCell(proposalGrid, 'Target', proposal.resource_alias);
+        evidenceCell(proposalGrid, 'Package', proposal.package_name);
+        evidenceCell(proposalGrid, 'Observed', proposal.observed_version);
+        evidenceCell(proposalGrid, 'Expected fixed', proposal.expected_fixed_version);
+        evidenceCell(proposalGrid, 'Document', proposal.ssm_document);
+        evidenceCell(proposalGrid, 'Operation', proposal.ssm_operation);
+        evidenceCell(proposalGrid, 'Reboot', proposal.reboot_option);
+        evidenceCell(proposalGrid, 'Approval', proposal.approval_state);
+        card.appendChild(proposalGrid);
+      }
       const summary = node('p', 'message-copy', result.message || '');
       summary.style.marginTop = '13px';
       card.appendChild(summary);
@@ -335,18 +352,31 @@
       }
       if (result.status === 'AWAITING_APPROVAL') {
         const approval = node('div', 'approval-card');
-        approval.appendChild(node('div', 'approval-copy', 'The proposal is a mock patch only. Choose a human decision to close this demo flow.'));
+        approval.appendChild(node('div', 'approval-copy', 'Local rehearsal only. Approve once, with NoReboot; no AWS mutation is enabled.'));
         const actions = node('div', 'approval-actions');
         const approve = node('button', 'btn approve', 'Approve mock remediation');
         const reject = node('button', 'btn reject', 'Reject');
+        const bypass = node('button', 'btn reject', 'Check without approval');
         approve.type = 'button';
         reject.type = 'button';
+        bypass.type = 'button';
         approve.addEventListener('click', () => decide('APPROVE', approve, reject));
         reject.addEventListener('click', () => decide('REJECT', approve, reject));
+        bypass.addEventListener('click', () => verifyMock(bypass));
         actions.appendChild(approve);
         actions.appendChild(reject);
+        actions.appendChild(bypass);
         approval.appendChild(actions);
         card.appendChild(approval);
+      }
+      if (result.status === 'MOCK_COMPLETED') {
+        const verification = node('div', 'approval-card');
+        verification.appendChild(node('div', 'approval-copy', 'The mocked SSM step is complete. Inspector must independently refresh before closure.'));
+        const verify = node('button', 'btn primary', 'Verify finding');
+        verify.type = 'button';
+        verify.addEventListener('click', () => verifyMock(verify));
+        verification.appendChild(verify);
+        card.appendChild(verification);
       }
       parent.appendChild(card);
     }
@@ -654,6 +684,11 @@
       evidenceCell(grid, 'Fixed', result.fixed_version);
       evidenceCell(grid, 'Action', result.action);
       evidenceCell(grid, 'Reboot', result.reboot_policy);
+      evidenceCell(grid, 'SSM document', result.ssm_document);
+      evidenceCell(grid, 'Operation', result.ssm_operation);
+      evidenceCell(grid, 'Reboot option', result.reboot_option);
+      evidenceCell(grid, 'Approval', result.approval_state);
+      evidenceCell(grid, 'Version', result.proposal_version);
       evidenceCell(grid, 'Proposal', result.proposal_id);
       evidenceCell(grid, 'Approval expires', result.approval_expires_at);
       evidenceCell(grid, 'GovTech', 'Inference not used');
@@ -665,7 +700,6 @@
       }
       if (result.status === 'READY' && result.requires_approval) {
         lastLiveProposalId = result.proposal_id;
-        lastLiveProposalHash = result.proposal_hash;
         const approval = node('div', 'approval-card');
         approval.appendChild(node('div', 'approval-copy', 'Approval starts this one-package fix. No reboot is included.'));
         const actions = node('div', 'approval-actions');
@@ -726,6 +760,26 @@
       body.appendChild(card);
     }
 
+    function renderMockVerification(payload) {
+      const result = payload.result || {};
+      const body = addMessage('assistant', result.message || 'No verification result returned.');
+      const card = node('div', 'result-card mock-verification-card');
+      const head = node('div', 'result-head');
+      head.appendChild(node('div', 'result-title', 'Independent verification'));
+      head.appendChild(node('span', 'badge', result.reason_code || result.status || 'BLOCKED'));
+      card.appendChild(head);
+      const grid = node('div', 'evidence-grid');
+      evidenceCell(grid, 'Target', result.resource_alias);
+      evidenceCell(grid, 'Package', result.package_name);
+      evidenceCell(grid, 'Mock SSM', result.ssm_status);
+      evidenceCell(grid, 'Package state', result.package_state);
+      evidenceCell(grid, 'Inspector', result.inspector_state);
+      evidenceCell(grid, 'Closure', result.verification_status);
+      evidenceCell(grid, 'Mutation', result.mutation_performed ? 'Performed' : 'None');
+      card.appendChild(grid);
+      body.appendChild(card);
+    }
+
     function extractCves(prompt) {
       return [...prompt.matchAll(/\bCVE-[0-9]{4}-[0-9]{4,}\b/gi)].map((match) => match[0].toUpperCase());
     }
@@ -770,6 +824,19 @@
       catch (error) { const body = addMessage('assistant', 'The decision could not be recorded.'); body.lastChild.classList.add('error-copy'); }
     }
 
+    async function verifyMock(button) {
+      button.disabled = true;
+      addMessage('user', 'Verify the selected finding');
+      try {
+        renderMockVerification(await post('/api/mock-verification', { run_id:runId }));
+      } catch (error) {
+        const body = addMessage('assistant', 'The verification request was blocked.');
+        body.lastChild.classList.add('error-copy');
+      } finally {
+        button.disabled = false;
+      }
+    }
+
     async function generateLiveProposal(request, actionButton) {
       actionButton.disabled = true;
       addMessage('user', 'Generate deterministic remediation suggestion');
@@ -803,7 +870,7 @@
       rejectButton.disabled = true;
       addMessage('user', decision === 'APPROVE' ? 'Approve proposed remediation' : 'Reject proposed remediation');
       try {
-        const decisionPayload = await post('/api/live-decision', { proposal_id:lastLiveProposalId, proposal_hash:lastLiveProposalHash, decision });
+        const decisionPayload = await post('/api/live-decision', { proposal_id:lastLiveProposalId, decision });
         renderLiveDecision(decisionPayload);
         if (decision === 'APPROVE' && decisionPayload.result && decisionPayload.result.reason_code === 'HUMAN_APPROVED_NO_MUTATION') {
           await runLiveRemediation();
@@ -817,7 +884,7 @@
     async function runLiveRemediation() {
       addMessage('assistant', 'Starting the approved one-package fix. No reboot will be requested.');
       try {
-        renderLiveRemediation(await post('/api/live-remediation', { proposal_id:lastLiveProposalId, proposal_hash:lastLiveProposalHash, reboot_approved:false }));
+        renderLiveRemediation(await post('/api/live-remediation', { proposal_id:lastLiveProposalId, reboot_approved:false }));
       } catch (error) {
         const body = addMessage('assistant', 'The approved fix could not be started.');
         body.lastChild.classList.add('error-copy');
@@ -849,7 +916,7 @@
       finally { runButton.disabled = false; }
     });
 
-    newChat.addEventListener('click', () => { messages.replaceChildren(); welcome.classList.remove('hidden'); inputModeEl.value = 'CVE_REVIEW'; promptEl.value = ''; promptEl.focus(); runId = null; lastLiveProposalId = null; lastLiveProposalHash = null; });
+    newChat.addEventListener('click', () => { messages.replaceChildren(); welcome.classList.remove('hidden'); inputModeEl.value = 'CVE_REVIEW'; promptEl.value = ''; promptEl.focus(); runId = null; lastLiveProposalId = null; });
 
     if (cveWelcomeButton) cveWelcomeButton.addEventListener('click', () => { inputModeEl.value = 'CVE_REVIEW'; promptEl.focus(); });
     document.querySelectorAll('.composer-example').forEach((example) => {

@@ -152,9 +152,16 @@ try {
   assert(runResponse.ok(), 'The synthetic run endpoint did not return HTTP success');
   const runPayload = await runResponse.json();
   assert(runPayload.result.status === 'AWAITING_APPROVAL', 'The proposal did not stop for approval');
+  assert(runPayload.result.proposal.ssm_document === 'AWS-RunShellScript', 'The proposal did not bind the allow-listed SSM document');
+  assert(runPayload.result.proposal.ssm_operation === 'REPO_OWNED_ONE_PACKAGE_UPDATE', 'The proposal did not bind the repo-owned operation');
+  assert(runPayload.result.proposal.reboot_option === 'NoReboot', 'The proposal did not bind NoReboot');
+  assert(runPayload.result.proposal.approval_state === 'AWAITING_APPROVAL', 'The proposal approval state was not explicit');
+  assert(!Object.hasOwn(runPayload.result.proposal, 'proposal_hash'), 'A server-side proposal hash reached the browser');
   await page.getByRole('button', { name: 'Approve mock remediation', exact: true }).waitFor({ timeout: 10_000 });
   await page.setViewportSize({ width: 1920, height: 1800 });
   await focusedShot(page.locator('.result-card').last(), 'SecCop-Approval-01-slide.png');
+  await focusedShot(page.locator('.result-card').last(), 'SecCop-Issue36-Finding-Proposal.png');
+  await focusedShot(page.locator('.result-card').last().locator('.approval-card'), 'SecCop-Issue36-Approval-Required.png');
   await page.setViewportSize({ width: 1920, height: 1080 });
   await saveJson('positive-state.json', {
     status: runPayload.result.status,
@@ -162,7 +169,41 @@ try {
     mutation_performed: runPayload.result.proposal.mutation_performed,
     executed_calls: runPayload.result.executed_calls,
   });
+  await saveJson('issue36-proposal-state.json', {
+    status: runPayload.result.status,
+    reason_code: runPayload.result.reason_code,
+    mutation_performed: runPayload.result.proposal.mutation_performed,
+    proposal: {
+      proposal_id: runPayload.result.proposal.proposal_id,
+      proposal_version: runPayload.result.proposal.proposal_version,
+      resource_alias: runPayload.result.proposal.resource_alias,
+      cve_id: runPayload.result.proposal.cve_id,
+      package_name: runPayload.result.proposal.package_name,
+      observed_version: runPayload.result.proposal.observed_version,
+      expected_fixed_version: runPayload.result.proposal.expected_fixed_version,
+      ssm_document: runPayload.result.proposal.ssm_document,
+      ssm_operation: runPayload.result.proposal.ssm_operation,
+      reboot_option: runPayload.result.proposal.reboot_option,
+      approval_state: runPayload.result.proposal.approval_state,
+    },
+  });
   await shot('SecCop-Scan-03.png', { fullPage: true });
+
+  const bypassResponsePromise = page.waitForResponse(
+    (item) => item.url().endsWith('/api/mock-verification') && item.request().method() === 'POST',
+    { timeout: 10_000 },
+  );
+  await page.getByRole('button', { name: 'Check without approval', exact: true }).click();
+  const bypassResponse = await bypassResponsePromise;
+  assert(bypassResponse.ok(), 'The approval-bypass endpoint did not return HTTP success');
+  const bypassPayload = await bypassResponse.json();
+  assert(bypassPayload.result.status === 'BLOCKED', 'The approval bypass was not blocked');
+  assert(bypassPayload.result.reason_code === 'APPROVAL_BYPASS_DENIED', 'The approval bypass reason was not stable');
+  assert(bypassPayload.result.mutation_performed === false, 'The approval bypass reported a mutation');
+  assert(bypassPayload.result.ssm_status === 'NOT_RUN', 'The approval bypass reached the mocked SSM step');
+  await page.getByText('APPROVAL_BYPASS_DENIED', { exact: true }).last().waitFor({ timeout: 10_000 });
+  await saveJson('issue36-bypass-state.json', bypassPayload.result);
+  await focusedShot(page.locator('.mock-verification-card').last(), 'SecCop-Issue36-Bypass-Denied.png');
 
   const decisionResponsePromise = page.waitForResponse(
     (item) => item.url().endsWith('/api/decision') && item.request().method() === 'POST',
@@ -181,6 +222,24 @@ try {
     mutation_performed: decisionPayload.result.proposal.mutation_performed,
   });
   await shot('SecCop-Scan-04.png', { fullPage: true });
+
+  const verificationResponsePromise = page.waitForResponse(
+    (item) => item.url().endsWith('/api/mock-verification') && item.request().method() === 'POST',
+    { timeout: 10_000 },
+  );
+  await page.getByRole('button', { name: 'Verify finding', exact: true }).click();
+  const verificationResponse = await verificationResponsePromise;
+  assert(verificationResponse.ok(), 'The independent verification endpoint did not return HTTP success');
+  const verificationPayload = await verificationResponse.json();
+  assert(verificationPayload.result.ssm_status === 'SUCCESS', 'The mocked SSM result was not successful');
+  assert(verificationPayload.result.package_state === 'FIXED', 'The mocked package state was not fixed');
+  assert(verificationPayload.result.inspector_state === 'ACTIVE', 'The mocked Inspector state was not still active');
+  assert(verificationPayload.result.verification_status === 'PENDING_RESCAN', 'SSM success incorrectly became VERIFIED');
+  assert(verificationPayload.result.reason_code === 'INSPECTOR_RESCAN_PENDING', 'The pending verification reason was not stable');
+  assert(verificationPayload.result.mutation_performed === false, 'The local verification rehearsal reported an AWS mutation');
+  await page.getByText('PENDING_RESCAN', { exact: true }).last().waitFor({ timeout: 10_000 });
+  await saveJson('issue36-verification-state.json', verificationPayload.result);
+  await focusedShot(page.locator('.mock-verification-card').last(), 'SecCop-Issue36-Verification-Pending.png');
 
   await page.locator('#new-chat').click();
   await page.locator('#input-mode').selectOption('SYNTHETIC_LAB');
@@ -220,6 +279,10 @@ try {
       'SecCop-Scan-02-live-review.png',
       'SecCop-Scan-03.png',
       'SecCop-Approval-01-slide.png',
+      'SecCop-Issue36-Finding-Proposal.png',
+      'SecCop-Issue36-Approval-Required.png',
+      'SecCop-Issue36-Bypass-Denied.png',
+      'SecCop-Issue36-Verification-Pending.png',
       'SecCop-Scan-04.png',
       'SecCop-Scan-05-blocked.png',
     ],

@@ -12,8 +12,11 @@ from secure_agent_harness.contracts import (
     AwsReadOnlyResult,
     PocRequest,
     SecCopCsvRequest,
+    SecCopDecisionRequest,
+    SecCopRemediationRequest,
 )
 from secure_agent_harness.poc import PocEngine
+from secure_agent_harness import aws_remediation
 from secure_agent_harness import poc_server
 from secure_agent_harness.poc_server import _Handler
 from secure_agent_harness.seccop_scan import review_demo_cve
@@ -32,6 +35,10 @@ def test_poc_emits_read_only_activity_and_waits_for_approval() -> None:
     assert session.result.evidence.resource_alias == "EC2_RESOURCE_01"
     assert session.result.evidence.patch_state == "MISSING"
     assert session.result.proposal.mutation_performed is False
+    assert session.result.proposal.ssm_document == "AWS-RunShellScript"
+    assert session.result.proposal.ssm_operation == "REPO_OWNED_ONE_PACKAGE_UPDATE"
+    assert session.result.proposal.reboot_option == "NoReboot"
+    assert session.result.proposal.approval_state == "AWAITING_APPROVAL"
     assert session.result.executed_calls == (
         "mock_inspector_finding",
         "mock_instance_context",
@@ -70,6 +77,95 @@ def test_approve_records_only_a_noop_mock_remediation() -> None:
     assert approved.events[-1].data["mutation_performed"] is False
 
 
+def test_mock_golden_path_denies_bypass_and_keeps_ssm_success_pending() -> None:
+    engine = PocEngine()
+    session = engine.start(_request())
+
+    bypass = engine.verify(session.result.run_id)
+
+    assert bypass.status == "BLOCKED"
+    assert bypass.reason_code == "APPROVAL_BYPASS_DENIED"
+    assert bypass.ssm_status == "NOT_RUN"
+    assert bypass.mutation_performed is False
+
+    engine.decide(session.result.run_id, approve=True)
+    pending = engine.verify(session.result.run_id)
+
+    assert pending.status == "COMPLETED"
+    assert pending.ssm_status == "SUCCESS"
+    assert pending.package_state == "FIXED"
+    assert pending.inspector_state == "ACTIVE"
+    assert pending.verification_status == "PENDING_RESCAN"
+    assert pending.mutation_performed is False
+
+
+def test_browser_requests_cannot_supply_binding_hash_or_ssm_authority() -> None:
+    with pytest.raises(ValidationError):
+        SecCopDecisionRequest(
+            proposal_id="SECCOP_PROPOSAL_01",
+            decision="APPROVE",
+            proposal_hash="a" * 64,
+        )
+
+    with pytest.raises(ValidationError):
+        SecCopRemediationRequest(
+            proposal_id="SECCOP_PROPOSAL_01",
+            reboot_approved=False,
+            document_name="AWS-RunShellScript",
+        )
+
+
+def test_allowlisted_ssm_adapter_owns_document_and_command() -> None:
+    class FakeCli:
+        def __init__(self) -> None:
+            self.calls: list[tuple[str, str, dict[str, object]]] = []
+
+        def call(self, service: str, operation: str, payload: dict[str, object]) -> dict[str, object]:
+            self.calls.append((service, operation, payload))
+            return {"Command": {"CommandId": "COMMAND_01"}}
+
+    cli = FakeCli()
+    command = aws_remediation._install_command(aws_remediation._package_target("demo-package", "1.1.0"))
+    payload = aws_remediation._render_remote_payload(command)
+
+    command_id = aws_remediation._send(
+        cli,
+        instance_id="INSTANCE_01",
+        command=payload,
+        comment="bounded test",
+    )
+
+    assert command_id == "COMMAND_01"
+    assert cli.calls == [
+        (
+            "ssm",
+            "send-command",
+            {
+                "DocumentName": "AWS-RunShellScript",
+                "InstanceIds": ["INSTANCE_01"],
+                "Parameters": {"commands": [payload]},
+                "Comment": "bounded test",
+            },
+        )
+    ]
+    assert "/usr/bin/bash -n" in payload
+    assert "/usr/bin/bash \"$script_path\"" in payload
+    assert "sha256sum -c" in payload
+    with pytest.raises(aws_remediation.AwsRemediationBackendError):
+        aws_remediation._package_target("demo-package;uname", "1.1.0")
+
+
+def test_ssm_success_alone_never_marks_inspector_verified() -> None:
+    assert poc_server._closure_outcome(inspector_resolved=False) == (
+        "SSM_REMEDIATION_PENDING_RESCAN",
+        "PENDING_RESCAN",
+    )
+    assert poc_server._closure_outcome(inspector_resolved=True) == (
+        "SSM_REMEDIATION_VERIFIED",
+        "VERIFIED",
+    )
+
+
 def test_unknown_synthetic_cve_blocks_before_any_tool() -> None:
     session = PocEngine().start(_request("CVE-2099-0002"))
 
@@ -97,6 +193,7 @@ def test_browser_surface_is_local_and_has_the_gate_controls() -> None:
     assert "Suggested fix only" in html
     assert "/api/live-proposal" in html
     assert "/api/live-decision" in html
+    assert "/api/mock-verification" in html
     assert "Upload read-only evidence" in html
     assert "Approve mock remediation" in html
     assert "Generate remediation suggestion" in html
@@ -268,9 +365,15 @@ def test_live_proposal_is_typed_and_has_no_mutation(monkeypatch: pytest.MonkeyPa
     assert proposal.status == "READY"
     assert proposal.reason_code == "SECCOP_REMEDIATION_PROPOSAL_READY"
     assert proposal.action == "SSM_INSTALL_SECURITY_UPDATE"
+    assert proposal.ssm_document == "AWS-RunShellScript"
+    assert proposal.ssm_operation == "REPO_OWNED_ONE_PACKAGE_UPDATE"
+    assert proposal.reboot_option == "NoReboot"
+    assert proposal.reboot_policy == "NO_REBOOT"
+    assert proposal.approval_state == "AWAITING_APPROVAL"
     assert proposal.requires_approval is True
     assert proposal.mutation_performed is False
     assert proposal.resource_alias == "EC2_RESOURCE_01"
+    assert "proposal_hash" not in proposal.model_dump()
     assert "i-0123456789abcdef0" not in proposal.model_dump_json()
 
 

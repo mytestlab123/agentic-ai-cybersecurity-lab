@@ -133,3 +133,21 @@ fixed version, then records an explicit Approve or Reject decision without
 calling SSM. The UI labels the live path separately from the synthetic demo
 and reports `GovTech inference: not used`; no model request or credit use is
 needed for deterministic evidence correlation.
+
+## Issue 36 - approval binding and independent verification checkpoint
+
+The browser now receives an exact alias-only remediation proposal but cannot
+supply AWS identifiers, SSM document names, commands, approval hashes, expiry,
+profile, or region. Proposal binding stays server-side, and the allow-listed
+adapter fixes the document, operation, and `NoReboot` scope.
+
+The local Playwright proof also separates execution from closure. A mocked SSM
+success can show the package as fixed, but the result remains
+`PENDING_RESCAN` while Inspector still reports the finding active. Attempting
+verification before approval returns `APPROVAL_BYPASS_DENIED`, with SSM not run
+and `mutation_performed=false`.
+
+Read-only AWS inspection did not produce a real package finding: the target is
+publicly addressed and Inspector EC2 coverage is unavailable. Patch Manager
+counts are useful readiness evidence, but they are not a CVE. No AWS mutation,
+remediation, reboot, rescan trigger, target recycle, or cleanup was performed.

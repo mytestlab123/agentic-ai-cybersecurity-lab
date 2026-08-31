@@ -21,6 +21,7 @@ import sys
 import tarfile
 import tempfile
 from dataclasses import dataclass
+from datetime import date, timedelta
 from pathlib import Path
 from typing import Any
 
@@ -34,6 +35,27 @@ ECR_REPOSITORY = "seccop-demo-images"
 
 class DemoError(RuntimeError):
     """A safe, operator-readable DEMO failure."""
+
+
+def _required_tags(name: str) -> dict[str, str]:
+    created = date.today()
+    return {
+        "Name": name,
+        "Project": "Security Copilot",
+        "project": "agentic-ai-cybersecurity-lab",
+        "dev": "amit",
+        "created": created.isoformat(),
+        "tools": "cdx",
+        "environment": "dev",
+        "owner": "amit",
+        "version": "seccop-project1-r01",
+        "TTL": (created + timedelta(days=1)).strftime("%d-%m-%y"),
+        "Purpose": "Security Copilot deterministic DEMO baseline",
+        "purpose": "Security Copilot deterministic DEMO baseline",
+        "phase": "seccop-project1-demo",
+        "cleanup": "delete",
+        "Cleanup": "seccop-demo-only",
+    }
 
 
 @dataclass(frozen=True)
@@ -125,7 +147,12 @@ def _ensure_bucket(aws: AwsCli, bucket: str) -> None:
         "BlockPublicAcls=true,IgnorePublicAcls=true,BlockPublicPolicy=true,RestrictPublicBuckets=true",
     )
     aws.run("s3api", "put-bucket-versioning", "--bucket", bucket, "--versioning-configuration", "Status=Enabled")
-    tags = {"TagSet": [{"Key": "Project", "Value": "Security Copilot"}, {"Key": "Cleanup", "Value": "seccop-demo-only"}]}
+    tags = {
+        "TagSet": [
+            {"Key": key, "Value": value}
+            for key, value in _required_tags(bucket).items()
+        ]
+    }
     tag_file = _write_json(aws.config.evidence_root, "s3-tags.json", tags)
     aws.run("s3api", "put-bucket-tagging", "--bucket", bucket, "--tagging", f"file://{tag_file}")
     lifecycle = {
@@ -306,6 +333,8 @@ def _push_image(aws: AwsCli, directory: Path, version: str, tag: str) -> Path:
 
 
 def _ensure_ecr(aws: AwsCli, directory: Path) -> str:
+    required_tags = _required_tags(ECR_REPOSITORY)
+    cli_tags = [f"Key={key},Value={value}" for key, value in required_tags.items()]
     try:
         uri = _repo_uri(aws)
     except DemoError:
@@ -319,13 +348,20 @@ def _ensure_ecr(aws: AwsCli, directory: Path) -> str:
             "--image-scanning-configuration",
             "scanOnPush=true",
             "--tags",
-            "Key=Project,Value=Security Copilot",
-            "Key=Cleanup,Value=seccop-demo-only",
+            *cli_tags,
         )
         repositories = created.get("repository")
         if not isinstance(repositories, dict) or not isinstance(repositories.get("repositoryUri"), str):
             raise DemoError("ECR did not return the created repository.")
         uri = str(repositories["repositoryUri"])
+    repository = aws.json("ecr", "describe-repositories", "--repository-names", ECR_REPOSITORY)
+    items = repository.get("repositories")
+    if not isinstance(items, list) or len(items) != 1 or not isinstance(items[0], dict):
+        raise DemoError("The SecCop ECR repository could not be tagged safely.")
+    arn = items[0].get("repositoryArn")
+    if not isinstance(arn, str) or not arn:
+        raise DemoError("The SecCop ECR repository ARN was invalid.")
+    aws.run("ecr", "tag-resource", "--resource-arn", arn, "--tags", *cli_tags)
     lifecycle = {
         "rules": [
             {

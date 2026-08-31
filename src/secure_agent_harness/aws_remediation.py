@@ -6,6 +6,8 @@ No model text or browser-provided shell command is accepted.
 
 from __future__ import annotations
 
+import base64
+import hashlib
 import json
 import os
 import re
@@ -69,6 +71,9 @@ _PACKAGE_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._+:/@-]{0,79}$")
 _VERSION_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._+:/@~-]{0,63}$")
 _ADVISORY_RE = re.compile(r"^ALAS[0-9]{1,2}-[0-9]{4}-[0-9]{4,}$")
 _TERMINAL = {"Success", "Cancelled", "TimedOut", "Failed", "Cancelling"}
+SSM_DOCUMENT = "AWS-RunShellScript"
+SSM_OPERATION = "REPO_OWNED_ONE_PACKAGE_UPDATE"
+REBOOT_OPTION = "NoReboot"
 
 
 def _validate_package(package_name: str, fixed_version: str) -> None:
@@ -130,6 +135,37 @@ def _verification_command(package_name: str) -> str:
     )
 
 
+def _render_remote_payload(inner_script: str) -> str:
+    """Stage one checksummed Bash script through a POSIX-safe SSM wrapper."""
+
+    encoded = base64.b64encode(inner_script.encode("utf-8")).decode("ascii")
+    digest = hashlib.sha256(inner_script.encode("utf-8")).hexdigest()
+    wrapper = "\n".join(
+        [
+            "set -eu",
+            "umask 077",
+            "temp_dir=$(mktemp -d /tmp/seccop-ssm.XXXXXX)",
+            'cleanup() { rm -rf "$temp_dir"; }',
+            "trap cleanup 0 1 2 15",
+            'script_path="$temp_dir/operation.sh"',
+            f"printf '%s' {shlex.quote(encoded)} | base64 -d > \"$script_path\"",
+            f"printf '%s  %s\\n' {shlex.quote(digest)} \"$script_path\" | sha256sum -c - >/dev/null",
+            '/usr/bin/bash -n "$script_path"',
+            '/usr/bin/bash "$script_path"',
+        ]
+    )
+    with tempfile.TemporaryDirectory(prefix="seccop-payload-") as directory:
+        inner_path = Path(directory) / "operation.sh"
+        outer_path = Path(directory) / "wrapper.sh"
+        inner_path.write_text(inner_script + "\n", encoding="utf-8")
+        outer_path.write_text(wrapper + "\n", encoding="utf-8")
+        for command in (("/bin/sh", "-n", str(outer_path)), ("/usr/bin/bash", "-n", str(inner_path))):
+            completed = subprocess.run(command, capture_output=True, text=True, check=False)
+            if completed.returncode != 0:
+                raise AwsRemediationBackendError("The repo-owned SSM payload failed syntax validation.")
+    return wrapper
+
+
 def _verified_version(stdout: object, package_name: str) -> str | None:
     if not isinstance(stdout, str):
         return None
@@ -146,7 +182,7 @@ def _send(cli: _AwsCli, *, instance_id: str, command: str, comment: str) -> str:
         "ssm",
         "send-command",
         {
-            "DocumentName": "AWS-RunShellScript",
+            "DocumentName": SSM_DOCUMENT,
             "InstanceIds": [instance_id],
             "Parameters": {"commands": [command]},
             "Comment": comment,
@@ -222,15 +258,39 @@ def execute_package_remediation(
             "operation": "one-package-yum-install",
         },
     )
-    _write_json(evidence, "preflight-command.json", {"document": "AWS-RunShellScript", "command": _preflight_command(target)})
-    _write_json(evidence, "install-command.json", {"document": "AWS-RunShellScript", "command": _install_command(target)})
+    preflight_script = _preflight_command(target)
+    install_script = _install_command(target)
+    preflight_payload = _render_remote_payload(preflight_script)
+    install_payload = _render_remote_payload(install_script)
+    _write_json(
+        evidence,
+        "preflight-command.json",
+        {
+            "document": SSM_DOCUMENT,
+            "operation": SSM_OPERATION,
+            "reboot_option": REBOOT_OPTION,
+            "inner_script": preflight_script,
+            "outer_wrapper": preflight_payload,
+        },
+    )
+    _write_json(
+        evidence,
+        "install-command.json",
+        {
+            "document": SSM_DOCUMENT,
+            "operation": SSM_OPERATION,
+            "reboot_option": REBOOT_OPTION,
+            "inner_script": install_script,
+            "outer_wrapper": install_payload,
+        },
+    )
 
     cli = _AwsCli(region=region)
     try:
         preflight_id = _send(
             cli,
             instance_id=instance_id,
-            command=_preflight_command(target),
+            command=preflight_payload,
             comment="Security Copilot package-source check",
         )
         _write_json(evidence, "preflight-dispatch.json", {"command_id": preflight_id})
@@ -271,7 +331,7 @@ def execute_package_remediation(
         install_id = _send(
             cli,
             instance_id=instance_id,
-            command=_install_command(target),
+            command=install_payload,
             comment="Security Copilot approved package remediation",
         )
         _write_json(evidence, "install-dispatch.json", {"command_id": install_id})
@@ -318,17 +378,24 @@ def execute_package_remediation(
             "evidence_path": str(evidence),
         }
 
-    verification_command = _verification_command(package_name)
+    verification_script = _verification_command(package_name)
+    verification_payload = _render_remote_payload(verification_script)
     _write_json(
         evidence,
         "verification-command.json",
-        {"document": "AWS-RunShellScript", "command": verification_command},
+        {
+            "document": SSM_DOCUMENT,
+            "operation": SSM_OPERATION,
+            "reboot_option": REBOOT_OPTION,
+            "inner_script": verification_script,
+            "outer_wrapper": verification_payload,
+        },
     )
     try:
         verification_id = _send(
             cli,
             instance_id=instance_id,
-            command=verification_command,
+            command=verification_payload,
             comment="Security Copilot package version verification",
         )
         _write_json(evidence, "verification-dispatch.json", {"command_id": verification_id})
@@ -377,7 +444,7 @@ def execute_package_remediation(
     return {
         "change_state": "COMPLETED",
         "reason_code": "SSM_PACKAGE_VERSION_VERIFIED",
-        "verification_status": "VERIFIED",
+        "verification_status": "PENDING_RESCAN",
         "mutation_performed": True,
         "executed_calls": (
             "ssm.send_command",
