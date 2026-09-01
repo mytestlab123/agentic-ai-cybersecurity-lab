@@ -268,6 +268,24 @@ def test_ecr_codex_after_fails_closed_when_thread_is_lost() -> None:
     assert result["reason_code"] == "CODEX_THREAD_UNAVAILABLE"
 
 
+def test_ecr_codex_after_uses_bounded_timeout(monkeypatch: pytest.MonkeyPatch) -> None:
+    poc_server._HYBRID_SESSION = _HybridSession(_FakeCodexTransport([]), "THREAD_ALIAS_01", [], 1, {})
+    observed: list[float] = []
+
+    def fake_collect(_session: object, _prompt: str, *, receive_timeout: float = 180.0) -> str:
+        observed.append(receive_timeout)
+        raise _CodexPreflightError("CODEX_APP_SERVER_UNAVAILABLE")
+
+    monkeypatch.setattr(poc_server, "_collect_codex_turn", fake_collect)
+    try:
+        result = poc_server._finish_ecr_codex_explanation({"state": "COMPLIANT", "status": "VERIFIED"})
+    finally:
+        poc_server._close_hybrid_session()
+    assert result["status"] == "BLOCKED"
+    assert result["reason_code"] == "CODEX_APP_SERVER_UNAVAILABLE"
+    assert observed == [poc_server._ECR_AFTER_TURN_TIMEOUT]
+
+
 def test_public_remediation_payload_excludes_private_evidence_path() -> None:
     result = SecCopRemediationResult(
         status="COMPLETED", reason_code="SSM_REMEDIATION_VERIFIED", cve_id="CVE-2099-0001",

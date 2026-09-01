@@ -59,6 +59,7 @@ _SERVER_SCAN_REQUEST: SecCopAdvisoryRequest | None = None
 _HYBRID_SESSION: "_HybridSession | None" = None
 _S3_APPROVAL_READY = False
 _ECR_APPROVAL_READY = False
+_ECR_AFTER_TURN_TIMEOUT = 15.0
 
 
 @dataclass(frozen=True)
@@ -204,7 +205,7 @@ def _close_hybrid_session() -> None:
         _HYBRID_SESSION = None
 
 
-def _collect_codex_turn(session: _HybridSession, prompt: str) -> str:
+def _collect_codex_turn(session: _HybridSession, prompt: str, *, receive_timeout: float = 180.0) -> str:
     request_id = session.next_id
     session.next_id += 1
     turn = _codex_request(
@@ -216,7 +217,7 @@ def _collect_codex_turn(session: _HybridSession, prompt: str) -> str:
         raise _CodexPreflightError("CODEX_APP_SERVER_OUTPUT_REJECTED")
     response_parts: list[str] = []
     for _ in range(500):
-        event = session.pending.pop(0) if session.pending else session.transport.receive(180)
+        event = session.pending.pop(0) if session.pending else session.transport.receive(receive_timeout)
         method = event.get("method")
         params = event.get("params")
         if not isinstance(method, str) or method not in _CODEX_SAFE_NOTIFICATIONS or "id" in event or not isinstance(params, dict):
@@ -419,7 +420,7 @@ def _finish_ecr_codex_explanation(after: dict[str, object]) -> dict[str, object]
             "Sanitized AFTER facts for the same ECR review:\n" + _ecr_codex_facts(after_facts) + "\n\n"
             "Explain the verified final state in two short plain-language sentences. Do not use tools."
         )
-        response = _collect_codex_turn(session, prompt)
+        response = _collect_codex_turn(session, prompt, receive_timeout=_ECR_AFTER_TURN_TIMEOUT)
         return {
             "status": "READY", "reason_code": "ECR_CODEX_AFTER_EXPLAINED",
             "aws_evidence_status": "AMAZON_INSPECTOR", "aws_mcp_status": "NOT_USED",
