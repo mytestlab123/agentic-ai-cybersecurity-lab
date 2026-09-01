@@ -155,6 +155,7 @@
         <div class="side-label" style="padding:0">DEMO</div>
         <div id="scan-note" class="usage-note">Check the server, stored file, and container image together.</div>
         <button id="scan-environment" type="button">Scan environment</button>
+        <button id="reopen-s3-finding" type="button" hidden>Reopen Finding</button>
         <button id="start-real-demo" type="button" hidden>Start AWS DEMO</button>
       </div>
       <div class="side-spacer"></div>
@@ -246,6 +247,7 @@
     const welcomeCopy = document.querySelector('#welcome-copy');
     const scanNote = document.querySelector('#scan-note');
     const scanButton = document.querySelector('#scan-environment');
+    const reopenS3FindingButton = document.querySelector('#reopen-s3-finding');
     const cveWelcomeButton = document.querySelector('#cve-welcome');
     const scanWelcomeButton = document.querySelector('#scan-welcome');
     const startRealDemoButton = document.querySelector('#start-real-demo');
@@ -294,6 +296,7 @@
       backendNote.innerHTML = '<span class="mode-dot"></span>Live AWS S3 review - Human approval required';
       scanButton.textContent = 'Scan S3 bucket';
       if (scanWelcomeButton) scanWelcomeButton.textContent = 'Scan S3 bucket';
+      if (reopenS3FindingButton) reopenS3FindingButton.hidden = false;
       document.querySelectorAll('.source-tab').forEach((tab) => tab.classList.toggle('active', tab.textContent === 'S3'));
       if (codexPreflightButton) codexPreflightButton.classList.add('hidden');
       if (cveWelcomeButton) cveWelcomeButton.classList.add('hidden');
@@ -669,6 +672,8 @@
         messages.replaceChildren();
         welcome.classList.remove('hidden');
         setS3FlowStep(1);
+        button.disabled = false;
+        startScan(scanButton);
       } catch (error) {
         thinking.textContent = 'The approved DEMO reset was blocked.';
         thinking.classList.add('error-copy');
@@ -1046,6 +1051,7 @@
     });
 
     scanButton.addEventListener('click', () => startScan(scanButton));
+    if (reopenS3FindingButton) reopenS3FindingButton.addEventListener('click', () => resetS3Demo(reopenS3FindingButton));
     scanWelcomeButton.addEventListener('click', () => startScan(scanWelcomeButton));
     codexPreflightButton.addEventListener('click', () => startCodexPreflight(codexPreflightButton));
     if (startRealDemoButton) startRealDemoButton.addEventListener('click', startRealDemo);
