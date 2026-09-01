@@ -9,6 +9,8 @@ run_id=$(date '+%Y%m%dT%H%M%S%z')
 temp_root=${AGENTS_TEMP_ROOT:-${TMPDIR:-/tmp}}
 evidence_dir="${EVIDENCE_ROOT:-${temp_root}/agentic-ai-cybersecurity-lab/browser-e2e}/${run_id}"
 review_dir=${REVIEW_DIR:-}
+live_advisory=${LIVE_ADVISORY:-}
+live_scan_only=${LIVE_SCAN_ONLY:-0}
 node_runner="$repo_dir/scripts/browser-e2e.mjs"
 app_pid=''
 chrome_pid=''
@@ -76,7 +78,7 @@ trap cleanup EXIT INT TERM
 
 (
   cd "$repo_dir"
-  POC_PORT="$app_port" uv run python -m secure_agent_harness.poc_server
+  POC_PORT="$app_port" LIVE_SCAN_ONLY="$live_scan_only" uv run python -m secure_agent_harness.poc_server
 ) >"$evidence_dir/app.log" 2>&1 &
 app_pid=$!
 
@@ -90,7 +92,11 @@ for ((attempt = 1; attempt <= 40; attempt++)); do
   }
   sleep 0.25
 done
-jq -e '.status == "OK" and .mode == "LOCAL_SYNTHETIC"' "$evidence_dir/health.json" >/dev/null
+if [[ "$live_scan_only" == 1 ]]; then
+  jq -e '.status == "OK" and .demo_backend == "AWS"' "$evidence_dir/health.json" >/dev/null
+else
+  jq -e '.status == "OK" and .mode == "LOCAL_SYNTHETIC"' "$evidence_dir/health.json" >/dev/null
+fi
 printf '%s\n' "$app_url" >"$evidence_dir/app-url.txt"
 printf '%s\n' "$app_pid" >"$evidence_dir/app-pid.txt"
 
@@ -156,6 +162,11 @@ fi
   exit 1
 }
 playwright_windows=$(wslpath -w "$playwright_core")
+live_advisory_windows=
+if [[ -n "$live_advisory" ]]; then
+  [[ -r "$live_advisory" ]] || { printf 'live advisory not readable: %s\n' "$live_advisory" >&2; exit 1; }
+  live_advisory_windows=$(wslpath -w "$live_advisory")
+fi
 node_windows=${WINDOWS_NODE:-'/mnt/c/Program Files/nodejs/node.exe'}
 [[ -x "$node_windows" ]] || {
   printf 'Windows Node.js not found: %s\n' "$node_windows" >&2
@@ -164,11 +175,11 @@ node_windows=${WINDOWS_NODE:-'/mnt/c/Program Files/nodejs/node.exe'}
 
 APP_URL="$app_url" CDP_URL="$cdp_url" EVIDENCE_DIR="$evidence_dir_windows" \
   REVIEW_DIR="$(wslpath -w "$review_dir")" PLAYWRIGHT_CORE="$playwright_windows" \
-  export APP_URL CDP_URL EVIDENCE_DIR REVIEW_DIR PLAYWRIGHT_CORE
-export WSLENV='APP_URL:CDP_URL:EVIDENCE_DIR:REVIEW_DIR:PLAYWRIGHT_CORE'
+  LIVE_ADVISORY="$live_advisory_windows" LIVE_SCAN_ONLY="$live_scan_only" export APP_URL CDP_URL EVIDENCE_DIR REVIEW_DIR PLAYWRIGHT_CORE LIVE_ADVISORY LIVE_SCAN_ONLY
+export WSLENV='APP_URL:CDP_URL:EVIDENCE_DIR:REVIEW_DIR:PLAYWRIGHT_CORE:LIVE_ADVISORY:LIVE_SCAN_ONLY'
 "$node_windows" "$runner_windows"
 
-for screenshot in \
+screenshots=(
   SecCop-Scan-01.png \
   SecCop-CVE-01.png \
   SecCop-CVE-01-slide.png \
@@ -177,8 +188,15 @@ for screenshot in \
   SecCop-Scan-02-live-review.png \
   SecCop-Scan-03.png \
   SecCop-Scan-04.png \
-  SecCop-Scan-05-blocked.png; do
-  test -s "$review_dir/$screenshot"
+  SecCop-Scan-05-blocked.png
+)
+if [[ "$live_scan_only" == 1 ]]; then
+  screenshots=(SecCop-Live-Workspace.png SecCop-Live-Finding.png SecCop-Live-Approval.png)
+elif [[ -n "$live_advisory" ]]; then
+  screenshots=(SecCop-Live-Finding.png SecCop-Live-Approval.png SecCop-Live-After.png)
+fi
+for screenshot in "${screenshots[@]}"; do
+  test -s "$evidence_dir/$screenshot"
 done
 
 cleanup
@@ -193,6 +211,18 @@ if [[ -n "$debug_port" ]] && curl --silent --max-time 1 "http://localhost:${debu
 fi
 jq -e '.status == "PASS" and .externalRequests == 0 and .consoleErrors == 0' \
   "$evidence_dir/result.json" >/dev/null
+if [[ ${SECCOP_E2E_FAIL_BEFORE_PUBLISH:-0} == 1 ]]; then
+  printf '%s\n' 'intentional failure before screenshot publication' >&2
+  exit 9
+fi
+publish_dir="$evidence_dir/publish"
+install -d -m 700 "$publish_dir"
+for screenshot in "${screenshots[@]}"; do
+  install -m 600 "$evidence_dir/$screenshot" "$publish_dir/$screenshot"
+done
+for screenshot in "${screenshots[@]}"; do
+  install -m 600 "$publish_dir/$screenshot" "$review_dir/$screenshot"
+done
 printf 'PASS: SecCop browser screenshot evidence\n'
 printf 'Evidence: %s\n' "$evidence_dir"
 printf 'Screenshots: %s\n' "$review_dir"

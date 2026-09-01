@@ -13,12 +13,13 @@ const appUrl = process.env.APP_URL;
 const cdpUrl = process.env.CDP_URL;
 const evidenceDir = process.env.EVIDENCE_DIR;
 const reviewDir = process.env.REVIEW_DIR;
+const liveAdvisory = process.env.LIVE_ADVISORY;
+const liveScanOnly = process.env.LIVE_SCAN_ONLY === '1';
 if (!appUrl || !cdpUrl || !evidenceDir || !reviewDir) {
   throw new Error('APP_URL, CDP_URL, EVIDENCE_DIR, and REVIEW_DIR are required');
 }
 
 await mkdir(evidenceDir, { recursive: true });
-await mkdir(reviewDir, { recursive: true });
 const consoleErrors = [];
 const externalRequests = [];
 const browserRequests = [];
@@ -36,11 +37,9 @@ const saveJson = async (name, value) => {
 };
 const shot = async (name, options = {}) => {
   await page.screenshot({ path: path.join(evidenceDir, name), ...options });
-  await page.screenshot({ path: path.join(reviewDir, name), ...options });
 };
 const focusedShot = async (locator, name) => {
   await locator.screenshot({ path: path.join(evidenceDir, name) });
-  await locator.screenshot({ path: path.join(reviewDir, name) });
 };
 
 let browser;
@@ -68,6 +67,107 @@ try {
   await page.locator('#welcome').waitFor({ state: 'visible', timeout: 10_000 });
   assert((await page.locator('body').innerText()).includes('Safe demo boundary.'), 'Safety banner was not visible');
   await shot('SecCop-Scan-01.png');
+
+  if (liveScanOnly) {
+    const health = await page.evaluate(async () => (await fetch('/api/health')).json());
+    assert(health.demo_backend === 'AWS', 'The live scan runner did not reach the AWS backend');
+    const scanResponsePromise = page.waitForResponse((item) => item.url().endsWith('/api/scan'), { timeout: 180_000 });
+    await page.locator('#scan-environment').click();
+    const scanPayload = await (await scanResponsePromise).json();
+    assert(scanPayload.result.status === 'READY', 'The server-owned live scan was not READY');
+    assert(scanPayload.result.findings.length === 1, 'The live scan did not select exactly one finding');
+    assert(scanPayload.result.findings[0].source_type === 'EC2_PACKAGE', 'The live finding was not an EC2 package');
+    assert(!JSON.stringify(scanPayload).match(/arn:|i-[0-9a-f]{8,17}/), 'A private AWS identifier was exposed');
+    await page.locator('.composer-wrap').evaluate((element) => { element.style.display = 'none'; });
+    await shot('SecCop-Live-Workspace.png', { fullPage: true });
+    await focusedShot(page.locator('.scan-finding').first(), 'SecCop-Live-Finding.png');
+
+    const proposalResponsePromise = page.waitForResponse((item) => item.url().endsWith('/api/live-scan-proposal'), { timeout: 180_000 });
+    await page.getByRole('button', { name: 'Review live fix', exact: true }).click();
+    const proposalPayload = await (await proposalResponsePromise).json();
+    const proposal = proposalPayload.result;
+    assert(proposal.status === 'READY', 'The exact package proposal was not READY');
+    assert(!JSON.stringify(proposalPayload).match(/arn:|i-[0-9a-f]{8,17}/), 'A private AWS identifier was exposed in the proposal');
+    const approvalCard = page.locator('.result-card').last();
+    const approvalControl = page.getByRole('button', { name: 'Approve exact package fix', exact: true });
+    await approvalControl.waitFor({ state: 'visible' });
+    const [cardBox, controlBox] = await Promise.all([approvalCard.boundingBox(), approvalControl.boundingBox()]);
+    assert(cardBox && controlBox && controlBox.y + controlBox.height <= cardBox.y + cardBox.height, 'Approval control is outside its evidence card');
+    await focusedShot(approvalCard, 'SecCop-Live-Approval.png');
+
+    const bypass = await page.evaluate(async ({ proposalId, proposalHash }) => {
+      const response = await fetch('/api/live-remediation', { method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify({ proposal_id:proposalId, proposal_hash:proposalHash, reboot_approved:false }) });
+      return response.json();
+    }, { proposalId:proposal.proposal_id, proposalHash:proposal.proposal_hash });
+    assert((bypass.result || bypass).reason_code === 'SSM_APPROVAL_REQUIRED', 'Remediation bypass was not denied');
+    const wrongBinding = await page.evaluate(async ({ proposalId }) => {
+      const response = await fetch('/api/live-decision', { method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify({ proposal_id:proposalId, proposal_hash:'0'.repeat(64), decision:'APPROVE' }) });
+      return response.json();
+    }, { proposalId:proposal.proposal_id });
+    assert((wrongBinding.result || wrongBinding).reason_code === 'PROPOSAL_BINDING_MISMATCH', 'Wrong approval binding was not denied');
+    const expectedConflict = consoleErrors.findIndex((message) => message.includes('status of 409'));
+    if (expectedConflict >= 0) consoleErrors.splice(expectedConflict, 1);
+    await saveJson('live-scan-state.json', {
+      scan_status: scanPayload.result.status,
+      proposal_status: proposal.status,
+      approval_bypass: (bypass.result || bypass).reason_code,
+      binding_denial: (wrongBinding.result || wrongBinding).reason_code,
+      mutation_performed: false,
+    });
+  } else if (liveAdvisory) {
+    await page.locator('#advisory-upload').setInputFiles(liveAdvisory);
+    const checkResponse = page.waitForResponse((item) => item.url().endsWith('/api/live-advisory'), { timeout: 60_000 });
+    await page.getByRole('button', { name: 'Check live server', exact: true }).click();
+    assert((await checkResponse).ok(), 'The live advisory check failed');
+    await page.locator('.composer-wrap').evaluate((element) => { element.style.display = 'none'; });
+    assert(await page.locator('.composer-wrap').boundingBox() === null, 'The composer still overlaps live evidence');
+    await focusedShot(page.locator('.result-card').last(), 'SecCop-Live-Finding.png');
+    const proposalResponsePromise = page.waitForResponse((item) => item.url().endsWith('/api/live-advisory-proposal'), { timeout: 60_000 });
+    await page.getByRole('button', { name: 'Prepare update', exact: true }).click();
+    const proposalResponse = await proposalResponsePromise;
+    const proposalPayload = await proposalResponse.json();
+    assert(proposalPayload.result.status === 'READY', 'The exact package proposal was not READY');
+    assert(!JSON.stringify(proposalPayload).match(/arn:|i-[0-9a-f]{8,17}/), 'A private AWS identifier was exposed');
+    const approvalCard = page.locator('.result-card').last();
+    const approvalControl = page.getByRole('button', { name: 'Approve exact package fix', exact: true });
+    await approvalControl.waitFor({ state:'visible' });
+    const [cardBox, controlBox] = await Promise.all([approvalCard.boundingBox(), approvalControl.boundingBox()]);
+    assert(cardBox && controlBox && controlBox.y + controlBox.height <= cardBox.y + cardBox.height, 'Approval control is outside its evidence card');
+    await focusedShot(approvalCard, 'SecCop-Live-Approval.png');
+
+    const proposal = proposalPayload.result;
+    const bypass = await page.evaluate(async ({ proposalId, proposalHash }) => {
+      const response = await fetch('/api/live-remediation', { method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify({ proposal_id:proposalId, proposal_hash:proposalHash, reboot_approved:false }) });
+      return response.json();
+    }, { proposalId:proposal.proposal_id, proposalHash:proposal.proposal_hash });
+    const bypassResult = bypass.result || bypass;
+    assert(bypassResult.reason_code === 'SSM_APPROVAL_REQUIRED', 'Remediation bypass was not denied');
+
+    const wrongBinding = await page.evaluate(async ({ proposalId }) => {
+      const response = await fetch('/api/live-decision', { method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify({ proposal_id:proposalId, proposal_hash:'0'.repeat(64), decision:'APPROVE' }) });
+      return response.json();
+    }, { proposalId:proposal.proposal_id });
+    const bindingResult = wrongBinding.result || wrongBinding;
+    assert(bindingResult.reason_code === 'PROPOSAL_BINDING_MISMATCH', 'Wrong approval binding was not denied');
+    const expectedConflict = consoleErrors.findIndex((message) => message.includes('status of 409'));
+    if (expectedConflict >= 0) consoleErrors.splice(expectedConflict, 1);
+
+    const remediationResponse = page.waitForResponse((item) => item.url().endsWith('/api/live-remediation'), { timeout: 180_000 });
+    await page.getByRole('button', { name: 'Approve exact package fix', exact: true }).click();
+    const remediationPayload = await (await remediationResponse).json();
+    assert(remediationPayload.result.mutation_performed === true, 'The approved one-package fix was not performed');
+    assert(['VERIFIED', 'PENDING_RESCAN'].includes(remediationPayload.result.verification_status), 'The follow-up status was not truthful');
+    assert(!JSON.stringify(remediationPayload).match(/arn:|i-[0-9a-f]{8,17}/), 'A private AWS identifier was exposed after remediation');
+    await focusedShot(page.locator('.result-card').last(), 'SecCop-Live-After.png');
+    await saveJson('live-state.json', {
+      status: remediationPayload.result.status,
+      reason_code: remediationPayload.result.reason_code,
+      change_state: remediationPayload.result.change_state,
+      verification_status: remediationPayload.result.verification_status,
+      approval_bypass: bypassResult.reason_code,
+      binding_denial: bindingResult.reason_code,
+    });
+  } else {
 
   const cveReviewResponsePromise = page.waitForResponse(
     (item) => item.url().endsWith('/api/cve-review') && item.request().method() === 'POST',
@@ -203,6 +303,7 @@ try {
     executed_calls: blockedPayload.result.executed_calls,
   });
   await shot('SecCop-Scan-05-blocked.png', { fullPage: true });
+  }
 
   await saveJson('browser-network.json', browserRequests);
   await saveJson('console-errors.json', consoleErrors);
@@ -212,7 +313,15 @@ try {
     status: 'PASS',
     appUrl,
     viewport: { width: 1920, height: 1080 },
-    screenshots: [
+    screenshots: liveScanOnly ? [
+      'SecCop-Live-Workspace.png',
+      'SecCop-Live-Finding.png',
+      'SecCop-Live-Approval.png',
+    ] : liveAdvisory ? [
+      'SecCop-Live-Finding.png',
+      'SecCop-Live-Approval.png',
+      'SecCop-Live-After.png',
+    ] : [
       'SecCop-Scan-01.png',
       'SecCop-CVE-01.png',
       'SecCop-CVE-01-slide.png',

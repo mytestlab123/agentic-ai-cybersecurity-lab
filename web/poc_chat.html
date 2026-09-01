@@ -50,6 +50,13 @@
     .side-label { padding:0 9px; color:#777; font-size:.7rem; font-weight:700; letter-spacing:.08em; }
     .chat-item { padding:10px 11px; border-radius:8px; color:#d1d1d1; font-size:.88rem; }
     .chat-item.active { background:#2c2c2c; color:#fff; }
+    .source-nav { display:grid; grid-template-columns:repeat(3,1fr); gap:6px; }
+    .source-tab { padding:7px 4px; color:#aaa; background:#202020; border:1px solid #3d3d3d; border-radius:7px; font-size:.7rem; }
+    .source-tab.active { color:#d9f8e9; border-color:#34795e; background:#18352b; }
+    .source-tab[aria-disabled="true"] { opacity:.6; cursor:not-allowed; }
+    .flow-strip { display:grid; grid-template-columns:repeat(5,1fr); gap:6px; margin-bottom:14px; }
+    .flow-step { padding:7px 5px; color:#858585; background:#242424; border:1px solid #3d3d3d; border-radius:7px; text-align:center; font-size:.68rem; }
+    .flow-step.active { color:#d9f8e9; border-color:#34795e; }
     .side-spacer { flex:1; }
     .side-footer { border-top:1px solid #2c2c2c; padding:14px 8px 2px; color:var(--muted); font-size:.76rem; line-height:1.45; }
     .mode-dot { display:inline-block; width:7px; height:7px; margin-right:6px; border-radius:50%; background:var(--green); }
@@ -136,7 +143,12 @@
       <div class="brand"><div class="brand-mark">S</div><div class="brand-name">Security Copilot</div></div>
       <button id="new-chat" class="new-chat" type="button"><span>+</span><span>New investigation</span></button>
       <div class="side-label">WORKSPACE</div>
-      <div class="chat-item active">Security review</div>
+      <div class="chat-item active">DEV LAB 1</div>
+      <div class="source-nav" aria-label="Security sources">
+        <button class="source-tab active" type="button">EC2</button>
+        <button class="source-tab" type="button" aria-disabled="true" title="Read-only demo source">ECR</button>
+        <button class="source-tab" type="button" aria-disabled="true" title="Read-only demo source">S3</button>
+      </div>
       <div class="scan-panel">
         <div class="side-label" style="padding:0">DEMO</div>
         <div class="usage-note">Check the server, stored file, and container image together.</div>
@@ -144,9 +156,11 @@
         <button id="start-real-demo" type="button" hidden>Start AWS DEMO</button>
       </div>
       <div class="side-spacer"></div>
-      <label class="upload-button" for="evidence-upload"><span>↑</span><span>Upload read-only evidence</span><input id="evidence-upload" type="file" accept="application/json,.json"></label>
+      <details class="technical-path">
+        <summary>Technical evidence fallback</summary>
+        <label class="upload-button" for="evidence-upload"><span>↑</span><span>Upload read-only evidence</span><input id="evidence-upload" type="file" accept="application/json,.json"></label>
       <div class="live-panel">
-        <div class="side-label" style="padding:0">LIVE AWS CHECK</div>
+        <div class="side-label" style="padding:0">LIVE AWS - EC2</div>
         <label for="advisory-upload">One advisory file (JSON)</label>
         <input id="advisory-upload" type="file" accept="application/json,.json">
         <div class="usage-note">The server selects LAB_SERVER_01. No EC2 ID is needed.</div>
@@ -166,22 +180,26 @@
           <button id="compare-csv" type="button">Compare Inspector CSV</button>
         </details>
       </div>
+      </details>
       <div class="usage-panel" aria-label="AI usage">
         <div class="side-label" style="padding:0">AI USAGE</div>
         <div id="govtech-usage" class="usage-value">GovTech inference: not used</div>
         <div class="usage-note">This deterministic path uses no model credits. Billing remains portal-authoritative.</div>
       </div>
-      <div class="side-footer"><span class="mode-dot"></span>Local synthetic mode<br>Live upload is sanitized and read-only</div>
+      <div id="backend-note" class="side-footer"><span class="mode-dot"></span>Local synthetic mode<br>Technical uploads are sanitized and read-only</div>
     </aside>
 
     <main class="main">
       <header class="topbar">
-        <div><div class="eyebrow">SECURITY WORKSPACE</div><h1>Security review</h1></div>
+        <div><div class="eyebrow">DEV LAB 1 / LIVE AWS</div><h1>EC2 package remediation</h1></div>
         <div id="mode-status" class="status-pill"><span class="mode-dot"></span>Offline demo</div>
       </header>
       <div class="safety-banner"><strong>Safe demo boundary.</strong> Paste one CVE to check all demo sources. A server change always needs a separate review and approval.</div>
 
       <section class="chat" aria-live="polite">
+        <div class="flow-strip" aria-label="Operator workflow">
+          <div class="flow-step active">1 Finding</div><div class="flow-step">2 Recommended fix</div><div class="flow-step">3 Approval required</div><div class="flow-step">4 Applying</div><div class="flow-step">5 Verify</div>
+        </div>
         <div id="welcome" class="welcome">
           <div class="welcome-mark">S</div>
           <h2>What would you like to check?</h2>
@@ -229,6 +247,7 @@
     const compareLiveButton = document.querySelector('#compare-live');
     const compareCsvButton = document.querySelector('#compare-csv');
     const modeStatus = document.querySelector('#mode-status');
+    const backendNote = document.querySelector('#backend-note');
     const welcome = document.querySelector('#welcome');
     const messages = document.querySelector('#messages');
     const newChat = document.querySelector('#new-chat');
@@ -465,7 +484,7 @@
       return body;
     }
 
-    function reviewScanFinding(finding) {
+    async function reviewScanFinding(finding) {
       addMessage('user', finding.action_label + ': ' + finding.title);
       if (finding.remediation_mode === 'REAL_APPROVAL_REQUIRED') {
         if (finding.source_type !== 'EC2_PACKAGE') {
@@ -483,12 +502,20 @@
           body.appendChild(card);
           return body;
         }
-        const body = addMessage('assistant', 'The real server fix still needs a live advisory check. Use the live check panel to confirm the current package before any approval.');
-        const panel = document.querySelector('.live-panel');
-        panel.scrollIntoView({ behavior: 'smooth', block: 'center' });
-        panel.style.outline = '2px solid var(--green)';
-        window.setTimeout(() => { panel.style.outline = ''; }, 1800);
-        return body;
+        if (demoBackend === 'AWS') {
+          const thinking = addMessage('assistant', 'Confirming the exact package and safe update...');
+          try {
+            const payload = await post('/api/live-scan-proposal', {});
+            thinking.parentElement.remove();
+            renderLiveProposal(payload);
+            return;
+          } catch (error) {
+            thinking.textContent = 'The exact package proposal was blocked.';
+            thinking.classList.add('error-copy');
+            return;
+          }
+        }
+        return addMessage('assistant', 'The local demo has no live server. Start AWS DEMO to review a real package fix.');
       }
       const body = addMessage('assistant', 'Suggested fix only. This POC source is read-only; no AWS change or approval is enabled.');
       const card = node('div', 'result-card');
@@ -641,6 +668,7 @@
       const result = payload.result || {};
       const body = addMessage('assistant', result.message || 'No proposal returned.');
       const card = node('div', 'result-card');
+      document.querySelectorAll('.flow-step').forEach((step, index) => step.classList.toggle('active', index <= 2));
       const head = node('div', 'result-head');
       head.appendChild(node('div', 'result-title', 'SecCop remediation proposal'));
       head.appendChild(node('span', 'badge', result.reason_code || result.status || 'BLOCKED'));
@@ -669,7 +697,7 @@
         const approval = node('div', 'approval-card');
         approval.appendChild(node('div', 'approval-copy', 'Approval starts this one-package fix. No reboot is included.'));
         const actions = node('div', 'approval-actions');
-        const approve = node('button', 'btn approve', 'Approve and run fix');
+        const approve = node('button', 'btn approve', 'Approve exact package fix');
         const reject = node('button', 'btn reject', 'Reject proposal');
         approve.type = 'button';
         reject.type = 'button';
@@ -704,6 +732,7 @@
       const result = payload.result || {};
       const body = addMessage('assistant', result.message || 'No remediation result returned.');
       const card = node('div', 'result-card');
+      document.querySelectorAll('.flow-step').forEach((step, index) => step.classList.toggle('active', index <= 4));
       const head = node('div', 'result-head');
       head.appendChild(node('div', 'result-title', 'Fix and follow-up result'));
       head.appendChild(node('span', 'badge', result.reason_code || result.status || 'BLOCKED'));
@@ -745,8 +774,9 @@
       button.disabled = true;
       if (scanButton) scanButton.disabled = true;
       if (scanWelcomeButton) scanWelcomeButton.disabled = true;
-      setMode('Demo scan', false);
-      addMessage('user', 'Scan environment');
+      const live = demoBackend === 'AWS';
+      setMode(live ? 'Live AWS scan' : 'Demo scan', live);
+      addMessage('user', live ? 'Scan live server' : 'Scan environment');
       const thinking = addMessage('assistant', 'Checking server packages, stored artifact, and container image...');
       try {
         const payload = await post('/api/scan', { mode:'DEMO' });
@@ -874,8 +904,10 @@
         const health = await response.json();
         demoBackend = health.demo_backend || 'LOCAL';
         if (demoBackend === 'AWS' && startRealDemoButton) {
-          startRealDemoButton.hidden = false;
-          modeStatus.textContent = 'AWS DEMO';
+          scanButton.textContent = 'Scan live server';
+          if (scanWelcomeButton) scanWelcomeButton.textContent = 'Scan live server';
+          setMode('AWS DEMO', true);
+          backendNote.innerHTML = '<span class="mode-dot"></span>Live AWS demo<br>Server changes require approval';
         }
       } catch (error) {
         // The local synthetic page remains usable if the health probe is unavailable.
