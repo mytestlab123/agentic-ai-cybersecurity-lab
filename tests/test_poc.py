@@ -2,6 +2,7 @@ from pathlib import Path
 import json
 import sys
 from threading import Thread
+from types import SimpleNamespace
 from urllib.error import HTTPError
 from urllib.request import Request, urlopen
 
@@ -405,6 +406,50 @@ def test_inspector_ecr_rejects_ambiguous_tag() -> None:
 
     assert result["state"] == "BLOCKED"
     assert result["reason_code"] == "SECCOP_ECR_TAG_AMBIGUOUS"
+
+
+def test_ecr_operator_maps_inspector_result_and_preserves_trivy_default(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    inspector_source = {
+        "source": "ECR_IMAGE", "alias": "ECR_IMAGE_01", "state": "NON_COMPLIANT",
+        "reason_code": "SECCOP_ECR_INSPECTOR_FINDING", "scanner_provider": "AMAZON_INSPECTOR",
+        "scanner_mode": "ECR_ENHANCED_SCANNING", "cve_id": seccop_demo.BAD_CVE,
+        "package_name": "urllib3", "installed_version": "1.24.1", "severity": "HIGH",
+    }
+    monkeypatch.setattr(seccop_demo, "_scan_ecr_inspector", lambda *_: inspector_source)
+    monkeypatch.setattr(seccop_demo, "_scan_ecr", lambda *_: pytest.fail("Trivy path used for Inspector selection"))
+
+    inspector = seccop_demo._ecr_scan(object(), tmp_path, ecr_scanner="inspector")
+
+    assert inspector["status"] == "READY"
+    assert inspector["reason_code"] == "SECCOP_ECR_NON_COMPLIANT"
+    assert inspector["state"] == "NON_COMPLIANT"
+    assert inspector["scanner_provider"] == "AMAZON_INSPECTOR"
+    assert inspector["scanner_mode"] == "ECR_ENHANCED_SCANNING"
+    assert inspector["findings"][0]["package_name"] == "urllib3"
+
+    monkeypatch.setattr(seccop_demo, "_scan_ecr", lambda *_: {"state": "COMPLIANT", "vulnerabilities": 0})
+    monkeypatch.setattr(seccop_demo, "_repo_uri", lambda *_: "registry.invalid/demo")
+    trivy = seccop_demo._ecr_scan(object(), tmp_path)
+    assert trivy["reason_code"] == "SECCOP_ECR_COMPLIANT"
+
+
+def test_ecr_operator_api_passes_explicit_scanner_without_running_aws(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("SECCOP_DEMO_BACKEND", "AWS")
+    monkeypatch.setenv("SECCOP_ECR_OPERATOR_MVP", "1")
+    monkeypatch.setenv("SECCOP_ECR_SCANNER", "inspector")
+    monkeypatch.setenv("SECCOP_PROFILE", "amit")
+    monkeypatch.setenv("AWS_REGION", "ap-southeast-1")
+    captured: list[list[str]] = []
+
+    def fake_run(args: list[str], **_: object) -> SimpleNamespace:
+        captured.append(args)
+        return SimpleNamespace(stdout=json.dumps({"status": "READY", "reason_code": "SECCOP_ECR_NON_COMPLIANT"}))
+
+    monkeypatch.setattr(poc_server.subprocess, "run", fake_run)
+    result = poc_server._run_real_demo("scan")
+
+    assert result["reason_code"] == "SECCOP_ECR_NON_COMPLIANT"
+    assert captured[0][captured[0].index("--ecr-scanner") + 1] == "inspector"
 
 
 def test_ecr_reopen_is_idempotent_when_the_finding_is_already_open(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:

@@ -538,7 +538,11 @@ def _run_real_demo(command: str, *, source: str | None = None) -> dict[str, obje
         mapped = {"start": "ecr-start", "scan": "ecr-scan", "fix": "ecr-fix", "reset": "ecr-reset"}.get(command)
         if mapped is None or (mapped == "ecr-fix" and (source != "ecr" or not _ECR_APPROVAL_READY)):
             return {"status": "BLOCKED", "reason_code": "APPROVAL_REQUIRED", "message": "Approve the exact ECR proposal before promotion."}
+        ecr_scanner = os.environ.get("SECCOP_ECR_SCANNER", "trivy").lower()
+        if ecr_scanner not in {"trivy", "inspector"}:
+            return {"status": "BLOCKED", "reason_code": "SECCOP_ECR_SCANNER_INVALID", "message": "The ECR scanner selection is invalid."}
         args = [sys.executable, str(_DEMO_SCRIPT), mapped, "--profile", os.environ["SECCOP_PROFILE"], "--region", os.environ["AWS_REGION"]]
+        args.extend(["--ecr-scanner", ecr_scanner])
         if mapped != "ecr-scan": args.append("--confirm")
         completed = subprocess.run(args, capture_output=True, text=True, check=False, timeout=300, env=os.environ.copy())
         try:

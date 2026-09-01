@@ -736,7 +736,39 @@ def _fix(aws: AwsCli, source: str, directory: Path) -> dict[str, Any]:
     raise DemoError("Choose one source: ec2, s3, or ecr.")
 
 
-def _ecr_scan(aws: AwsCli, directory: Path) -> dict[str, Any]:
+def _ecr_scan(aws: AwsCli, directory: Path, *, ecr_scanner: str = "trivy") -> dict[str, Any]:
+    if ecr_scanner == "inspector":
+        source = _scan_ecr_inspector(aws)
+        state = source["state"]
+        if state == "NON_COMPLIANT":
+            finding = {
+                "finding_id": "ECR_IMAGE_01", "source_type": "ECR_IMAGE", "resource_alias": source["alias"],
+                "cve_id": source["cve_id"], "reference": source["cve_id"], "severity": source["severity"],
+                "scanner_provider": source["scanner_provider"], "scanner_mode": source["scanner_mode"],
+                "package_name": source["package_name"], "installed_version": source["installed_version"],
+                "title": "Inspector ECR finding", "problem_summary": "Amazon Inspector reported the target CVE for this exact ECR image.",
+                "observed_state": f"Amazon Inspector reported {source['package_name']} {source['installed_version']} at {source['severity']} severity.",
+                "recommended_state": "Review the exact clean-digest recommendation; no mutation is performed by this scan.",
+                "remediation_mode": "REAL_APPROVAL_REQUIRED", "reason_code": "SECCOP_ECR_FINDING_CONFIRMED", "action_label": "Review ECR finding",
+            }
+        else:
+            finding = None
+        result: dict[str, Any] = {
+            "status": "READY" if state == "NON_COMPLIANT" else "NO_FINDINGS" if state == "COMPLIANT" else state,
+            "reason_code": "SECCOP_ECR_NON_COMPLIANT" if state == "NON_COMPLIANT" else "SECCOP_ECR_COMPLIANT" if state == "COMPLIANT" else "SECCOP_ECR_SCAN_PENDING" if state == "PENDING_RESCAN" else "SECCOP_ECR_EVIDENCE_BLOCKED",
+            "state": state,
+            "scanner_provider": source["scanner_provider"],
+            "scanner_mode": source["scanner_mode"],
+            "cve_id": source["cve_id"],
+            "source_status": [{"source_type": "ECR_IMAGE", "label": "ECR image scanned by Amazon Inspector", "state": "COMPLETE" if state in {"NON_COMPLIANT", "COMPLIANT"} else state, "reason_code": source["reason_code"]}],
+            "findings": [finding] if finding else [],
+            "message": "SecCop found a known ECR finding from Amazon Inspector; human approval is required before any promotion." if state == "NON_COMPLIANT" else "SecCop verified the ECR demo-current image is clean with Amazon Inspector." if state == "COMPLIANT" else "SecCop could not claim a current ECR Inspector result; rescan is required." if state == "PENDING_RESCAN" else "SecCop blocked the ECR Inspector evidence because the read-only proof was not usable.",
+        }
+        for field in ("package_name", "installed_version", "severity"):
+            if field in source:
+                result[field] = source[field]
+        return result
+
     source = _scan_ecr(aws, directory, _repo_uri(aws))
     vulnerable = source["state"] == "NON_COMPLIANT"
     return {
@@ -755,31 +787,39 @@ def _ecr_scan(aws: AwsCli, directory: Path) -> dict[str, Any]:
     }
 
 
-def _ecr_start(aws: AwsCli, directory: Path) -> dict[str, Any]:
+def _ecr_scan_selected(aws: AwsCli, directory: Path, ecr_scanner: str) -> dict[str, Any]:
+    """Select the provider while retaining the legacy Trivy call shape."""
+
+    return _ecr_scan(aws, directory) if ecr_scanner == "trivy" else _ecr_scan(aws, directory, ecr_scanner=ecr_scanner)
+
+
+def _ecr_start(aws: AwsCli, directory: Path, *, ecr_scanner: str = "trivy") -> dict[str, Any]:
     _ensure_ecr(aws, directory)
-    result = _ecr_scan(aws, directory)
+    result = _ecr_scan_selected(aws, directory, ecr_scanner)
     if result["reason_code"] != "SECCOP_ECR_NON_COMPLIANT":
         raise DemoError("The ECR baseline did not produce the approved finding.")
     return result
 
 
-def _ecr_fix(aws: AwsCli, directory: Path) -> dict[str, Any]:
+def _ecr_fix(aws: AwsCli, directory: Path, *, ecr_scanner: str = "trivy") -> dict[str, Any]:
     _fix(aws, "ecr", directory)
-    result = _ecr_scan(aws, directory)
+    result = _ecr_scan_selected(aws, directory, ecr_scanner)
     if result["reason_code"] != "SECCOP_ECR_COMPLIANT":
         raise DemoError("The ECR clean digest verification failed.")
-    return {"status": "VERIFIED", "reason_code": "SECCOP_ECR_PROMOTION_VERIFIED", "state": "COMPLIANT", "message": "SecCop promoted the clean ECR digest and verified the result with local Trivy."}
+    provider = "Amazon Inspector" if ecr_scanner == "inspector" else "local Trivy"
+    return {"status": "VERIFIED", "reason_code": "SECCOP_ECR_PROMOTION_VERIFIED", "state": "COMPLIANT", "message": f"SecCop promoted the clean ECR digest and verified the result with {provider}."}
 
 
-def _ecr_reset(aws: AwsCli, directory: Path) -> dict[str, Any]:
-    before = _ecr_scan(aws, directory)
+def _ecr_reset(aws: AwsCli, directory: Path, *, ecr_scanner: str = "trivy") -> dict[str, Any]:
+    before = _ecr_scan_selected(aws, directory, ecr_scanner)
     if before["reason_code"] == "SECCOP_ECR_NON_COMPLIANT":
         return {"status": "READY", "reason_code": "SECCOP_ECR_REOPEN_READY", "message": "The ECR finding is already action required."}
     _push_image(aws, directory, BAD_VERSION, "demo-current")
-    after = _ecr_scan(aws, directory)
+    after = _ecr_scan_selected(aws, directory, ecr_scanner)
     if after["reason_code"] != "SECCOP_ECR_NON_COMPLIANT":
         raise DemoError("The ECR reopen verification failed.")
-    return {"status": "READY", "reason_code": "SECCOP_ECR_REOPEN_READY", "message": "The ECR finding was reopened and reread with local Trivy."}
+    provider = "Amazon Inspector" if ecr_scanner == "inspector" else "local Trivy"
+    return {"status": "READY", "reason_code": "SECCOP_ECR_REOPEN_READY", "message": f"The ECR finding was reopened and reread with {provider}."}
 
 
 def _tag_map(tags: Any) -> dict[str, str]:
@@ -956,13 +996,13 @@ def main() -> int:
         try:
             aws.run("sts", "get-caller-identity")
             if args.command == "ecr-start":
-                result = _ecr_start(aws, Path(run_dir))
+                result = _ecr_start(aws, Path(run_dir), ecr_scanner=args.ecr_scanner)
             elif args.command == "ecr-scan":
-                result = _ecr_scan(aws, Path(run_dir))
+                result = _ecr_scan(aws, Path(run_dir), ecr_scanner=args.ecr_scanner)
             elif args.command == "ecr-fix":
-                result = _ecr_fix(aws, Path(run_dir))
+                result = _ecr_fix(aws, Path(run_dir), ecr_scanner=args.ecr_scanner)
             elif args.command == "ecr-reset":
-                result = _ecr_reset(aws, Path(run_dir))
+                result = _ecr_reset(aws, Path(run_dir), ecr_scanner=args.ecr_scanner)
             elif args.command == "start":
                 result = _start(aws, Path(run_dir))
             elif args.command == "cleanup":
