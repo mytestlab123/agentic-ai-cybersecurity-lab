@@ -317,10 +317,10 @@
       ecrReview = true;
       document.title = 'Security Copilot - ECR Operator Review';
       reviewTitle.textContent = 'ECR Operator Review';
-      safetyBanner.innerHTML = '<strong>ECR review boundary.</strong> Local Trivy detects the image finding; a human must approve digest promotion.';
+      safetyBanner.innerHTML = '<strong>ECR review boundary.</strong> Amazon Inspector supplies the finding; a human must approve any digest promotion.';
       welcomeTitle.textContent = 'Review ECR image posture';
       welcomeCopy.textContent = 'Scan the retained ECR demo image and review the exact clean-digest promotion.';
-      scanNote.textContent = 'Check demo-current with local Trivy.';
+      scanNote.textContent = 'Check the retained ECR fixture with Amazon Inspector.';
       backendNote.innerHTML = '<span class="mode-dot"></span>Live AWS ECR review - Human approval required';
       scanButton.textContent = 'Scan ECR image';
       if (scanWelcomeButton) scanWelcomeButton.textContent = 'Scan ECR image';
@@ -331,8 +331,9 @@
       });
       if (codexPreflightButton) codexPreflightButton.classList.add('hidden');
       if (cveWelcomeButton) cveWelcomeButton.classList.add('hidden');
-      composerWrap.classList.add('hidden');
-      toggleComposerButton.classList.remove('hidden');
+      composerWrap.classList.remove('hidden');
+      toggleComposerButton.classList.add('hidden');
+      promptEl.placeholder = 'Ask about this ECR finding, for example: explain the risk and safe next step';
     }
     const labels = {
       mock_inspector_finding: 'Inspector finding lookup',
@@ -923,10 +924,11 @@
       if (scanWelcomeButton) scanWelcomeButton.disabled = true;
       const live = demoBackend === 'AWS';
       setMode(s3Review ? 'S3 posture review' : ecrReview ? 'ECR operator review' : (live ? 'Live AWS scan' : 'Demo scan'), live);
-      addMessage('user', s3Review ? 'Scan S3 bucket' : ecrReview ? 'Scan ECR image' : (live ? 'Scan live server' : 'Scan environment'));
-      const thinking = addMessage('assistant', s3Review ? 'Checking the bucket-level Block Public Access posture...' : ecrReview ? 'Scanning demo-current with local Trivy...' : 'Checking server packages, stored artifact, and container image...');
+      const requestText = ecrReview ? (promptEl.value.trim() || 'Investigate the ECR finding and explain the safe next step.') : '';
+      addMessage('user', s3Review ? 'Scan S3 bucket' : ecrReview ? requestText : (live ? 'Scan live server' : 'Scan environment'));
+      const thinking = addMessage('assistant', s3Review ? 'Checking the bucket-level Block Public Access posture...' : ecrReview ? 'Scanning the retained ECR fixture with Amazon Inspector...' : 'Checking server packages, stored artifact, and container image...');
       try {
-        const payload = await post('/api/scan', { mode:'DEMO' });
+        const payload = await post('/api/scan', { mode:'DEMO', ...(ecrReview ? { request_text: requestText } : {}) });
         thinking.parentElement.remove();
         renderScan(payload);
       } catch (error) {
@@ -1036,6 +1038,7 @@
 
     form.addEventListener('submit', async (event) => {
       event.preventDefault();
+      if (ecrReview) { startScan(runButton); return; }
       const prompt = promptEl.value.trim();
       const cves = extractCves(prompt);
       if (!cves.length) { const body = addMessage('assistant', 'Paste one CVE identifier, such as CVE-2099-0001.'); body.lastChild.classList.add('error-copy'); return; }

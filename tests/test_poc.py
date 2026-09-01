@@ -14,6 +14,7 @@ from secure_agent_harness.contracts import (
     AwsReadOnlyEvidence,
     AwsReadOnlyResult,
     PocRequest,
+    SecCopScanRequest,
     SecCopCsvRequest,
     SecCopRemediationResult,
 )
@@ -136,6 +137,9 @@ class _FakeCodexTransport:
             raise RuntimeError("fake App Server stream exhausted")
         return self.messages.pop(0)
 
+    def close(self) -> None:
+        return None
+
 
 def _codex_ready_messages() -> list[dict[str, object]]:
     return [
@@ -217,6 +221,51 @@ def test_hybrid_turn_rejects_command_event() -> None:
 
     with pytest.raises(_CodexPreflightError, match="CODEX_EVENT_REJECTED"):
         _collect_codex_turn(_HybridSession(transport, "THREAD_ALIAS_01", [], 7), "Safe prompt")
+
+
+def test_ecr_scan_request_bounds_user_text_without_granting_authority() -> None:
+    request = SecCopScanRequest.model_validate({"mode": "DEMO", "request_text": "Explain the ECR finding and safe next step."})
+    assert request.request_text.startswith("Explain")
+    with pytest.raises(ValidationError):
+        SecCopScanRequest.model_validate({"mode": "DEMO", "request_text": "run aws cli with arn:example:ecr:private"})
+
+
+def test_ecr_codex_before_after_uses_one_sanitized_thread(monkeypatch: pytest.MonkeyPatch) -> None:
+    transport = _FakeCodexTransport([
+        {"id": 1, "result": {"userAgent": "codex"}},
+        {"id": 2, "result": {"account": {"type": "chatgpt"}}},
+        {"id": 3, "result": {"thread": {"id": "THREAD_ALIAS_01"}}},
+        {"id": 4, "result": {"turn": {"id": "TURN_ALIAS_01"}}},
+        {"method": "turn/started", "params": {"threadId": "THREAD_ALIAS_01", "turn": {"id": "TURN_ALIAS_01"}}},
+        {"method": "item/agentMessage/delta", "params": {"delta": "Before explanation from facts."}},
+        {"method": "turn/completed", "params": {"turn": {"id": "TURN_ALIAS_01", "status": "completed"}}},
+        {"id": 5, "result": {"turn": {"id": "TURN_ALIAS_02"}}},
+        {"method": "turn/started", "params": {"threadId": "THREAD_ALIAS_01", "turn": {"id": "TURN_ALIAS_02"}}},
+        {"method": "item/agentMessage/delta", "params": {"delta": "After explanation from verified facts."}},
+        {"method": "turn/completed", "params": {"turn": {"id": "TURN_ALIAS_02", "status": "completed"}}},
+    ])
+    monkeypatch.setattr(poc_server, "_CodexProcessTransport", lambda: transport)
+    before = poc_server._start_ecr_codex_explanation("Investigate and explain the safe next step.", {
+        "scanner_mode": "ECR_ENHANCED_SCANNING", "package_ecosystem": "JAVASCRIPT_NPM",
+        "cve_id": "CVE-2020-8203", "package_name": "lodash", "installed_version": "4.17.15",
+        "severity": "HIGH", "state": "NON_COMPLIANT",
+    })
+    after = poc_server._finish_ecr_codex_explanation({"scanner_mode": "ECR_ENHANCED_SCANNING", "package_ecosystem": "JAVASCRIPT_NPM", "cve_id": "CVE-2020-8203", "state": "COMPLIANT", "status": "VERIFIED"})
+    assert before["reason_code"] == "ECR_CODEX_BEFORE_READY"
+    assert after["reason_code"] == "ECR_CODEX_AFTER_EXPLAINED"
+    prompts = [item["params"]["input"][0]["text"] for item in transport.sent if item.get("method") == "turn/start"]
+    assert "Investigate and explain" in prompts[0]
+    assert "lodash" in prompts[0] and "CVE-2020-8203" in prompts[0]
+    assert "COMPLIANT" in prompts[1] and "CVE-2020-8203" in prompts[1]
+    assert all("sha256:" not in prompt and "arn:" not in prompt for prompt in prompts)
+    assert [item["params"]["threadId"] for item in transport.sent if item.get("method") == "turn/start"] == ["THREAD_ALIAS_01", "THREAD_ALIAS_01"]
+
+
+def test_ecr_codex_after_fails_closed_when_thread_is_lost() -> None:
+    poc_server._close_hybrid_session()
+    result = poc_server._finish_ecr_codex_explanation({"state": "COMPLIANT"})
+    assert result["status"] == "BLOCKED"
+    assert result["reason_code"] == "CODEX_THREAD_UNAVAILABLE"
 
 
 def test_public_remediation_payload_excludes_private_evidence_path() -> None:

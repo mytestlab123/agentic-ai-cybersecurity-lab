@@ -1,9 +1,10 @@
 """Typed data crossing the model, policy, and tool boundaries."""
 
+import re
 from datetime import datetime
 from typing import Any, Literal
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 
 class Contract(BaseModel):
@@ -345,6 +346,19 @@ class SecCopScanRequest(Contract):
     """The primary demo scan has a fixed, server-owned source set."""
 
     mode: Literal["DEMO"] = "DEMO"
+    request_text: str = Field(
+        default="Investigate the ECR finding and explain the safe next step.",
+        min_length=1,
+        max_length=300,
+    )
+
+    @field_validator("request_text")
+    @classmethod
+    def _bounded_request(cls, value: str) -> str:
+        text = " ".join(value.split())
+        if re.search(r"(?:arn:|sha256:|AKIA[0-9A-Z]{8,}|aws\s+cli|(?:secret|credential|token)|/home/|\\Users\\)", text, re.IGNORECASE):
+            raise ValueError("request_text contains a private identifier or command authority")
+        return text
 
 
 class SecCopScanSourceStatus(Contract):
