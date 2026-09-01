@@ -189,7 +189,7 @@ if [[ -n "$live_advisory" ]]; then
   screenshots=(SecCop-Live-Finding.png SecCop-Live-Approval.png SecCop-Live-After.png)
 fi
 for screenshot in "${screenshots[@]}"; do
-  test -s "$review_dir/$screenshot"
+  test -s "$evidence_dir/$screenshot"
 done
 
 cleanup
@@ -204,6 +204,18 @@ if [[ -n "$debug_port" ]] && curl --silent --max-time 1 "http://localhost:${debu
 fi
 jq -e '.status == "PASS" and .externalRequests == 0 and .consoleErrors == 0' \
   "$evidence_dir/result.json" >/dev/null
+if [[ ${SECCOP_E2E_FAIL_BEFORE_PUBLISH:-0} == 1 ]]; then
+  printf '%s\n' 'intentional failure before screenshot publication' >&2
+  exit 9
+fi
+publish_dir="$evidence_dir/publish"
+install -d -m 700 "$publish_dir"
+for screenshot in "${screenshots[@]}"; do
+  install -m 600 "$evidence_dir/$screenshot" "$publish_dir/$screenshot"
+done
+for screenshot in "${screenshots[@]}"; do
+  install -m 600 "$publish_dir/$screenshot" "$review_dir/$screenshot"
+done
 printf 'PASS: SecCop browser screenshot evidence\n'
 printf 'Evidence: %s\n' "$evidence_dir"
 printf 'Screenshots: %s\n' "$review_dir"

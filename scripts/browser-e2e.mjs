@@ -19,7 +19,6 @@ if (!appUrl || !cdpUrl || !evidenceDir || !reviewDir) {
 }
 
 await mkdir(evidenceDir, { recursive: true });
-await mkdir(reviewDir, { recursive: true });
 const consoleErrors = [];
 const externalRequests = [];
 const browserRequests = [];
@@ -37,11 +36,9 @@ const saveJson = async (name, value) => {
 };
 const shot = async (name, options = {}) => {
   await page.screenshot({ path: path.join(evidenceDir, name), ...options });
-  await page.screenshot({ path: path.join(reviewDir, name), ...options });
 };
 const focusedShot = async (locator, name) => {
   await locator.screenshot({ path: path.join(evidenceDir, name) });
-  await locator.screenshot({ path: path.join(reviewDir, name) });
 };
 
 let browser;
@@ -75,6 +72,8 @@ try {
     const checkResponse = page.waitForResponse((item) => item.url().endsWith('/api/live-advisory'), { timeout: 60_000 });
     await page.getByRole('button', { name: 'Check live server', exact: true }).click();
     assert((await checkResponse).ok(), 'The live advisory check failed');
+    await page.locator('.composer-wrap').evaluate((element) => { element.style.display = 'none'; });
+    assert(await page.locator('.composer-wrap').boundingBox() === null, 'The composer still overlaps live evidence');
     await focusedShot(page.locator('.result-card').last(), 'SecCop-Live-Finding.png');
     const proposalResponsePromise = page.waitForResponse((item) => item.url().endsWith('/api/live-advisory-proposal'), { timeout: 60_000 });
     await page.getByRole('button', { name: 'Prepare update', exact: true }).click();
@@ -82,8 +81,12 @@ try {
     const proposalPayload = await proposalResponse.json();
     assert(proposalPayload.result.status === 'READY', 'The exact package proposal was not READY');
     assert(!JSON.stringify(proposalPayload).match(/arn:|i-[0-9a-f]{8,17}/), 'A private AWS identifier was exposed');
-    await page.locator('.composer-wrap').evaluate((element) => { element.style.display = 'none'; });
-    await focusedShot(page.locator('.result-card').last(), 'SecCop-Live-Approval.png');
+    const approvalCard = page.locator('.result-card').last();
+    const approvalControl = page.getByRole('button', { name: 'Approve exact package fix', exact: true });
+    await approvalControl.waitFor({ state:'visible' });
+    const [cardBox, controlBox] = await Promise.all([approvalCard.boundingBox(), approvalControl.boundingBox()]);
+    assert(cardBox && controlBox && controlBox.y + controlBox.height <= cardBox.y + cardBox.height, 'Approval control is outside its evidence card');
+    await focusedShot(approvalCard, 'SecCop-Live-Approval.png');
 
     const proposal = proposalPayload.result;
     const bypass = await page.evaluate(async ({ proposalId, proposalHash }) => {
