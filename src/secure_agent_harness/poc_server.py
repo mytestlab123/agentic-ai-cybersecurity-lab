@@ -914,7 +914,7 @@ class _Handler(BaseHTTPRequestHandler):
                 if isinstance(execution_after_version, str) and execution_after_version:
                     result = SecCopRemediationResult(
                         status="COMPLETED",
-                        reason_code="SSM_PACKAGE_VERSION_VERIFIED",
+                        reason_code="SSM_REMEDIATION_PENDING_RESCAN",
                         cve_id=proposal.cve_id,
                         resource_alias=proposal.resource_alias,
                         package_name=proposal.package_name,
@@ -922,7 +922,7 @@ class _Handler(BaseHTTPRequestHandler):
                         before_version=proposal.installed_version,
                         after_version=execution_after_version,
                         change_state="COMPLETED",
-                        verification_status="VERIFIED",
+                        verification_status="PENDING_RESCAN",
                         reboot_approved=False,
                         mutation_performed=True,
                         executed_calls=executed_calls,
@@ -966,8 +966,6 @@ class _Handler(BaseHTTPRequestHandler):
                 reason_code=(
                     "SSM_REMEDIATION_VERIFIED"
                     if resolved
-                    else "SSM_PACKAGE_VERSION_VERIFIED"
-                    if package_verified
                     else "SSM_REMEDIATION_PENDING_RESCAN"
                 ),
                 cve_id=proposal.cve_id,
@@ -977,7 +975,7 @@ class _Handler(BaseHTTPRequestHandler):
                 before_version=proposal.installed_version,
                 after_version=after_version,
                 change_state="COMPLETED",
-                verification_status="VERIFIED" if (resolved or package_verified) else "PENDING_RESCAN",
+                verification_status="VERIFIED" if resolved else "PENDING_RESCAN",
                 reboot_approved=False,
                 mutation_performed=True,
                 executed_calls=executed_calls,

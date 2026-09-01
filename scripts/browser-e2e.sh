@@ -9,6 +9,7 @@ run_id=$(date '+%Y%m%dT%H%M%S%z')
 temp_root=${AGENTS_TEMP_ROOT:-${TMPDIR:-/tmp}}
 evidence_dir="${EVIDENCE_ROOT:-${temp_root}/agentic-ai-cybersecurity-lab/browser-e2e}/${run_id}"
 review_dir=${REVIEW_DIR:-}
+live_advisory=${LIVE_ADVISORY:-}
 node_runner="$repo_dir/scripts/browser-e2e.mjs"
 app_pid=''
 chrome_pid=''
@@ -156,6 +157,11 @@ fi
   exit 1
 }
 playwright_windows=$(wslpath -w "$playwright_core")
+live_advisory_windows=
+if [[ -n "$live_advisory" ]]; then
+  [[ -r "$live_advisory" ]] || { printf 'live advisory not readable: %s\n' "$live_advisory" >&2; exit 1; }
+  live_advisory_windows=$(wslpath -w "$live_advisory")
+fi
 node_windows=${WINDOWS_NODE:-'/mnt/c/Program Files/nodejs/node.exe'}
 [[ -x "$node_windows" ]] || {
   printf 'Windows Node.js not found: %s\n' "$node_windows" >&2
@@ -164,11 +170,11 @@ node_windows=${WINDOWS_NODE:-'/mnt/c/Program Files/nodejs/node.exe'}
 
 APP_URL="$app_url" CDP_URL="$cdp_url" EVIDENCE_DIR="$evidence_dir_windows" \
   REVIEW_DIR="$(wslpath -w "$review_dir")" PLAYWRIGHT_CORE="$playwright_windows" \
-  export APP_URL CDP_URL EVIDENCE_DIR REVIEW_DIR PLAYWRIGHT_CORE
-export WSLENV='APP_URL:CDP_URL:EVIDENCE_DIR:REVIEW_DIR:PLAYWRIGHT_CORE'
+  LIVE_ADVISORY="$live_advisory_windows" export APP_URL CDP_URL EVIDENCE_DIR REVIEW_DIR PLAYWRIGHT_CORE LIVE_ADVISORY
+export WSLENV='APP_URL:CDP_URL:EVIDENCE_DIR:REVIEW_DIR:PLAYWRIGHT_CORE:LIVE_ADVISORY'
 "$node_windows" "$runner_windows"
 
-for screenshot in \
+screenshots=(
   SecCop-Scan-01.png \
   SecCop-CVE-01.png \
   SecCop-CVE-01-slide.png \
@@ -177,7 +183,12 @@ for screenshot in \
   SecCop-Scan-02-live-review.png \
   SecCop-Scan-03.png \
   SecCop-Scan-04.png \
-  SecCop-Scan-05-blocked.png; do
+  SecCop-Scan-05-blocked.png
+)
+if [[ -n "$live_advisory" ]]; then
+  screenshots=(SecCop-Live-Finding.png SecCop-Live-Approval.png SecCop-Live-After.png)
+fi
+for screenshot in "${screenshots[@]}"; do
   test -s "$review_dir/$screenshot"
 done
 
