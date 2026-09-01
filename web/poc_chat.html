@@ -143,7 +143,7 @@
       <div class="brand"><div class="brand-mark">S</div><div class="brand-name">Security Copilot</div></div>
       <button id="new-chat" class="new-chat" type="button"><span>+</span><span>New investigation</span></button>
       <div class="side-label">WORKSPACE</div>
-      <div class="chat-item active">DEV LAB 1</div>
+      <div class="chat-item active">SECCOP POC</div>
       <div class="source-nav" aria-label="Security sources">
         <button class="source-tab active" type="button">EC2</button>
         <button class="source-tab" type="button" aria-disabled="true" title="Read-only demo source">ECR</button>
@@ -160,7 +160,7 @@
         <summary>Technical evidence fallback</summary>
         <label class="upload-button" for="evidence-upload"><span>↑</span><span>Upload read-only evidence</span><input id="evidence-upload" type="file" accept="application/json,.json"></label>
       <div class="live-panel">
-        <div class="side-label" style="padding:0">LIVE AWS - EC2</div>
+        <div class="side-label" style="padding:0">OPTIONAL LIVE AWS</div>
         <label for="advisory-upload">One advisory file (JSON)</label>
         <input id="advisory-upload" type="file" accept="application/json,.json">
         <div class="usage-note">The server selects LAB_SERVER_01. No EC2 ID is needed.</div>
@@ -191,7 +191,7 @@
 
     <main class="main">
       <header class="topbar">
-        <div><div class="eyebrow">DEV LAB 1 / LIVE AWS</div><h1>EC2 package remediation</h1></div>
+        <div><div class="eyebrow">SECCOP POC</div><h1>Vulnerability review</h1></div>
         <div id="mode-status" class="status-pill"><span class="mode-dot"></span>Offline demo</div>
       </header>
       <div class="safety-banner"><strong>Safe demo boundary.</strong> Paste one CVE to check all demo sources. A server change always needs a separate review and approval.</div>
@@ -426,6 +426,24 @@
         findings.appendChild(item);
       }
       card.appendChild(findings);
+      body.appendChild(card);
+      if (payload.agent) renderHybridAgent(payload.agent, 'Security guidance ready');
+    }
+
+    function renderHybridAgent(agent, title) {
+      const body = addMessage('assistant', agent.message || 'AI explanation unavailable.');
+      const card = node('div', 'result-card hybrid-agent-card');
+      const head = node('div', 'result-head');
+      head.appendChild(node('div', 'result-title', title));
+      head.appendChild(node('span', 'badge', agent.reason_code || agent.status || 'BLOCKED'));
+      card.appendChild(head);
+      const grid = node('div', 'evidence-grid');
+      evidenceCell(grid, 'AWS evidence', agent.aws_evidence_status || 'SECCOP_ADAPTER');
+      evidenceCell(grid, 'AWS MCP', agent.aws_mcp_status || 'AWS_MCP_UNAVAILABLE');
+      evidenceCell(grid, 'MCP mode', agent.aws_mcp_mode || 'READ ONLY');
+      evidenceCell(grid, 'Allowed activity', (agent.tool_activity || []).join(', ') || 'None');
+      card.appendChild(grid);
+      if (agent.response_text) card.appendChild(node('div', 'approval-copy', agent.response_text));
       body.appendChild(card);
     }
 
@@ -755,6 +773,7 @@
         card.appendChild(calls);
       }
       body.appendChild(card);
+      if (result.agent_after) renderHybridAgent(result.agent_after, 'Verified result explained');
     }
 
     function extractCves(prompt) {

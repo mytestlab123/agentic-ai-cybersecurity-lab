@@ -13,6 +13,7 @@ from secure_agent_harness.contracts import (
     AwsReadOnlyResult,
     PocRequest,
     SecCopCsvRequest,
+    SecCopRemediationResult,
 )
 from secure_agent_harness.poc import PocEngine
 from secure_agent_harness import poc_server
@@ -20,6 +21,9 @@ from secure_agent_harness.poc_server import (
     _CodexPreflightError,
     _Handler,
     _codex_request,
+    _collect_codex_turn,
+    _HybridSession,
+    _public_remediation_payload,
     _run_codex_preflight,
 )
 from secure_agent_harness.seccop_scan import review_demo_cve
@@ -201,6 +205,26 @@ def test_codex_preflight_rejects_forbidden_rpc_before_transport() -> None:
         _codex_request(transport, 6, "command/exec", {}, [])
 
     assert transport.sent == []
+
+
+def test_hybrid_turn_rejects_command_event() -> None:
+    transport = _FakeCodexTransport([
+        {"id": 7, "result": {"turn": {"id": "TURN_ALIAS_02"}}},
+        {"method": "item/started", "params": {"item": {"id": "ITEM_ALIAS_02", "type": "commandExecution"}}},
+    ])
+
+    with pytest.raises(_CodexPreflightError, match="CODEX_EVENT_REJECTED"):
+        _collect_codex_turn(_HybridSession(transport, "THREAD_ALIAS_01", [], 7), "Safe prompt")
+
+
+def test_public_remediation_payload_excludes_private_evidence_path() -> None:
+    result = SecCopRemediationResult(
+        status="COMPLETED", reason_code="SSM_REMEDIATION_VERIFIED", cve_id="CVE-2099-0001",
+        resource_alias="EC2_RESOURCE_01", change_state="COMPLETED", verification_status="VERIFIED",
+        reboot_approved=False, mutation_performed=True, evidence_path="/private/evidence.json", message="Verified.",
+    )
+
+    assert "evidence_path" not in _public_remediation_payload(result)
 
 
 def test_demo_cve_review_checks_three_sources_with_aliases_only() -> None:

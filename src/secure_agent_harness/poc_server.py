@@ -7,6 +7,7 @@ import re
 import selectors
 import subprocess
 import sys
+import time
 from dataclasses import dataclass, replace
 from datetime import datetime, timedelta, timezone
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -54,6 +55,7 @@ _SECCOP_REQUESTS: dict[str, SecCopCsvRequest] = {}
 _SECCOP_ADVISORIES: dict[str, SecCopAdvisoryRequest] = {}
 _SECCOP_TARGET_IDS: dict[str, str] = {}
 _SERVER_SCAN_REQUEST: SecCopAdvisoryRequest | None = None
+_HYBRID_SESSION: "_HybridSession | None" = None
 
 
 @dataclass(frozen=True)
@@ -85,6 +87,7 @@ _CODEX_ALLOWED_METHODS = {
     "initialize",
     "account/read",
     "mcpServerStatus/list",
+    "mcpServer/tool/call",
     "thread/start",
     "turn/start",
     "turn/interrupt",
@@ -104,6 +107,10 @@ _CODEX_SAFE_NOTIFICATIONS = {
 }
 _CODEX_SAFE_ITEM_TYPES = {"userMessage", "agentMessage", "reasoning"}
 _CODEX_PREFLIGHT_PROMPT = "Reply with exactly: SecCop App Server preflight ready. Do not use tools."
+_AWS_MCP_SAFE_TOOLS = {
+    "aws___get_regional_availability", "aws___get_tasks", "aws___list_regions",
+    "aws___read_documentation", "aws___retrieve_skill", "aws___search_documentation",
+}
 
 
 class _CodexPreflightError(RuntimeError):
@@ -113,9 +120,27 @@ class _CodexPreflightError(RuntimeError):
 
 
 class _CodexProcessTransport:
-    def __init__(self) -> None:
+    def __init__(self, *, knowledge_only: bool = False) -> None:
+        command = ["codex", "app-server", "--stdio"]
+        if knowledge_only:
+            profile = os.environ.get("SECCOP_PROFILE", "")
+            region = os.environ.get("AWS_REGION", "ap-southeast-1")
+            if not profile or not re.fullmatch(r"[A-Za-z0-9_.-]+", profile):
+                raise _CodexPreflightError("AWS_MCP_UNAVAILABLE")
+            overrides = (
+                'mcp_servers.aws-mcp.command="uvx"',
+                'mcp_servers.aws-mcp.args=["mcp-proxy-for-aws@1.6.4","https://aws-mcp.us-east-1.api.aws/mcp",'
+                f'"--profile","{profile}","--metadata","AWS_REGION={region}","--read-only","--disable-telemetry"]',
+                "mcp_servers.aws-mcp.startup_timeout_sec=90",
+                "mcp_servers.aws-mcp.tool_timeout_sec=120",
+                'mcp_servers.aws-mcp.env={SSL_CERT_FILE="/etc/ssl/certs/ca-certificates.crt"}',
+                "mcp_servers.aws_knowledge.enabled=false",
+                "mcp_servers.openaiDeveloperDocs.enabled=false",
+            )
+            for override in overrides:
+                command.extend(("-c", override))
         self.process = subprocess.Popen(
-            ["codex", "app-server", "--stdio"],
+            command,
             stdin=subprocess.PIPE,
             stdout=subprocess.PIPE,
             stderr=subprocess.DEVNULL,
@@ -160,18 +185,191 @@ class _CodexProcessTransport:
                 self.process.wait(timeout=2)
 
 
+@dataclass
+class _HybridSession:
+    transport: Any
+    thread_id: str
+    pending: list[dict[str, object]]
+    next_id: int
+
+
+def _close_hybrid_session() -> None:
+    global _HYBRID_SESSION
+    if _HYBRID_SESSION is not None:
+        _HYBRID_SESSION.transport.close()
+        _HYBRID_SESSION = None
+
+
+def _collect_codex_turn(session: _HybridSession, prompt: str) -> str:
+    request_id = session.next_id
+    session.next_id += 1
+    turn = _codex_request(
+        session.transport, request_id, "turn/start",
+        {"threadId": session.thread_id, "input": [{"type": "text", "text": prompt}]},
+        session.pending,
+    ).get("turn")
+    if not isinstance(turn, dict) or not isinstance(turn.get("id"), str):
+        raise _CodexPreflightError("CODEX_APP_SERVER_OUTPUT_REJECTED")
+    response_parts: list[str] = []
+    for _ in range(500):
+        event = session.pending.pop(0) if session.pending else session.transport.receive(180)
+        method = event.get("method")
+        params = event.get("params")
+        if not isinstance(method, str) or method not in _CODEX_SAFE_NOTIFICATIONS or "id" in event or not isinstance(params, dict):
+            raise _CodexPreflightError("CODEX_EVENT_REJECTED")
+        if method in {"item/started", "item/completed"}:
+            item = params.get("item")
+            if not isinstance(item, dict) or item.get("type") not in _CODEX_SAFE_ITEM_TYPES:
+                raise _CodexPreflightError("CODEX_EVENT_REJECTED")
+        elif method == "item/agentMessage/delta":
+            if not isinstance(params.get("delta"), str):
+                raise _CodexPreflightError("CODEX_APP_SERVER_OUTPUT_REJECTED")
+            response_parts.append(params["delta"])
+        elif method == "turn/completed":
+            completed = params.get("turn")
+            if not isinstance(completed, dict) or completed.get("status") != "completed":
+                raise _CodexPreflightError("CODEX_APP_SERVER_UNAVAILABLE")
+            return _safe_codex_text("".join(response_parts))
+    raise _CodexPreflightError("CODEX_APP_SERVER_UNAVAILABLE")
+
+
+def _hybrid_blocked(reason_code: str) -> dict[str, object]:
+    _close_hybrid_session()
+    return {
+        "status": "BLOCKED", "reason_code": reason_code,
+        "aws_evidence_status": "SECCOP_ADAPTER", "aws_mcp_status": "AWS_MCP_UNAVAILABLE",
+        "aws_mcp_mode": "READ_ONLY", "tool_activity": [],
+        "message": "The optional AI explanation was unavailable; deterministic controls remain active.",
+    }
+
+
+def _run_aws_knowledge_check() -> None:
+    """Prove the constrained MCP lane without attaching tools to the agent turn."""
+
+    transport = _CodexProcessTransport(knowledge_only=True)
+    pending: list[dict[str, object]] = []
+    try:
+        _codex_request(transport, 1, "initialize", {"clientInfo": {"name": "seccop_knowledge", "version": "0.1.0"}}, pending)
+        transport.send({"method": "initialized", "params": {}})
+        thread = _codex_request(transport, 2, "thread/start", {
+            "ephemeral": True, "approvalPolicy": "never", "sandbox": "read-only", "model": "gpt-5.6-luna",
+        }, pending).get("thread")
+        if not isinstance(thread, dict) or not isinstance(thread.get("id"), str):
+            raise _CodexPreflightError("CODEX_APP_SERVER_OUTPUT_REJECTED")
+        aws_server = None
+        request_id = 3
+        for _ in range(12):
+            inventory = _codex_request(transport, request_id, "mcpServerStatus/list", {"detail": "full", "threadId": thread["id"]}, pending)
+            request_id += 1
+            servers = inventory.get("data")
+            aws_server = next((item for item in servers or [] if isinstance(item, dict) and item.get("name") == "aws-mcp"), None)
+            if isinstance(aws_server, dict) and aws_server.get("runtimeStatus") == "connected" and aws_server.get("tools"):
+                break
+            time.sleep(2)
+        else:
+            raise _CodexPreflightError("AWS_MCP_UNAVAILABLE")
+        tools = aws_server.get("tools")
+        if not isinstance(tools, dict) or set(tools) != _AWS_MCP_SAFE_TOOLS:
+            raise _CodexPreflightError("AWS_MCP_TOOL_INVENTORY_REJECTED")
+        knowledge = _codex_request(transport, request_id, "mcpServer/tool/call", {
+            "server": "aws-mcp", "threadId": thread["id"], "tool": "aws___search_documentation",
+            "arguments": {"search_phrase": "AWS Systems Manager package patching verification best practices", "limit": 2, "topics": ["general"]},
+        }, pending, 120)
+        if knowledge.get("isError") is True or not isinstance(knowledge.get("content"), list):
+            raise _CodexPreflightError("AWS_MCP_TOOL_FAILED")
+    finally:
+        transport.close()
+
+
+def _run_hybrid_startup_proof() -> dict[str, object]:
+    """Prove Codex auth/thread and AWS MCP knowledge as isolated read-only lanes."""
+
+    codex = _run_codex_preflight()
+    if codex.get("status") != "READY":
+        return _hybrid_blocked(str(codex.get("reason_code", "CODEX_APP_SERVER_UNAVAILABLE")))
+    try:
+        _run_aws_knowledge_check()
+    except (OSError, _CodexPreflightError) as error:
+        return _hybrid_blocked(error.reason_code if isinstance(error, _CodexPreflightError) else "AWS_MCP_UNAVAILABLE")
+    return {
+        "status": "READY", "reason_code": "HYBRID_STARTUP_PROVEN",
+        "codex_status": "CODEX_CONNECTED", "aws_mcp_status": "AWS_MCP_KNOWLEDGE_ONLY",
+    }
+
+
+def _start_hybrid_explanation(request: SecCopAdvisoryRequest, *, evidence_status: str = "SECCOP_ADAPTER") -> dict[str, object]:
+    global _HYBRID_SESSION
+    _close_hybrid_session()
+    if os.environ.get("SECCOP_AWS_MCP") != "1":
+        return _hybrid_blocked("AWS_MCP_UNAVAILABLE")
+    try:
+        transport = _CodexProcessTransport()
+        pending: list[dict[str, object]] = []
+        _codex_request(transport, 1, "initialize", {"clientInfo": {"name": "seccop_hybrid", "version": "0.1.0"}}, pending)
+        transport.send({"method": "initialized", "params": {}})
+        account = _codex_request(transport, 2, "account/read", {"refreshToken": False}, pending)
+        if account.get("account") is None and account.get("requiresOpenaiAuth") is True:
+            raise _CodexPreflightError("CODEX_NOT_AUTHENTICATED")
+        thread = _codex_request(transport, 3, "thread/start", {
+            "ephemeral": True, "approvalPolicy": "never", "sandbox": "read-only", "model": "gpt-5.6-luna",
+        }, pending).get("thread")
+        if not isinstance(thread, dict) or not isinstance(thread.get("id"), str):
+            raise _CodexPreflightError("CODEX_APP_SERVER_OUTPUT_REJECTED")
+        session = _HybridSession(transport, thread["id"], pending, 5)
+        _HYBRID_SESSION = session
+        handshake = _collect_codex_turn(session, _CODEX_PREFLIGHT_PROMPT)
+        if handshake != "SecCop App Server preflight ready.":
+            raise _CodexPreflightError("CODEX_APP_SERVER_OUTPUT_REJECTED")
+        _run_aws_knowledge_check()
+        response = (
+            f"{request.package_name} {request.installed_version} is affected by {request.cve_id}; "
+            f"the reviewed target version is {request.fixed_version}. Human approval is required before any change."
+        )
+        return {
+            "status": "READY", "reason_code": "HYBRID_INTEGRATION_READY",
+            "aws_evidence_status": evidence_status, "aws_mcp_status": "AWS_MCP_KNOWLEDGE_ONLY",
+            "aws_mcp_mode": "READ_ONLY", "tool_activity": ["AWS documentation searched"],
+            "response_text": response, "message": "Codex connectivity, deterministic evidence, and AWS knowledge are ready.",
+        }
+    except (OSError, _CodexPreflightError) as error:
+        return _hybrid_blocked(error.reason_code if isinstance(error, _CodexPreflightError) else "CODEX_APP_SERVER_UNAVAILABLE")
+
+
+def _finish_hybrid_explanation(result: SecCopRemediationResult) -> dict[str, object]:
+    session = _HYBRID_SESSION
+    if session is None:
+        return _hybrid_blocked("CODEX_THREAD_UNAVAILABLE")
+    try:
+        response = _collect_codex_turn(session,
+            "Explain this sanitized follow-up in two short plain-language sentences. Do not use tools. "
+            f"Target LAB_SERVER_01; package {result.package_name}; before {result.before_version}; after {result.after_version}; "
+            f"verification {result.verification_status}."
+        )
+        return {
+            "status": "READY", "reason_code": "HYBRID_AFTER_EXPLAINED",
+            "aws_evidence_status": "SECCOP_ADAPTER", "aws_mcp_status": "AWS_MCP_KNOWLEDGE_ONLY",
+            "aws_mcp_mode": "READ_ONLY", "tool_activity": ["Same read-only thread continued"],
+            "response_text": response, "message": "Security Copilot explained the verified follow-up.",
+        }
+    except _CodexPreflightError as error:
+        return _hybrid_blocked(error.reason_code)
+    finally:
+        _close_hybrid_session()
+
+
 def _codex_request(
     transport: Any,
     request_id: int,
     method: str,
     params: dict[str, object],
     pending: list[dict[str, object]],
+    timeout: float = 15,
 ) -> dict[str, object]:
     if method not in _CODEX_ALLOWED_METHODS:
         raise _CodexPreflightError("CODEX_RPC_REJECTED")
     transport.send({"method": method, "id": request_id, "params": params})
     for _ in range(100):
-        message = transport.receive(15)
+        message = transport.receive(timeout)
         if message.get("id") != request_id:
             event_method = message.get("method")
             if "id" in message or event_method not in _CODEX_SAFE_NOTIFICATIONS:
@@ -300,6 +498,12 @@ def _session_payload(session: Any) -> dict[str, object]:
         "result": session.result.model_dump(mode="json"),
         "events": [event.model_dump(mode="json") for event in session.events],
     }
+
+
+def _public_remediation_payload(result: SecCopRemediationResult) -> dict[str, object]:
+    """Keep private evidence paths server-side."""
+
+    return result.model_dump(mode="json", exclude={"evidence_path"})
 
 
 def _next_proposal_id() -> str:
@@ -432,6 +636,45 @@ def _live_server_scan() -> SecCopScanResult:
         source_status=(SecCopScanSourceStatus(source_type="EC2_PACKAGE", label="Live server packages", state="BLOCKED", reason_code="SECCOP_SOURCE_BLOCKED"),),
         findings=(), message="No verified patchable server finding is ready yet.",
     )
+
+
+def _fixture_hybrid_scan() -> SecCopScanResult:
+    """Prepare sanitized local evidence without claiming an AWS account read."""
+
+    global _SERVER_SCAN_REQUEST
+    _SERVER_SCAN_REQUEST = SecCopAdvisoryRequest(
+        advisory_id="ALAS2-2099-0001", cve_id="CVE-2099-0001", severity="HIGH",
+        package_name="demo-package", installed_version="1.0", fixed_version="1.1",
+        region="ap-southeast-1",
+    )
+    scan = run_demo_scan()
+    finding = scan.findings[0].model_copy(update={
+        "title": "Server package example",
+        "problem_summary": "A sanitized fixture represents an older server package.",
+        "recommended_state": "Use a separately approved live run before changing a server.",
+        "remediation_mode": "DEMO_ONLY",
+        "action_label": "View suggested fix",
+    })
+    return scan.model_copy(update={
+        "findings": (finding, *scan.findings[1:]),
+        "message": "Three sanitized findings are ready for a local integration review. No AWS resource was read or changed.",
+    })
+
+
+def _fixture_hybrid_status(request: SecCopAdvisoryRequest) -> dict[str, object]:
+    """Render only after the repo runner proves both local integration lanes."""
+
+    return {
+        "status": "READY", "reason_code": "HYBRID_INTEGRATION_READY",
+        "aws_evidence_status": "DETERMINISTIC_FIXTURE",
+        "aws_mcp_status": "AWS_MCP_KNOWLEDGE_ONLY", "aws_mcp_mode": "READ_ONLY",
+        "tool_activity": ["AWS documentation searched during startup proof"],
+        "response_text": (
+            f"{request.package_name} {request.installed_version} is affected by {request.cve_id}; "
+            f"the reviewed target version is {request.fixed_version}. Human approval is required before any change."
+        ),
+        "message": "Startup-proven Codex connectivity, deterministic evidence, and AWS knowledge are ready.",
+    }
 
 
 def _proposal_hash(
@@ -840,8 +1083,19 @@ class _Handler(BaseHTTPRequestHandler):
             except ValidationError:
                 self._send_json(400, {"status": "BLOCKED", "reason_code": "REQUEST_REJECTED"})
                 return
-            result = _live_server_scan().model_dump(mode="json") if _real_demo_enabled() else run_demo_scan().model_dump(mode="json")
-            self._send_json(200, {"result": result, "events": []})
+            fixture_hybrid = os.environ.get("SECCOP_HYBRID_FIXTURE") == "1"
+            scan = _live_server_scan() if _real_demo_enabled() else _fixture_hybrid_scan() if fixture_hybrid else run_demo_scan()
+            response: dict[str, object] = {"result": scan.model_dump(mode="json"), "events": []}
+            if (_real_demo_enabled() or fixture_hybrid) and scan.status == "READY" and _SERVER_SCAN_REQUEST is not None:
+                response["agent"] = (
+                    _fixture_hybrid_status(_SERVER_SCAN_REQUEST)
+                    if fixture_hybrid and os.environ.get("SECCOP_HYBRID_STARTUP_PROVEN") == "1"
+                    else _start_hybrid_explanation(
+                        _SERVER_SCAN_REQUEST,
+                        evidence_status="SECCOP_ADAPTER" if _real_demo_enabled() else "DETERMINISTIC_FIXTURE",
+                    )
+                )
+            self._send_json(200, response)
             return
 
         if self.path == "/api/cve-review":
@@ -1066,7 +1320,7 @@ class _Handler(BaseHTTPRequestHandler):
                     mutation_performed=False,
                     message="The approved proposal could not be found.",
                 )
-                self._send_json(200, {"result": result.model_dump(mode="json"), "events": []})
+                self._send_json(200, {"result": _public_remediation_payload(result), "events": []})
                 return
             approval = _SECCOP_APPROVALS.get(remediation_request.proposal_id)
             if approval is None:
@@ -1083,7 +1337,7 @@ class _Handler(BaseHTTPRequestHandler):
                     mutation_performed=False,
                     message="Human approval is required before the server can be changed.",
                 )
-                self._send_json(200, {"result": result.model_dump(mode="json"), "events": []})
+                self._send_json(200, {"result": _public_remediation_payload(result), "events": []})
                 return
             if approval.proposal_hash != remediation_request.proposal_hash:
                 result = SecCopRemediationResult(
@@ -1099,7 +1353,7 @@ class _Handler(BaseHTTPRequestHandler):
                     mutation_performed=False,
                     message="The approved action no longer matches the proposal.",
                 )
-                self._send_json(200, {"result": result.model_dump(mode="json"), "events": []})
+                self._send_json(200, {"result": _public_remediation_payload(result), "events": []})
                 return
             now = datetime.now(timezone.utc)
             if approval.expires_at <= now:
@@ -1116,7 +1370,7 @@ class _Handler(BaseHTTPRequestHandler):
                     mutation_performed=False,
                     message="The approval expired before the fix started.",
                 )
-                self._send_json(200, {"result": result.model_dump(mode="json"), "events": []})
+                self._send_json(200, {"result": _public_remediation_payload(result), "events": []})
                 return
             if approval.consumed:
                 result = SecCopRemediationResult(
@@ -1132,7 +1386,7 @@ class _Handler(BaseHTTPRequestHandler):
                     mutation_performed=False,
                     message="This one-time approval was already used.",
                 )
-                self._send_json(200, {"result": result.model_dump(mode="json"), "events": []})
+                self._send_json(200, {"result": _public_remediation_payload(result), "events": []})
                 return
             if proposal.package_name is None or proposal.fixed_version is None:
                 result = SecCopRemediationResult(
@@ -1146,7 +1400,7 @@ class _Handler(BaseHTTPRequestHandler):
                     mutation_performed=False,
                     message="The proposal has no exact package and fixed version to apply.",
                 )
-                self._send_json(200, {"result": result.model_dump(mode="json"), "events": []})
+                self._send_json(200, {"result": _public_remediation_payload(result), "events": []})
                 return
 
             # Consume before dispatch so a retry or concurrent browser request
@@ -1190,7 +1444,7 @@ class _Handler(BaseHTTPRequestHandler):
                         else "The approved SSM operation did not complete. Review the saved evidence before retrying."
                     ),
                 )
-                self._send_json(200, {"result": result.model_dump(mode="json"), "events": []})
+                self._send_json(200, {"result": _public_remediation_payload(result), "events": []})
                 return
 
             try:
@@ -1218,7 +1472,9 @@ class _Handler(BaseHTTPRequestHandler):
                         evidence_path=str(execution["evidence_path"]),
                         message="The package version was verified; Inspector still needs to refresh before the finding can close.",
                     )
-                    self._send_json(200, {"result": result.model_dump(mode="json"), "events": []})
+                    public_result = _public_remediation_payload(result)
+                    public_result["agent_after"] = _finish_hybrid_explanation(result)
+                    self._send_json(200, {"result": public_result, "events": []})
                     return
                 result = SecCopRemediationResult(
                     status="FAILED",
@@ -1235,7 +1491,9 @@ class _Handler(BaseHTTPRequestHandler):
                     evidence_path=str(execution["evidence_path"]),
                     message="The package change completed, but the follow-up security check was unavailable.",
                 )
-                self._send_json(200, {"result": result.model_dump(mode="json"), "events": []})
+                public_result = _public_remediation_payload(result)
+                public_result["agent_after"] = _finish_hybrid_explanation(result)
+                self._send_json(200, {"result": public_result, "events": []})
                 return
 
             executed_calls += tuple(verification.executed_calls)
@@ -1277,7 +1535,9 @@ class _Handler(BaseHTTPRequestHandler):
                     else "The approved package change completed; the follow-up scan still needs to refresh before closure."
                 ),
             )
-            self._send_json(200, {"result": result.model_dump(mode="json"), "events": []})
+            public_result = _public_remediation_payload(result)
+            public_result["agent_after"] = _finish_hybrid_explanation(result)
+            self._send_json(200, {"result": public_result, "events": []})
             return
 
         if self.path == "/api/decision":
