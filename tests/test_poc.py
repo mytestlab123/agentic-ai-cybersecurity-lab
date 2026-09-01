@@ -1,4 +1,5 @@
 from pathlib import Path
+import gzip
 import json
 import sys
 from threading import Thread
@@ -432,6 +433,20 @@ def test_inspector_fixture_selector_uses_retained_public_aliases(monkeypatch: py
     assert clean["reason_code"] == "SECCOP_ECR_COMPLIANT"
     assert invalid["status"] == "BLOCKED"
     assert invalid["reason_code"] == "SECCOP_ECR_EVIDENCE_BLOCKED"
+
+
+def test_multi_image_fixture_builder_has_distinct_python_and_npm_package_metadata(tmp_path: Path) -> None:
+    python_files = seccop_demo._image_files(tmp_path, seccop_demo.BAD_VERSION, "python", "python")
+    npm_files = seccop_demo._image_files(tmp_path, seccop_demo.NPM_BAD_VERSION, "npm", "npm")
+
+    python_layer = gzip.open(python_files[1], "rb").read()
+    npm_layer = gzip.open(npm_files[1], "rb").read()
+    assert b"urllib3==1.24.1" in python_layer
+    assert b'"name": "lodash"' in npm_layer
+    assert python_files[2].read_bytes() != npm_files[2].read_bytes()
+    assert seccop_demo._ecr_fixture_spec("npm-vulnerable") == {
+        "tag": "issue53-npm-vulnerable", "cve_id": seccop_demo.NPM_CVE, "ecosystem": "JAVASCRIPT_NPM",
+    }
 
 
 def test_inspector_coverage_falls_back_to_repository_for_digest_correlation() -> None:

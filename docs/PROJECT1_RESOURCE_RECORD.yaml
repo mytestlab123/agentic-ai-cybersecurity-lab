@@ -2,9 +2,9 @@
 # Exact identifiers live only in the private evidence directory.
 record_version: 1
 sanitized: true
-last_verified: 2026-08-28
-last_action: cleanup-complete
-profile_alias: vagent
+last_verified: 2026-09-02
+last_action: ecr-multi-image-fixtures-retained
+profile_alias: amit
 profile_alias_equivalent: project1
 region: ap-southeast-1
 purpose: Security Copilot learning demo
@@ -59,19 +59,23 @@ resources:
     alias: SECCOP_ECR_OPERATOR_MVP
     name: seccop-ecr-operator-mvp
     state: retained
-    image_count: 8
+    image_count: 10
     untagged_manifest_count: 3
-    tag_aliases: [demo-bad, demo-clean, demo-current, issue53-vulnerable, issue53-clean, issue53-live-vulnerable, issue53-live-clean]
+    tag_aliases: [demo-bad, demo-clean, demo-current, issue53-vulnerable, issue53-clean, issue53-live-vulnerable, issue53-live-clean, issue53-npm-vulnerable, issue53-npm-clean]
     fixture_aliases:
       vulnerable: SECCOP_ECR_FIXTURE_VULNERABLE
       clean: SECCOP_ECR_FIXTURE_CLEAN
-    selector_tags: [issue53-live-vulnerable, issue53-live-clean]
+      python_vulnerable: SECCOP_ECR_PYTHON_VULNERABLE
+      python_clean: SECCOP_ECR_PYTHON_CLEAN
+      npm_vulnerable: SECCOP_ECR_NPM_VULNERABLE
+      npm_clean: SECCOP_ECR_NPM_CLEAN
+    selector_tags: [issue53-vulnerable, issue53-clean, issue53-npm-vulnerable, issue53-npm-clean]
     scanner: ECR_ENHANCED_SCANNING / AMAZON_INSPECTOR
     registry_rule: ENHANCED + SCAN_ON_PUSH (repository-scoped)
     cleanup: keep
     ttl: 01-10-26
     cleanup_status: retain-approved
-    mutation_note: Existing-manifest retags only; no new layers or deletions.
+    mutation_note: Two daemonless npm manifests added for distinct package evidence; existing images retained and no deletions.
     lifecycle: reusable-demo-artifact
 
   - kind: security_group

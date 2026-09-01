@@ -29,12 +29,28 @@ from typing import Any
 BAD_VERSION = "1.24.1"
 CLEAN_VERSION = "2.7.0"
 BAD_CVE = "CVE-2019-11324"
+NPM_BAD_VERSION = "4.17.15"
+NPM_CLEAN_VERSION = "4.17.21"
+NPM_CVE = "CVE-2020-8203"
 DEFAULT_TARGET_NAME = "seccop-project1-old-ami-host-r01"
 ECR_REPOSITORY = "seccop-ecr-operator-mvp"
 ECR_FIXTURE_TAGS = {
     "current": "demo-current",
     "vulnerable": "issue53-live-vulnerable",
     "clean": "issue53-live-clean",
+    "python-vulnerable": "issue53-vulnerable",
+    "python-clean": "issue53-clean",
+    "npm-vulnerable": "issue53-npm-vulnerable",
+    "npm-clean": "issue53-npm-clean",
+}
+ECR_FIXTURE_SPECS = {
+    "current": {"tag": "demo-current", "cve_id": BAD_CVE, "ecosystem": "PYTHON"},
+    "vulnerable": {"tag": "issue53-live-vulnerable", "cve_id": BAD_CVE, "ecosystem": "PYTHON"},
+    "clean": {"tag": "issue53-live-clean", "cve_id": BAD_CVE, "ecosystem": "PYTHON"},
+    "python-vulnerable": {"tag": "issue53-vulnerable", "cve_id": BAD_CVE, "ecosystem": "PYTHON"},
+    "python-clean": {"tag": "issue53-clean", "cve_id": BAD_CVE, "ecosystem": "PYTHON"},
+    "npm-vulnerable": {"tag": "issue53-npm-vulnerable", "cve_id": NPM_CVE, "ecosystem": "JAVASCRIPT_NPM"},
+    "npm-clean": {"tag": "issue53-npm-clean", "cve_id": NPM_CVE, "ecosystem": "JAVASCRIPT_NPM"},
 }
 
 
@@ -184,24 +200,31 @@ def _seed_s3(aws: AwsCli, directory: Path) -> tuple[str, str]:
     return current, reset
 
 
-def _image_files(directory: Path, version: str, label: str) -> tuple[Path, Path, Path]:
+def _image_files(directory: Path, version: str, label: str, ecosystem: str = "python") -> tuple[Path, Path, Path]:
     layer_tar = directory / f"{label}-layer.tar"
     layer_gz = directory / f"{label}-layer.tar.gz"
     config_file = directory / f"{label}-config.json"
     manifest_file = directory / f"{label}-manifest.json"
-    metadata = (
-        "Metadata-Version: 2.1\n"
-        "Name: urllib3\n"
-        f"Version: {version}\n"
-    ).encode()
+    if ecosystem not in {"python", "npm"}:
+        raise DemoError("The ECR fixture ecosystem is unsupported.")
     with tarfile.open(layer_tar, "w") as archive:
-        for name, data in (
-            ("app/requirements.txt", f"urllib3=={version}\n".encode()),
-            (
-                "usr/local/lib/python3.11/site-packages/urllib3-" + version + ".dist-info/METADATA",
-                metadata,
-            ),
-        ):
+        if ecosystem == "python":
+            metadata = ("Metadata-Version: 2.1\nName: urllib3\n" f"Version: {version}\n").encode()
+            files = (
+                ("app/requirements.txt", f"urllib3=={version}\n".encode()),
+                ("usr/local/lib/python3.11/site-packages/urllib3-" + version + ".dist-info/METADATA", metadata),
+            )
+            command = ["/bin/sh"]
+        else:
+            package = json.dumps({"name": "lodash", "version": version, "license": "MIT"}, sort_keys=True).encode()
+            lock = json.dumps({"name": "seccop-npm-fixture", "lockfileVersion": 3, "packages": {"node_modules/lodash": {"version": version}}}, sort_keys=True).encode()
+            files = (
+                ("app/package.json", package),
+                ("app/package-lock.json", lock),
+                ("usr/local/lib/node_modules/lodash/package.json", package),
+            )
+            command = ["node", "app/index.js"]
+        for name, data in files:
             info = tarfile.TarInfo(name)
             info.size = len(data)
             info.mtime = 0
@@ -214,9 +237,9 @@ def _image_files(directory: Path, version: str, label: str) -> tuple[Path, Path,
     config = {
         "architecture": "amd64",
         "os": "linux",
-        "config": {"Cmd": ["/bin/sh"]},
+        "config": {"Cmd": command},
         "rootfs": {"type": "layers", "diff_ids": [f"sha256:{uncompressed_digest}"]},
-        "history": [{"created": "1970-01-01T00:00:00Z", "created_by": "SecCop DEMO"}],
+        "history": [{"created": "1970-01-01T00:00:00Z", "created_by": f"SecCop DEMO {ecosystem}"}],
     }
     config_bytes = json.dumps(config, separators=(",", ":"), sort_keys=True).encode()
     config_file.write_bytes(config_bytes)
@@ -286,8 +309,8 @@ def _upload_blob(aws: AwsCli, repository: str, path: Path, digest: str) -> None:
     )
 
 
-def _push_image(aws: AwsCli, directory: Path, version: str, tag: str) -> Path:
-    config_file, layer_file, manifest_file = _image_files(directory, version, tag)
+def _push_image(aws: AwsCli, directory: Path, version: str, tag: str, ecosystem: str = "python") -> Path:
+    config_file, layer_file, manifest_file = _image_files(directory, version, tag, ecosystem)
     config_digest = hashlib.sha256(config_file.read_bytes()).hexdigest()
     layer_digest = hashlib.sha256(layer_file.read_bytes()).hexdigest()
     _upload_blob(aws, ECR_REPOSITORY, config_file, f"sha256:{config_digest}")
@@ -358,6 +381,28 @@ def _ensure_ecr(aws: AwsCli, directory: Path) -> str:
     _push_image(aws, directory, BAD_VERSION, "demo-current")
     _write_json(directory, "ecr-ready.json", {"source": "ECR_IMAGE", "state": "NON_COMPLIANT"})
     return uri
+
+
+def _ecr_fixtures(aws: AwsCli, directory: Path) -> dict[str, Any]:
+    """Push the two new npm manifests while reusing retained Python fixtures."""
+
+    _repo_uri(aws)
+    pushed = []
+    for version, fixture in ((NPM_BAD_VERSION, "npm-vulnerable"), (NPM_CLEAN_VERSION, "npm-clean")):
+        tag = _ecr_fixture_tag(fixture)
+        manifest_file = _push_image(aws, directory, version, tag, ecosystem="npm")
+        manifest = json.loads(manifest_file.read_text(encoding="utf-8"))
+        pushed.append({
+            "fixture": fixture,
+            "tag": tag,
+            "ecosystem": "JAVASCRIPT_NPM",
+            "version": version,
+            "config_digest": manifest["config"]["digest"],
+            "layer_digest": manifest["layers"][0]["digest"],
+            "state": "PUSHED",
+        })
+    _write_json(directory, "ecr-fixtures-pushed.json", {"fixtures": pushed})
+    return {"status": "READY", "reason_code": "SECCOP_ECR_FIXTURES_PUSHED", "fixtures": pushed}
 
 
 def _target_instance(aws: AwsCli) -> tuple[str, dict[str, Any]]:
@@ -494,6 +539,13 @@ def _ecr_public_result(cve_id: str, state: str, reason_code: str, **fields: Any)
 def _ecr_fixture_tag(fixture: str) -> str:
     try:
         return ECR_FIXTURE_TAGS[fixture]
+    except KeyError as error:
+        raise DemoError("The ECR fixture selector is invalid.") from error
+
+
+def _ecr_fixture_spec(fixture: str) -> dict[str, str]:
+    try:
+        return ECR_FIXTURE_SPECS[fixture]
     except KeyError as error:
         raise DemoError("The ECR fixture selector is invalid.") from error
 
@@ -645,10 +697,12 @@ def _scan_ecr_inspector(aws: AwsCli, *, tag: str = "demo-current", cve_id: str =
 def _scan(aws: AwsCli, directory: Path, *, ecr_scanner: str = "trivy", ecr_fixture: str = "current") -> dict[str, Any]:
     if ecr_scanner == "inspector":
         try:
-            fixture_tag = _ecr_fixture_tag(ecr_fixture)
+            fixture = _ecr_fixture_spec(ecr_fixture)
         except DemoError:
-            fixture_tag = ""
-        sources = [_scan_ec2(aws), _scan_s3(aws, directory), _scan_ecr_inspector(aws, tag=fixture_tag, cve_id=BAD_CVE)] if fixture_tag else [_scan_ec2(aws), _scan_s3(aws, directory), _ecr_public_result(BAD_CVE, "BLOCKED", "SECCOP_ECR_FIXTURE_INVALID")]
+            fixture = None
+        sources = [_scan_ec2(aws), _scan_s3(aws, directory), _scan_ecr_inspector(aws, tag=fixture["tag"], cve_id=fixture["cve_id"])] if fixture else [_scan_ec2(aws), _scan_s3(aws, directory), _ecr_public_result(BAD_CVE, "BLOCKED", "SECCOP_ECR_FIXTURE_INVALID")]
+        if fixture:
+            sources[-1]["package_ecosystem"] = fixture["ecosystem"]
     else:
         uri = _repo_uri(aws)
         sources = [_scan_ec2(aws), _scan_s3(aws, directory), _scan_ecr(aws, directory, uri)]
@@ -781,7 +835,9 @@ def _fix(aws: AwsCli, source: str, directory: Path) -> dict[str, Any]:
 def _ecr_scan(aws: AwsCli, directory: Path, *, ecr_scanner: str = "trivy", ecr_fixture: str = "current") -> dict[str, Any]:
     if ecr_scanner == "inspector":
         try:
-            source = _scan_ecr_inspector(aws, tag=_ecr_fixture_tag(ecr_fixture))
+            fixture = _ecr_fixture_spec(ecr_fixture)
+            source = _scan_ecr_inspector(aws, tag=fixture["tag"], cve_id=fixture["cve_id"])
+            source["package_ecosystem"] = fixture["ecosystem"]
         except DemoError:
             source = _ecr_public_result(BAD_CVE, "BLOCKED", "SECCOP_ECR_FIXTURE_INVALID")
         state = source["state"]
@@ -805,6 +861,7 @@ def _ecr_scan(aws: AwsCli, directory: Path, *, ecr_scanner: str = "trivy", ecr_f
             "scanner_provider": source["scanner_provider"],
             "scanner_mode": source["scanner_mode"],
             "cve_id": source["cve_id"],
+            "package_ecosystem": source.get("package_ecosystem", "UNKNOWN"),
             "source_status": [{"source_type": "ECR_IMAGE", "label": "ECR image scanned by Amazon Inspector", "state": "COMPLETE" if state in {"NON_COMPLIANT", "COMPLIANT"} else state, "reason_code": source["reason_code"]}],
             "findings": [finding] if finding else [],
             "message": "SecCop found a known ECR finding from Amazon Inspector; human approval is required before any promotion." if state == "NON_COMPLIANT" else "SecCop verified the ECR demo-current image is clean with Amazon Inspector." if state == "COMPLIANT" else "SecCop could not claim a current ECR Inspector result; rescan is required." if state == "PENDING_RESCAN" else "SecCop blocked the ECR Inspector evidence because the read-only proof was not usable.",
@@ -812,6 +869,8 @@ def _ecr_scan(aws: AwsCli, directory: Path, *, ecr_scanner: str = "trivy", ecr_f
         for field in ("package_name", "installed_version", "severity"):
             if field in source:
                 result[field] = source[field]
+        if "package_ecosystem" in source:
+            result["package_ecosystem"] = source["package_ecosystem"]
         return result
 
     source = _scan_ecr(aws, directory, _repo_uri(aws))
@@ -1017,7 +1076,7 @@ def _verify(aws: AwsCli, directory: Path) -> dict[str, Any]:
 
 def main() -> int:
     parser = argparse.ArgumentParser(description="Prepare and verify the SecCop three-source DEMO.")
-    parser.add_argument("command", choices=("start", "scan", "rescan", "fix", "status", "verify", "cleanup", "ecr-start", "ecr-scan", "ecr-fix", "ecr-reset"))
+    parser.add_argument("command", choices=("start", "scan", "rescan", "fix", "status", "verify", "cleanup", "ecr-start", "ecr-scan", "ecr-fix", "ecr-reset", "ecr-fixtures"))
     parser.add_argument("--source", choices=("ec2", "s3", "ecr"))
     parser.add_argument("--profile", default=os.environ.get("SECCOP_PROFILE", "vagent"))
     parser.add_argument("--region", default=os.environ.get("SECCOP_REGION", "ap-southeast-1"))
@@ -1036,7 +1095,7 @@ def main() -> int:
     )
     parser.add_argument("--confirm", action="store_true", help="allow the requested DEMO preparation/fix")
     args = parser.parse_args()
-    if args.command in {"start", "fix", "verify", "cleanup", "ecr-start", "ecr-fix", "ecr-reset"} and not args.confirm:
+    if args.command in {"start", "fix", "verify", "cleanup", "ecr-start", "ecr-fix", "ecr-reset", "ecr-fixtures"} and not args.confirm:
         print(json.dumps({"status": "BLOCKED", "reason_code": "CONFIRM_REQUIRED", "message": "Use --confirm for DEMO preparation, cleanup, or a fix."}))
         return 2
     root = Path.home() / ".AGENTS-temp" / "agentic-ai-cybersecurity-lab" / "seccop-demo"
@@ -1048,6 +1107,8 @@ def main() -> int:
             aws.run("sts", "get-caller-identity")
             if args.command == "ecr-start":
                 result = _ecr_start(aws, Path(run_dir), ecr_scanner=args.ecr_scanner, ecr_fixture=args.ecr_fixture)
+            elif args.command == "ecr-fixtures":
+                result = _ecr_fixtures(aws, Path(run_dir))
             elif args.command == "ecr-scan":
                 result = _ecr_scan(aws, Path(run_dir), ecr_scanner=args.ecr_scanner, ecr_fixture=args.ecr_fixture)
             elif args.command == "ecr-fix":
