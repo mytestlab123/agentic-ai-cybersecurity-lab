@@ -605,7 +605,7 @@
           const isS3Risk = finding.source_type === 'S3_BUCKET';
           const isEcrRisk = ecrReview && finding.source_type === 'ECR_IMAGE';
           if (isS3Risk || isEcrRisk) setS3FlowStep(3);
-          const body = addMessage('assistant', isS3Risk ? 'Security misconfiguration confirmed. Approve Once to enable all four Block Public Access controls.' : isEcrRisk ? 'Local Trivy confirmed the ECR finding. Approve Once to promote the clean digest.' : 'The clean replacement is ready for review. Approve it to replace only this DEMO artifact.');
+          const body = addMessage('assistant', isS3Risk ? 'Security misconfiguration confirmed. Approve Once to enable all four Block Public Access controls.' : isEcrRisk ? 'Amazon Inspector confirmed the ECR finding. Approve Once to promote the clean digest.' : 'The clean replacement is ready for review. Approve it to replace only this DEMO artifact.');
           const card = node('div', 'approval-card');
           const grid = node('div', 'evidence-grid');
           evidenceCell(grid, 'Source', finding.source_type);
@@ -649,7 +649,7 @@
       button.disabled = true;
       if (finding.source_type === 'S3_BUCKET' || (ecrReview && finding.source_type === 'ECR_IMAGE')) setS3FlowStep(4);
       addMessage('user', 'Approve Once: ' + finding.title);
-      const thinking = addMessage('assistant', finding.source_type === 'S3_BUCKET' ? 'Enabling Block Public Access and verifying the protected state...' : ecrReview ? 'Promoting the clean digest and verifying it with local Trivy...' : 'Applying the approved replacement and checking it again...');
+      const thinking = addMessage('assistant', finding.source_type === 'S3_BUCKET' ? 'Enabling Block Public Access and verifying the protected state...' : ecrReview ? 'Promoting the clean digest and verifying it with Amazon Inspector...' : 'Applying the approved replacement and checking it again...');
       const source = finding.source_type === 'S3_BUCKET' || finding.source_type === 'S3_ARTIFACT' ? 's3' : 'ecr';
       try {
         const payload = await post('/api/demo/fix', { source, confirm: true });
@@ -696,7 +696,7 @@
       if (!window.confirm(ecrReview ? 'Reopen this ECR finding? The known-vulnerable demo digest will be restored.' : 'Reopen this finding? Bucket-level protection will be temporarily removed from the private empty test bucket.')) return;
       button.disabled = true;
       addMessage('user', 'Reopen Finding');
-      const thinking = addMessage('assistant', ecrReview ? 'Restoring the known-vulnerable ECR digest and rereading it with local Trivy...' : 'Checking the approved empty private bucket before reopening the finding...');
+      const thinking = addMessage('assistant', ecrReview ? 'Restoring the known-vulnerable ECR digest and rereading it with Amazon Inspector...' : 'Checking the approved empty private bucket before reopening the finding...');
       try {
         await post('/api/demo/reset', { confirm: true });
         thinking.parentElement.remove();
@@ -1096,7 +1096,7 @@
         demoBackend = health.demo_backend || 'LOCAL';
         if (health.review_mode === 'S3_COMPLIANCE') configureS3Review();
         if (health.review_mode === 'ECR_OPERATOR') configureEcrReview();
-        if (demoBackend === 'AWS' && !s3Review && startRealDemoButton) {
+        if (demoBackend === 'AWS' && !s3Review && !ecrReview && startRealDemoButton) {
           scanButton.textContent = 'Scan live server';
           if (scanWelcomeButton) scanWelcomeButton.textContent = 'Scan live server';
           setMode('AWS DEMO', true);
