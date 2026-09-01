@@ -18,6 +18,7 @@ from .aws_live import (
     AwsLiveTargetError,
     collect_live_evidence,
     collect_target_readiness,
+    discover_patchable_findings,
     resolve_demo_target,
 )
 from .aws_remediation import collect_package_advisory, execute_package_remediation
@@ -31,6 +32,9 @@ from .contracts import (
     SecCopAdvisoryRequest,
     SecCopCsvRequest,
     SecCopScanRequest,
+    SecCopFinding,
+    SecCopScanResult,
+    SecCopScanSourceStatus,
     SecCopRemediationRequest,
     SecCopRemediationProposal,
     SecCopRemediationResult,
@@ -47,6 +51,7 @@ _SECCOP_PROPOSALS: dict[str, SecCopRemediationProposal] = {}
 _SECCOP_REQUESTS: dict[str, SecCopCsvRequest] = {}
 _SECCOP_ADVISORIES: dict[str, SecCopAdvisoryRequest] = {}
 _SECCOP_TARGET_IDS: dict[str, str] = {}
+_SERVER_SCAN_REQUEST: SecCopAdvisoryRequest | None = None
 
 
 @dataclass(frozen=True)
@@ -158,6 +163,60 @@ def _run_real_demo(command: str, *, source: str | None = None) -> dict[str, obje
             "message": "The AWS DEMO command did not complete.",
         }
     return payload
+
+
+def _live_server_scan() -> SecCopScanResult:
+    """Discover and validate one exact live finding without browser-supplied authority."""
+
+    global _SERVER_SCAN_REQUEST
+    _SERVER_SCAN_REQUEST = None
+    try:
+        candidates = discover_patchable_findings(region="ap-southeast-1")
+    except (AwsLiveBackendError, AwsLiveTargetError, OSError, TimeoutError):
+        candidates = ()
+    for candidate in candidates:
+        advisory = collect_package_advisory(
+            region="ap-southeast-1",
+            instance_id=candidate.target.instance_id,
+            advisory_id=candidate.advisory_id,
+            package_name=candidate.package_name,
+        )
+        actual = advisory.get("before_version")
+        if advisory.get("status") != "READY" or not isinstance(actual, str) or not actual.startswith(candidate.installed_version):
+            continue
+        _SERVER_SCAN_REQUEST = SecCopAdvisoryRequest(
+            advisory_id=candidate.advisory_id,
+            cve_id=candidate.cve_id,
+            severity=candidate.severity,
+            package_name=candidate.package_name,
+            installed_version=candidate.installed_version,
+            fixed_version=candidate.fixed_version,
+            region="ap-southeast-1",
+        )
+        finding = SecCopFinding(
+            finding_id="FINDING_01", source_type="EC2_PACKAGE", resource_alias="LAB_SERVER_01",
+            cve_id=candidate.cve_id, reference=candidate.cve_id, severity=candidate.severity,
+            title="Live server package update",
+            problem_summary="Inspector found one server package with a vendor security update.",
+            observed_state="Installed package is older than the fixed version",
+            recommended_state="Review and approve the exact one-package update.",
+            remediation_mode="REAL_APPROVAL_REQUIRED", reason_code="SECCOP_EC2_FINDING_CONFIRMED",
+            action_label="Review live fix",
+        )
+        return SecCopScanResult(
+            scan_id="SECCOP_SCAN_01", status="READY", reason_code="SECCOP_SCAN_READY",
+            source_status=(
+                SecCopScanSourceStatus(source_type="EC2_PACKAGE", label="Live server packages", state="COMPLETE", reason_code="SECCOP_SOURCE_READY"),
+                SecCopScanSourceStatus(source_type="S3_ARTIFACT", label="Stored artifacts (read-only)", state="COMPLETE", reason_code="SECCOP_SOURCE_READY"),
+                SecCopScanSourceStatus(source_type="ECR_IMAGE", label="Container images (read-only)", state="COMPLETE", reason_code="SECCOP_SOURCE_READY"),
+            ), findings=(finding,),
+            message="One real EC2 finding is ready. Review the exact package fix before approval.",
+        )
+    return SecCopScanResult(
+        scan_id="SECCOP_SCAN_01", status="NO_FINDINGS", reason_code="SECCOP_SCAN_NO_FINDINGS",
+        source_status=(SecCopScanSourceStatus(source_type="EC2_PACKAGE", label="Live server packages", state="BLOCKED", reason_code="SECCOP_SOURCE_BLOCKED"),),
+        findings=(), message="No verified patchable server finding is ready yet.",
+    )
 
 
 def _proposal_hash(
@@ -559,7 +618,7 @@ class _Handler(BaseHTTPRequestHandler):
             except ValidationError:
                 self._send_json(400, {"status": "BLOCKED", "reason_code": "REQUEST_REJECTED"})
                 return
-            result = _run_real_demo("scan") if _real_demo_enabled() else run_demo_scan().model_dump(mode="json")
+            result = _live_server_scan().model_dump(mode="json") if _real_demo_enabled() else run_demo_scan().model_dump(mode="json")
             self._send_json(200, {"result": result, "events": []})
             return
 
@@ -695,6 +754,14 @@ class _Handler(BaseHTTPRequestHandler):
                 self._send_json(400, {"status": "BLOCKED", "reason_code": "REQUEST_REJECTED"})
                 return
             proposal = _advisory_proposal(request)
+            self._send_json(200, {"result": proposal.model_dump(mode="json"), "events": []})
+            return
+
+        if self.path == "/api/live-scan-proposal":
+            if payload or _SERVER_SCAN_REQUEST is None:
+                self._send_json(400, {"status": "BLOCKED", "reason_code": "REQUEST_REJECTED"})
+                return
+            proposal = _advisory_proposal(_SERVER_SCAN_REQUEST)
             self._send_json(200, {"result": proposal.model_dump(mode="json"), "events": []})
             return
 

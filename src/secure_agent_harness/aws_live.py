@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import subprocess
 import tempfile
 from dataclasses import dataclass
@@ -32,6 +33,19 @@ class AwsTargetReadiness:
     instance_state: str = "UNKNOWN"
     ssm_readiness: str = "UNKNOWN"
     executed_calls: tuple[str, ...] = ()
+
+
+@dataclass(frozen=True)
+class LivePatchableFinding:
+    """Private server-side candidate; never serialize this object to the browser."""
+
+    target: ReadOnlyTarget
+    cve_id: str
+    severity: str
+    advisory_id: str
+    package_name: str
+    installed_version: str
+    fixed_version: str
 
 
 class _AwsCli:
@@ -161,6 +175,48 @@ def resolve_demo_target(
     if len(matches) != 1:
         raise AwsLiveTargetError("EC2_TARGET_AMBIGUOUS")
     return ReadOnlyTarget(resource_alias=resource_alias, instance_id=matches[0])
+
+
+def discover_patchable_findings(*, region: str) -> tuple[LivePatchableFinding, ...]:
+    """Select natural ACTIVE non-kernel findings for the configured target."""
+
+    target = resolve_demo_target(region=region)
+    readiness = collect_target_readiness(region=region, target=target)
+    if readiness.status != "READY":
+        raise AwsLiveTargetError(readiness.reason_code)
+    response = _Inspector(_AwsCli(region)).list_findings(
+        filterCriteria={
+            "resourceId": [{"comparison": "EQUALS", "value": target.instance_id}],
+            "findingStatus": [{"comparison": "EQUALS", "value": "ACTIVE"}],
+        },
+        maxResults=100,
+    )
+    candidates: list[LivePatchableFinding] = []
+    for finding in response.get("findings", []):
+        details = finding.get("packageVulnerabilityDetails", {}) if isinstance(finding, dict) else {}
+        cve_id = details.get("vulnerabilityId")
+        severity = finding.get("severity") if isinstance(finding, dict) else None
+        advisories = details.get("relatedVulnerabilities", [])
+        advisory_id = next((item for item in advisories if isinstance(item, str) and item.startswith("ALAS")), None)
+        if not isinstance(cve_id, str) or not re.fullmatch(r"CVE-[0-9]{4}-[0-9]{4,}", cve_id):
+            continue
+        if severity not in {"LOW", "MEDIUM", "HIGH", "CRITICAL"} or advisory_id is None:
+            continue
+        for package in details.get("vulnerablePackages", []):
+            if not isinstance(package, dict):
+                continue
+            name = package.get("name")
+            version = package.get("version")
+            release = package.get("release")
+            fixed = package.get("fixedInVersion")
+            if not all(isinstance(item, str) and item for item in (name, version, fixed)):
+                continue
+            if "kernel" in name or fixed == "NotAvailable":
+                continue
+            installed = f"{version}-{release}" if isinstance(release, str) and release else version
+            candidates.append(LivePatchableFinding(target, cve_id, severity, advisory_id, name, installed, fixed))
+    priority = {"python-urllib3": 0, "perl-Storable": 1, "libxml2": 2}
+    return tuple(sorted(candidates, key=lambda item: (priority.get(item.package_name, 9), item.package_name, item.cve_id)))
 
 
 def collect_target_readiness(
