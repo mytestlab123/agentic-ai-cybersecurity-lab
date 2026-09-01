@@ -29,7 +29,7 @@ BAD_VERSION = "1.24.1"
 CLEAN_VERSION = "2.7.0"
 BAD_CVE = "CVE-2019-11324"
 DEFAULT_TARGET_NAME = "seccop-project1-old-ami-host-r01"
-ECR_REPOSITORY = "seccop-demo-images"
+ECR_REPOSITORY = "seccop-ecr-operator-mvp"
 
 
 class DemoError(RuntimeError):
@@ -316,11 +316,19 @@ def _ensure_ecr(aws: AwsCli, directory: Path) -> str:
             ECR_REPOSITORY,
             "--image-tag-mutability",
             "MUTABLE",
-            "--image-scanning-configuration",
-            "scanOnPush=true",
             "--tags",
-            "Key=Project,Value=Security Copilot",
-            "Key=Cleanup,Value=seccop-demo-only",
+            "Key=Name,Value=seccop-ecr-operator-mvp",
+            "Key=dev,Value=amit",
+            "Key=project,Value=agentic-ai-cybersecurity-lab",
+            "Key=created,Value=2026-09-01",
+            "Key=tools,Value=cdx",
+            "Key=environment,Value=dev",
+            "Key=owner,Value=amit",
+            "Key=version,Value=ecr-operator-mvp",
+            "Key=TTL,Value=01-10-26",
+            "Key=purpose,Value=Reusable SecCop ECR operator demo",
+            "Key=phase,Value=reusable-demo",
+            "Key=cleanup,Value=keep",
         )
         repositories = created.get("repository")
         if not isinstance(repositories, dict) or not isinstance(repositories.get("repositoryUri"), str):
@@ -585,6 +593,52 @@ def _fix(aws: AwsCli, source: str, directory: Path) -> dict[str, Any]:
     raise DemoError("Choose one source: ec2, s3, or ecr.")
 
 
+def _ecr_scan(aws: AwsCli, directory: Path) -> dict[str, Any]:
+    source = _scan_ecr(aws, directory, _repo_uri(aws))
+    vulnerable = source["state"] == "NON_COMPLIANT"
+    return {
+        "status": "READY" if vulnerable else "NO_FINDINGS",
+        "reason_code": "SECCOP_ECR_NON_COMPLIANT" if vulnerable else "SECCOP_ECR_COMPLIANT",
+        "source_status": [{"source_type": "ECR_IMAGE", "label": "ECR image scanned by local Trivy", "state": "COMPLETE", "reason_code": "SECCOP_ECR_TRIVY_READ"}],
+        "findings": [] if not vulnerable else [{
+            "finding_id": "ECR_IMAGE_01", "source_type": "ECR_IMAGE", "resource_alias": "ECR_IMAGE_01",
+            "cve_id": BAD_CVE, "reference": BAD_CVE, "severity": "HIGH",
+            "title": "Known-vulnerable ECR image", "problem_summary": "The current demo image contains the known vulnerable library.",
+            "observed_state": f"Local Trivy found {source['vulnerabilities']} vulnerabilities.",
+            "recommended_state": "Promote the clean validated image digest to demo-current.",
+            "remediation_mode": "REAL_APPROVAL_REQUIRED", "reason_code": "SECCOP_ECR_FINDING_CONFIRMED", "action_label": "Review ECR promotion",
+        }],
+        "message": "SecCop found a known-vulnerable ECR image. Human approval is required before promotion." if vulnerable else "SecCop verified the ECR demo-current image is clean.",
+    }
+
+
+def _ecr_start(aws: AwsCli, directory: Path) -> dict[str, Any]:
+    _ensure_ecr(aws, directory)
+    result = _ecr_scan(aws, directory)
+    if result["reason_code"] != "SECCOP_ECR_NON_COMPLIANT":
+        raise DemoError("The ECR baseline did not produce the approved finding.")
+    return result
+
+
+def _ecr_fix(aws: AwsCli, directory: Path) -> dict[str, Any]:
+    _fix(aws, "ecr", directory)
+    result = _ecr_scan(aws, directory)
+    if result["reason_code"] != "SECCOP_ECR_COMPLIANT":
+        raise DemoError("The ECR clean digest verification failed.")
+    return {"status": "VERIFIED", "reason_code": "SECCOP_ECR_PROMOTION_VERIFIED", "state": "COMPLIANT", "message": "SecCop promoted the clean ECR digest and verified the result with local Trivy."}
+
+
+def _ecr_reset(aws: AwsCli, directory: Path) -> dict[str, Any]:
+    before = _ecr_scan(aws, directory)
+    if before["reason_code"] == "SECCOP_ECR_NON_COMPLIANT":
+        return {"status": "READY", "reason_code": "SECCOP_ECR_REOPEN_READY", "message": "The ECR finding is already action required."}
+    _push_image(aws, directory, BAD_VERSION, "demo-current")
+    after = _ecr_scan(aws, directory)
+    if after["reason_code"] != "SECCOP_ECR_NON_COMPLIANT":
+        raise DemoError("The ECR reopen verification failed.")
+    return {"status": "READY", "reason_code": "SECCOP_ECR_REOPEN_READY", "message": "The ECR finding was reopened and reread with local Trivy."}
+
+
 def _tag_map(tags: Any) -> dict[str, str]:
     if not isinstance(tags, list):
         return {}
@@ -735,14 +789,14 @@ def _verify(aws: AwsCli, directory: Path) -> dict[str, Any]:
 
 def main() -> int:
     parser = argparse.ArgumentParser(description="Prepare and verify the SecCop three-source DEMO.")
-    parser.add_argument("command", choices=("start", "scan", "rescan", "fix", "status", "verify", "cleanup"))
+    parser.add_argument("command", choices=("start", "scan", "rescan", "fix", "status", "verify", "cleanup", "ecr-start", "ecr-scan", "ecr-fix", "ecr-reset"))
     parser.add_argument("--source", choices=("ec2", "s3", "ecr"))
     parser.add_argument("--profile", default=os.environ.get("SECCOP_PROFILE", "vagent"))
     parser.add_argument("--region", default=os.environ.get("SECCOP_REGION", "ap-southeast-1"))
     parser.add_argument("--target-name", default=os.environ.get("SECCOP_TARGET_NAME", DEFAULT_TARGET_NAME))
     parser.add_argument("--confirm", action="store_true", help="allow the requested DEMO preparation/fix")
     args = parser.parse_args()
-    if args.command in {"start", "fix", "verify", "cleanup"} and not args.confirm:
+    if args.command in {"start", "fix", "verify", "cleanup", "ecr-start", "ecr-fix", "ecr-reset"} and not args.confirm:
         print(json.dumps({"status": "BLOCKED", "reason_code": "CONFIRM_REQUIRED", "message": "Use --confirm for DEMO preparation, cleanup, or a fix."}))
         return 2
     root = Path.home() / ".AGENTS-temp" / "agentic-ai-cybersecurity-lab" / "seccop-demo"
@@ -752,7 +806,15 @@ def main() -> int:
         aws = AwsCli(config)
         try:
             aws.run("sts", "get-caller-identity")
-            if args.command == "start":
+            if args.command == "ecr-start":
+                result = _ecr_start(aws, Path(run_dir))
+            elif args.command == "ecr-scan":
+                result = _ecr_scan(aws, Path(run_dir))
+            elif args.command == "ecr-fix":
+                result = _ecr_fix(aws, Path(run_dir))
+            elif args.command == "ecr-reset":
+                result = _ecr_reset(aws, Path(run_dir))
+            elif args.command == "start":
                 result = _start(aws, Path(run_dir))
             elif args.command == "cleanup":
                 result = _cleanup(aws, Path(run_dir))
@@ -767,7 +829,7 @@ def main() -> int:
             print(json.dumps(result, indent=2, sort_keys=True))
             return 0
         except DemoError as error:
-            print(json.dumps({"status": "BLOCKED", "reason_code": "SECCOP_DEMO_BLOCKED", "message": str(error)}))
+            print(json.dumps({"status": "BLOCKED", "reason_code": "SECCOP_DEMO_BLOCKED", "message": "The bounded SecCop DEMO operation was blocked."}))
             return 1
 
 
