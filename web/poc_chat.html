@@ -158,7 +158,7 @@
         <button id="start-real-demo" type="button" hidden>Start AWS DEMO</button>
       </div>
       <div class="side-spacer"></div>
-      <details class="technical-path">
+      <details id="technical-evidence-fallback" class="technical-path">
         <summary>Technical evidence fallback</summary>
         <label class="upload-button" for="evidence-upload"><span>↑</span><span>Upload read-only evidence</span><input id="evidence-upload" type="file" accept="application/json,.json"></label>
       <div class="live-panel">
@@ -183,7 +183,7 @@
         </details>
       </div>
       </details>
-      <div class="usage-panel" aria-label="AI usage">
+      <div id="ai-usage-panel" class="usage-panel" aria-label="AI usage">
         <div class="side-label" style="padding:0">AI USAGE</div>
         <div id="govtech-usage" class="usage-value">GovTech inference: not used</div>
         <div class="usage-note">This deterministic path uses no model credits. Billing remains portal-authoritative.</div>
@@ -260,6 +260,8 @@
     const compareCsvButton = document.querySelector('#compare-csv');
     const modeStatus = document.querySelector('#mode-status');
     const backendNote = document.querySelector('#backend-note');
+    const technicalEvidenceFallback = document.querySelector('#technical-evidence-fallback');
+    const aiUsagePanel = document.querySelector('#ai-usage-panel');
     const welcome = document.querySelector('#welcome');
     const messages = document.querySelector('#messages');
     const newChat = document.querySelector('#new-chat');
@@ -276,6 +278,11 @@
       return { label: fallback, className: '' };
     }
 
+    function setS3FlowStep(stepNumber) {
+      if (!s3Review) return;
+      document.querySelectorAll('.flow-step').forEach((step, index) => step.classList.toggle('active', index < stepNumber));
+    }
+
     function configureS3Review() {
       s3Review = true;
       document.title = 'Security Copilot - S3 Security Posture Review';
@@ -284,12 +291,14 @@
       welcomeTitle.textContent = 'Review S3 security posture';
       welcomeCopy.textContent = 'Review three real empty private buckets and one exact Block Public Access recommendation.';
       scanNote.textContent = 'Check three private buckets for Block Public Access drift.';
-      backendNote.innerHTML = '<span class="mode-dot"></span>Live AWS S3 demo<br>One approved exposure-risk control';
+      backendNote.innerHTML = '<span class="mode-dot"></span>Live AWS S3 review - Human approval required';
       scanButton.textContent = 'Scan S3 bucket';
       if (scanWelcomeButton) scanWelcomeButton.textContent = 'Scan S3 bucket';
       document.querySelectorAll('.source-tab').forEach((tab) => tab.classList.toggle('active', tab.textContent === 'S3'));
       if (codexPreflightButton) codexPreflightButton.classList.add('hidden');
       if (cveWelcomeButton) cveWelcomeButton.classList.add('hidden');
+      if (technicalEvidenceFallback) technicalEvidenceFallback.classList.add('hidden');
+      if (aiUsagePanel) aiUsagePanel.classList.add('hidden');
       composerWrap.classList.add('hidden');
       toggleComposerButton.classList.remove('hidden');
     }
@@ -463,6 +472,7 @@
         item.appendChild(findingHead);
         item.appendChild(node('div', 'scan-finding-meta', `${finding.source_type} · ${finding.resource_alias} · ${finding.reference}`));
         const findingGrid = node('div', 'evidence-grid');
+        evidenceCell(findingGrid, 'Severity', s3Review && finding.severity === 'NOT_APPLICABLE' ? 'CONFIGURATION RISK' : finding.severity);
         evidenceCell(findingGrid, 'Problem', finding.problem_summary);
         evidenceCell(findingGrid, 'Observed', finding.observed_state);
         evidenceCell(findingGrid, 'Recommended', finding.recommended_state);
@@ -477,6 +487,7 @@
       }
       card.appendChild(findings);
       body.appendChild(card);
+      setS3FlowStep(1);
       if (payload.agent) renderHybridAgent(payload.agent, 'Security guidance ready');
     }
 
@@ -559,6 +570,7 @@
       if (finding.remediation_mode === 'REAL_APPROVAL_REQUIRED') {
         if (finding.source_type !== 'EC2_PACKAGE') {
           const isS3Risk = finding.source_type === 'S3_BUCKET';
+          if (isS3Risk) setS3FlowStep(3);
           const body = addMessage('assistant', isS3Risk ? 'Security misconfiguration confirmed. Approve Once to enable all four Block Public Access controls.' : 'The clean replacement is ready for review. Approve it to replace only this DEMO artifact.');
           const card = node('div', 'approval-card');
           const grid = node('div', 'evidence-grid');
@@ -601,6 +613,7 @@
 
     async function approveDemoFix(finding, button) {
       button.disabled = true;
+      if (finding.source_type === 'S3_BUCKET') setS3FlowStep(4);
       addMessage('user', 'Approve Once: ' + finding.title);
       const thinking = addMessage('assistant', finding.source_type === 'S3_BUCKET' ? 'Enabling Block Public Access and verifying the protected state...' : 'Applying the approved replacement and checking it again...');
       const source = finding.source_type === 'S3_BUCKET' || finding.source_type === 'S3_ARTIFACT' ? 's3' : 'ecr';
@@ -636,24 +649,26 @@
       rescan.addEventListener('click', () => startScan(rescan));
       card.appendChild(rescan);
       if (s3Review && sourceType === 'S3_BUCKET') {
-        const reset = node('button', 'btn reject', 'Reset demo');
+        const reset = node('button', 'btn reject', 'Reopen Finding');
         reset.type = 'button';
         reset.addEventListener('click', () => resetS3Demo(reset));
         card.appendChild(reset);
       }
       body.appendChild(card);
+      if (sourceType === 'S3_BUCKET') setS3FlowStep(5);
     }
 
     async function resetS3Demo(button) {
-      if (!window.confirm('Reset the approved S3 exposure-risk demo to action required?')) return;
+      if (!window.confirm('Reopen this finding? Bucket-level protection will be temporarily removed from the private empty test bucket.')) return;
       button.disabled = true;
-      addMessage('user', 'Reset demo');
-      const thinking = addMessage('assistant', 'Checking the approved empty private bucket before resetting the demo...');
+      addMessage('user', 'Reopen Finding');
+      const thinking = addMessage('assistant', 'Checking the approved empty private bucket before reopening the finding...');
       try {
-        const payload = await post('/api/demo/reset', { confirm: true });
+        await post('/api/demo/reset', { confirm: true });
         thinking.parentElement.remove();
-        addMessage('assistant', payload.result.message || 'The demo was reset.');
-        startScan(scanButton);
+        messages.replaceChildren();
+        welcome.classList.remove('hidden');
+        setS3FlowStep(1);
       } catch (error) {
         thinking.textContent = 'The approved DEMO reset was blocked.';
         thinking.classList.add('error-copy');
