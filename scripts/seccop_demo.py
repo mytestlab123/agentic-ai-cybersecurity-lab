@@ -31,6 +31,11 @@ CLEAN_VERSION = "2.7.0"
 BAD_CVE = "CVE-2019-11324"
 DEFAULT_TARGET_NAME = "seccop-project1-old-ami-host-r01"
 ECR_REPOSITORY = "seccop-ecr-operator-mvp"
+ECR_FIXTURE_TAGS = {
+    "current": "demo-current",
+    "vulnerable": "issue53-live-vulnerable",
+    "clean": "issue53-live-clean",
+}
 
 
 class DemoError(RuntimeError):
@@ -486,6 +491,13 @@ def _ecr_public_result(cve_id: str, state: str, reason_code: str, **fields: Any)
     }
 
 
+def _ecr_fixture_tag(fixture: str) -> str:
+    try:
+        return ECR_FIXTURE_TAGS[fixture]
+    except KeyError as error:
+        raise DemoError("The ECR fixture selector is invalid.") from error
+
+
 def _scan_ecr_inspector(aws: AwsCli, *, tag: str = "demo-current", cve_id: str = BAD_CVE) -> dict[str, Any]:
     """Read one ECR tag and its exact Inspector evidence without mutation."""
 
@@ -533,6 +545,18 @@ def _scan_ecr_inspector(aws: AwsCli, *, tag: str = "demo-current", cve_id: str =
         covered = coverage_response.get("coveredResources")
         if not isinstance(covered, list):
             return _ecr_public_result(cve_id, "BLOCKED", "SECCOP_ECR_COVERAGE_INVALID")
+        if not covered:
+            repository_filter = json.dumps(
+                {
+                    "resourceType": [{"comparison": "EQUALS", "value": "AWS_ECR_CONTAINER_IMAGE"}],
+                    "ecrRepositoryName": [{"comparison": "EQUALS", "value": ECR_REPOSITORY}],
+                },
+                separators=(",", ":"),
+            )
+            coverage_response = aws.json("inspector2", "list-coverage", "--filter-criteria", repository_filter, "--max-results", "100")
+            covered = coverage_response.get("coveredResources")
+            if not isinstance(covered, list):
+                return _ecr_public_result(cve_id, "BLOCKED", "SECCOP_ECR_COVERAGE_INVALID")
         coverage_matches = [item for item in covered if isinstance(item, dict) and digest in str(item.get("resourceId", ""))]
         if len(coverage_matches) != 1:
             return _ecr_public_result(
@@ -562,9 +586,23 @@ def _scan_ecr_inspector(aws: AwsCli, *, tag: str = "demo-current", cve_id: str =
             },
             separators=(",", ":"),
         )
-        finding_response = aws.json("inspector2", "list-findings", "--filter-criteria", finding_filter, "--max-results", "100")
-        findings = finding_response.get("findings")
-        if not isinstance(findings, list) or finding_response.get("nextToken"):
+        finding_args = ["inspector2", "list-findings", "--filter-criteria", finding_filter, "--max-results", "100"]
+        findings: list[Any] = []
+        seen_tokens: set[str] = set()
+        for _ in range(10):
+            finding_response = aws.json(*finding_args)
+            page = finding_response.get("findings")
+            if not isinstance(page, list):
+                return _ecr_public_result(cve_id, "BLOCKED", "SECCOP_ECR_FINDINGS_AMBIGUOUS")
+            findings.extend(page)
+            token = finding_response.get("nextToken")
+            if not token:
+                break
+            if not isinstance(token, str) or token in seen_tokens:
+                return _ecr_public_result(cve_id, "BLOCKED", "SECCOP_ECR_FINDINGS_AMBIGUOUS")
+            seen_tokens.add(token)
+            finding_args = [*finding_args, "--next-token", token]
+        else:
             return _ecr_public_result(cve_id, "BLOCKED", "SECCOP_ECR_FINDINGS_AMBIGUOUS")
         active = [item for item in findings if isinstance(item, dict) and item.get("status") == "ACTIVE"]
         if len(active) > 1:
@@ -604,9 +642,13 @@ def _scan_ecr_inspector(aws: AwsCli, *, tag: str = "demo-current", cve_id: str =
         return _ecr_public_result(cve_id, "BLOCKED", "SECCOP_ECR_READ_FAILED")
 
 
-def _scan(aws: AwsCli, directory: Path, *, ecr_scanner: str = "trivy") -> dict[str, Any]:
+def _scan(aws: AwsCli, directory: Path, *, ecr_scanner: str = "trivy", ecr_fixture: str = "current") -> dict[str, Any]:
     if ecr_scanner == "inspector":
-        sources = [_scan_ec2(aws), _scan_s3(aws, directory), _scan_ecr_inspector(aws)]
+        try:
+            fixture_tag = _ecr_fixture_tag(ecr_fixture)
+        except DemoError:
+            fixture_tag = ""
+        sources = [_scan_ec2(aws), _scan_s3(aws, directory), _scan_ecr_inspector(aws, tag=fixture_tag, cve_id=BAD_CVE)] if fixture_tag else [_scan_ec2(aws), _scan_s3(aws, directory), _ecr_public_result(BAD_CVE, "BLOCKED", "SECCOP_ECR_FIXTURE_INVALID")]
     else:
         uri = _repo_uri(aws)
         sources = [_scan_ec2(aws), _scan_s3(aws, directory), _scan_ecr(aws, directory, uri)]
@@ -736,9 +778,12 @@ def _fix(aws: AwsCli, source: str, directory: Path) -> dict[str, Any]:
     raise DemoError("Choose one source: ec2, s3, or ecr.")
 
 
-def _ecr_scan(aws: AwsCli, directory: Path, *, ecr_scanner: str = "trivy") -> dict[str, Any]:
+def _ecr_scan(aws: AwsCli, directory: Path, *, ecr_scanner: str = "trivy", ecr_fixture: str = "current") -> dict[str, Any]:
     if ecr_scanner == "inspector":
-        source = _scan_ecr_inspector(aws)
+        try:
+            source = _scan_ecr_inspector(aws, tag=_ecr_fixture_tag(ecr_fixture))
+        except DemoError:
+            source = _ecr_public_result(BAD_CVE, "BLOCKED", "SECCOP_ECR_FIXTURE_INVALID")
         state = source["state"]
         if state == "NON_COMPLIANT":
             finding = {
@@ -787,35 +832,35 @@ def _ecr_scan(aws: AwsCli, directory: Path, *, ecr_scanner: str = "trivy") -> di
     }
 
 
-def _ecr_scan_selected(aws: AwsCli, directory: Path, ecr_scanner: str) -> dict[str, Any]:
+def _ecr_scan_selected(aws: AwsCli, directory: Path, ecr_scanner: str, ecr_fixture: str = "current") -> dict[str, Any]:
     """Select the provider while retaining the legacy Trivy call shape."""
 
-    return _ecr_scan(aws, directory) if ecr_scanner == "trivy" else _ecr_scan(aws, directory, ecr_scanner=ecr_scanner)
+    return _ecr_scan(aws, directory) if ecr_scanner == "trivy" else _ecr_scan(aws, directory, ecr_scanner=ecr_scanner, ecr_fixture=ecr_fixture)
 
 
-def _ecr_start(aws: AwsCli, directory: Path, *, ecr_scanner: str = "trivy") -> dict[str, Any]:
+def _ecr_start(aws: AwsCli, directory: Path, *, ecr_scanner: str = "trivy", ecr_fixture: str = "current") -> dict[str, Any]:
     _ensure_ecr(aws, directory)
-    result = _ecr_scan_selected(aws, directory, ecr_scanner)
+    result = _ecr_scan_selected(aws, directory, ecr_scanner, ecr_fixture)
     if result["reason_code"] != "SECCOP_ECR_NON_COMPLIANT":
         raise DemoError("The ECR baseline did not produce the approved finding.")
     return result
 
 
-def _ecr_fix(aws: AwsCli, directory: Path, *, ecr_scanner: str = "trivy") -> dict[str, Any]:
+def _ecr_fix(aws: AwsCli, directory: Path, *, ecr_scanner: str = "trivy", ecr_fixture: str = "current") -> dict[str, Any]:
     _fix(aws, "ecr", directory)
-    result = _ecr_scan_selected(aws, directory, ecr_scanner)
+    result = _ecr_scan_selected(aws, directory, ecr_scanner, ecr_fixture)
     if result["reason_code"] != "SECCOP_ECR_COMPLIANT":
         raise DemoError("The ECR clean digest verification failed.")
     provider = "Amazon Inspector" if ecr_scanner == "inspector" else "local Trivy"
     return {"status": "VERIFIED", "reason_code": "SECCOP_ECR_PROMOTION_VERIFIED", "state": "COMPLIANT", "message": f"SecCop promoted the clean ECR digest and verified the result with {provider}."}
 
 
-def _ecr_reset(aws: AwsCli, directory: Path, *, ecr_scanner: str = "trivy") -> dict[str, Any]:
-    before = _ecr_scan_selected(aws, directory, ecr_scanner)
+def _ecr_reset(aws: AwsCli, directory: Path, *, ecr_scanner: str = "trivy", ecr_fixture: str = "current") -> dict[str, Any]:
+    before = _ecr_scan_selected(aws, directory, ecr_scanner, ecr_fixture)
     if before["reason_code"] == "SECCOP_ECR_NON_COMPLIANT":
         return {"status": "READY", "reason_code": "SECCOP_ECR_REOPEN_READY", "message": "The ECR finding is already action required."}
     _push_image(aws, directory, BAD_VERSION, "demo-current")
-    after = _ecr_scan_selected(aws, directory, ecr_scanner)
+    after = _ecr_scan_selected(aws, directory, ecr_scanner, ecr_fixture)
     if after["reason_code"] != "SECCOP_ECR_NON_COMPLIANT":
         raise DemoError("The ECR reopen verification failed.")
     provider = "Amazon Inspector" if ecr_scanner == "inspector" else "local Trivy"
@@ -983,6 +1028,12 @@ def main() -> int:
         default=os.environ.get("SECCOP_ECR_SCANNER", "trivy"),
         help="select the ECR evidence provider for scan/rescan/status",
     )
+    parser.add_argument(
+        "--ecr-fixture",
+        choices=tuple(ECR_FIXTURE_TAGS),
+        default=os.environ.get("SECCOP_ECR_FIXTURE", "current"),
+        help="select the retained ECR fixture alias for Inspector reads",
+    )
     parser.add_argument("--confirm", action="store_true", help="allow the requested DEMO preparation/fix")
     args = parser.parse_args()
     if args.command in {"start", "fix", "verify", "cleanup", "ecr-start", "ecr-fix", "ecr-reset"} and not args.confirm:
@@ -996,13 +1047,13 @@ def main() -> int:
         try:
             aws.run("sts", "get-caller-identity")
             if args.command == "ecr-start":
-                result = _ecr_start(aws, Path(run_dir), ecr_scanner=args.ecr_scanner)
+                result = _ecr_start(aws, Path(run_dir), ecr_scanner=args.ecr_scanner, ecr_fixture=args.ecr_fixture)
             elif args.command == "ecr-scan":
-                result = _ecr_scan(aws, Path(run_dir), ecr_scanner=args.ecr_scanner)
+                result = _ecr_scan(aws, Path(run_dir), ecr_scanner=args.ecr_scanner, ecr_fixture=args.ecr_fixture)
             elif args.command == "ecr-fix":
-                result = _ecr_fix(aws, Path(run_dir), ecr_scanner=args.ecr_scanner)
+                result = _ecr_fix(aws, Path(run_dir), ecr_scanner=args.ecr_scanner, ecr_fixture=args.ecr_fixture)
             elif args.command == "ecr-reset":
-                result = _ecr_reset(aws, Path(run_dir), ecr_scanner=args.ecr_scanner)
+                result = _ecr_reset(aws, Path(run_dir), ecr_scanner=args.ecr_scanner, ecr_fixture=args.ecr_fixture)
             elif args.command == "start":
                 result = _start(aws, Path(run_dir))
             elif args.command == "cleanup":
@@ -1010,7 +1061,7 @@ def main() -> int:
             elif args.command == "verify":
                 result = _verify(aws, Path(run_dir))
             elif args.command in {"scan", "rescan", "status"}:
-                result = _scan(aws, Path(run_dir), ecr_scanner=args.ecr_scanner)
+                result = _scan(aws, Path(run_dir), ecr_scanner=args.ecr_scanner, ecr_fixture=args.ecr_fixture)
             else:
                 if args.source is None:
                     raise DemoError("--source is required for fix.")

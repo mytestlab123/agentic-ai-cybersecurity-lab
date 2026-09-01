@@ -408,6 +408,79 @@ def test_inspector_ecr_rejects_ambiguous_tag() -> None:
     assert result["reason_code"] == "SECCOP_ECR_TAG_AMBIGUOUS"
 
 
+def test_inspector_fixture_selector_uses_retained_public_aliases(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    source = {
+        "source": "ECR_IMAGE", "alias": "ECR_IMAGE_01", "state": "COMPLIANT",
+        "reason_code": "SECCOP_ECR_INSPECTOR_CVE_ABSENT", "scanner_provider": "AMAZON_INSPECTOR",
+        "scanner_mode": "ECR_ENHANCED_SCANNING", "cve_id": seccop_demo.BAD_CVE,
+    }
+    selected: list[str] = []
+
+    def fake_scan(*_: object, tag: str, **__: object) -> dict[str, object]:
+        selected.append(tag)
+        return source
+
+    monkeypatch.setattr(seccop_demo, "_scan_ecr_inspector", fake_scan)
+    monkeypatch.setattr(seccop_demo, "_scan_ecr", lambda *_: pytest.fail("Trivy path used for Inspector selection"))
+
+    vulnerable = seccop_demo._ecr_scan(object(), tmp_path, ecr_scanner="inspector", ecr_fixture="vulnerable")
+    clean = seccop_demo._ecr_scan(object(), tmp_path, ecr_scanner="inspector", ecr_fixture="clean")
+    invalid = seccop_demo._ecr_scan(object(), tmp_path, ecr_scanner="inspector", ecr_fixture="unknown")
+
+    assert selected == ["issue53-live-vulnerable", "issue53-live-clean"]
+    assert vulnerable["status"] == "NO_FINDINGS"
+    assert clean["reason_code"] == "SECCOP_ECR_COMPLIANT"
+    assert invalid["status"] == "BLOCKED"
+    assert invalid["reason_code"] == "SECCOP_ECR_EVIDENCE_BLOCKED"
+
+
+def test_inspector_coverage_falls_back_to_repository_for_digest_correlation() -> None:
+    fixture = _inspector_fixture()
+
+    class FallbackAws(_FakeInspectorAws):
+        def __init__(self, responses: tuple[dict[str, object], dict[str, object], dict[str, object], dict[str, object]]) -> None:
+            super().__init__(responses)
+            self.coverage_reads = 0
+
+        def json(self, *args: str) -> dict[str, object]:
+            if args[:2] == ("inspector2", "list-coverage"):
+                self.coverage_reads += 1
+                if self.coverage_reads == 1:
+                    self.calls.append(args)
+                    return {"coveredResources": []}
+            return super().json(*args)
+
+    aws = FallbackAws(fixture)
+    result = seccop_demo._scan_ecr_inspector(aws)
+
+    assert result["state"] == "NON_COMPLIANT"
+    assert result["reason_code"] == "SECCOP_ECR_INSPECTOR_FINDING"
+    assert aws.coverage_reads == 2
+
+
+def test_inspector_finding_pagination_is_consumed_before_ambiguity_check() -> None:
+    fixture = _inspector_fixture()
+
+    class PagedAws(_FakeInspectorAws):
+        def __init__(self, responses: tuple[dict[str, object], dict[str, object], dict[str, object], dict[str, object]]) -> None:
+            super().__init__(responses)
+            self.finding_reads = 0
+
+        def json(self, *args: str) -> dict[str, object]:
+            if args[:2] == ("inspector2", "list-findings"):
+                self.finding_reads += 1
+                self.calls.append(args)
+                return {"findings": []} if self.finding_reads == 2 else {"findings": self.findings["findings"], "nextToken": "TOKEN_ALIAS_01"}
+            return super().json(*args)
+
+    aws = PagedAws(fixture)
+    result = seccop_demo._scan_ecr_inspector(aws)
+
+    assert result["state"] == "NON_COMPLIANT"
+    assert result["reason_code"] == "SECCOP_ECR_INSPECTOR_FINDING"
+    assert aws.finding_reads == 2
+
+
 def test_ecr_operator_maps_inspector_result_and_preserves_trivy_default(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
     inspector_source = {
         "source": "ECR_IMAGE", "alias": "ECR_IMAGE_01", "state": "NON_COMPLIANT",
@@ -415,7 +488,7 @@ def test_ecr_operator_maps_inspector_result_and_preserves_trivy_default(monkeypa
         "scanner_mode": "ECR_ENHANCED_SCANNING", "cve_id": seccop_demo.BAD_CVE,
         "package_name": "urllib3", "installed_version": "1.24.1", "severity": "HIGH",
     }
-    monkeypatch.setattr(seccop_demo, "_scan_ecr_inspector", lambda *_: inspector_source)
+    monkeypatch.setattr(seccop_demo, "_scan_ecr_inspector", lambda *_, **__: inspector_source)
     monkeypatch.setattr(seccop_demo, "_scan_ecr", lambda *_: pytest.fail("Trivy path used for Inspector selection"))
 
     inspector = seccop_demo._ecr_scan(object(), tmp_path, ecr_scanner="inspector")

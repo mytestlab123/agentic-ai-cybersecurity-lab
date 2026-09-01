@@ -56,12 +56,22 @@ resources:
     lifecycle: disposable-demo-host
 
   - kind: ecr
-    alias: SECCOP_ECR_DEMO_IMAGES
-    name: seccop-demo-images
-    state: absent
-    image_count: 0
-    tags: [demo-bad, demo-clean, demo-current, untagged]
-    cleanup_status: cleaned
+    alias: SECCOP_ECR_OPERATOR_MVP
+    name: seccop-ecr-operator-mvp
+    state: retained
+    image_count: 8
+    untagged_manifest_count: 3
+    tag_aliases: [demo-bad, demo-clean, demo-current, issue53-vulnerable, issue53-clean, issue53-live-vulnerable, issue53-live-clean]
+    fixture_aliases:
+      vulnerable: SECCOP_ECR_FIXTURE_VULNERABLE
+      clean: SECCOP_ECR_FIXTURE_CLEAN
+    selector_tags: [issue53-live-vulnerable, issue53-live-clean]
+    scanner: ECR_ENHANCED_SCANNING / AMAZON_INSPECTOR
+    registry_rule: ENHANCED + SCAN_ON_PUSH (repository-scoped)
+    cleanup: keep
+    ttl: 01-10-26
+    cleanup_status: retain-approved
+    mutation_note: Existing-manifest retags only; no new layers or deletions.
     lifecycle: reusable-demo-artifact
 
   - kind: security_group
