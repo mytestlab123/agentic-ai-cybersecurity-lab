@@ -92,6 +92,8 @@ def apply(profile: str, region: str, bucket: str) -> dict[str, Any]:
 def reset(profile: str, region: str, bucket: str) -> dict[str, Any]:
     """Return one server-owned, empty private bucket to the approved demo drift."""
     before = scan(profile, region, bucket)
+    if before["reason_code"] == "SECCOP_S3_NON_COMPLIANT":
+        return {"status": "READY", "reason_code": "SECCOP_S3_RESET_READY", "message": "The approved S3 exposure-risk demo is already action required."}
     if before["reason_code"] != "SECCOP_S3_COMPLIANT":
         raise RuntimeError("Reset requires a verified protected bucket")
     aws(profile, region, "s3api", "delete-public-access-block", "--bucket", bucket)
