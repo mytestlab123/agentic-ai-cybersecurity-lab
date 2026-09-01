@@ -292,6 +292,121 @@ def test_ecr_scan_names_storage_and_scanner(monkeypatch: pytest.MonkeyPatch, tmp
     assert result["scanner_provider"] == "LOCAL_TRIVY"
 
 
+def _inspector_fixture(*, tag: str = "demo-current", digest: str | None = None) -> tuple[dict[str, object], dict[str, object], dict[str, object], dict[str, object]]:
+    image_digest = digest or "sha256:" + "a" * 64
+    image = {"imageTags": [tag], "imageDigest": image_digest}
+    account = {"accounts": [{"resourceState": {"ecr": {"status": "ENABLED"}}}]}
+    coverage = {
+        "coveredResources": [
+            {
+                "resourceId": f"ECR_IMAGE_ALIAS/{image_digest}",
+                "scanType": "PACKAGE",
+                "scanStatus": {"statusCode": "INACTIVE", "reason": "SCAN_FREQUENCY_SCAN_ON_PUSH"},
+            }
+        ]
+    }
+    finding = {
+        "status": "ACTIVE",
+        "type": "PACKAGE_VULNERABILITY",
+        "severity": "HIGH",
+        "resources": [
+            {
+                "type": "AWS_ECR_CONTAINER_IMAGE",
+                "details": {"awsEcrContainerImage": {"repositoryName": seccop_demo.ECR_REPOSITORY, "imageHash": image_digest}},
+            }
+        ],
+        "packageVulnerabilityDetails": {
+            "vulnerabilityId": seccop_demo.BAD_CVE,
+            "vulnerablePackages": [{"name": "urllib3", "version": "1.24.1"}],
+        },
+    }
+    return {"imageDetails": [image]}, account, coverage, {"findings": [finding]}
+
+
+class _FakeInspectorAws:
+    def __init__(self, responses: tuple[dict[str, object], dict[str, object], dict[str, object], dict[str, object]]) -> None:
+        self.image, self.account, self.coverage, self.findings = responses
+        self.calls: list[tuple[str, ...]] = []
+
+    def json(self, *args: str) -> dict[str, object]:
+        self.calls.append(args)
+        if args[:2] == ("ecr", "describe-images"):
+            return self.image
+        if args[:2] == ("inspector2", "batch-get-account-status"):
+            return self.account
+        if args[:2] == ("inspector2", "list-coverage"):
+            return self.coverage
+        if args[:2] == ("inspector2", "list-findings"):
+            return self.findings
+        raise AssertionError(f"unexpected AWS read: {args[:2]}")
+
+
+def test_inspector_ecr_maps_exact_finding_without_digest_or_raw_payload() -> None:
+    aws = _FakeInspectorAws(_inspector_fixture())
+
+    result = seccop_demo._scan_ecr_inspector(aws)
+
+    assert result == {
+        "source": "ECR_IMAGE",
+        "alias": "ECR_IMAGE_01",
+        "state": "NON_COMPLIANT",
+        "reason_code": "SECCOP_ECR_INSPECTOR_FINDING",
+        "storage_provider": "AWS_ECR",
+        "scanner_provider": "AMAZON_INSPECTOR",
+        "scanner_mode": "ECR_ENHANCED_SCANNING",
+        "cve_id": "CVE-2019-11324",
+        "package_name": "urllib3",
+        "installed_version": "1.24.1",
+        "severity": "HIGH",
+    }
+    assert "sha256:" not in json.dumps(result)
+    assert any(call[:2] == ("inspector2", "list-findings") for call in aws.calls)
+
+
+def test_inspector_ecr_clean_absence_is_compliant() -> None:
+    image, account, coverage, _ = _inspector_fixture()
+    aws = _FakeInspectorAws((image, account, coverage, {"findings": []}))
+
+    result = seccop_demo._scan_ecr_inspector(aws)
+
+    assert result["state"] == "COMPLIANT"
+    assert result["reason_code"] == "SECCOP_ECR_INSPECTOR_CVE_ABSENT"
+
+
+def test_inspector_ecr_pending_readiness_is_not_claimed_clean() -> None:
+    image, account, coverage, findings = _inspector_fixture()
+    coverage["coveredResources"][0]["scanStatus"] = {"statusCode": "ACTIVE", "reason": "PENDING_INITIAL_SCAN"}
+    aws = _FakeInspectorAws((image, account, coverage, findings))
+
+    result = seccop_demo._scan_ecr_inspector(aws)
+
+    assert result["state"] == "PENDING_RESCAN"
+    assert result["reason_code"] == "SECCOP_ECR_SCAN_PENDING"
+
+
+def test_inspector_ecr_rejects_wrong_or_missing_coverage() -> None:
+    image, account, coverage, findings = _inspector_fixture()
+    coverage["coveredResources"][0]["resourceId"] = "ECR_IMAGE_ALIAS/sha256:" + "b" * 64
+    wrong = seccop_demo._scan_ecr_inspector(_FakeInspectorAws((image, account, coverage, findings)))
+    assert wrong["state"] == "BLOCKED"
+    assert wrong["reason_code"] == "SECCOP_ECR_COVERAGE_MISMATCH"
+
+    coverage["coveredResources"] = []
+    missing = seccop_demo._scan_ecr_inspector(_FakeInspectorAws((image, account, coverage, findings)))
+    assert missing["state"] == "BLOCKED"
+    assert missing["reason_code"] == "SECCOP_ECR_COVERAGE_MISMATCH"
+
+
+def test_inspector_ecr_rejects_ambiguous_tag() -> None:
+    image, account, coverage, findings = _inspector_fixture()
+    image["imageDetails"] = [image["imageDetails"][0], image["imageDetails"][0].copy()]
+
+    result = seccop_demo._scan_ecr_inspector(_FakeInspectorAws((image, account, coverage, findings)))
+
+    assert result["state"] == "BLOCKED"
+    assert result["reason_code"] == "SECCOP_ECR_TAG_AMBIGUOUS"
+
+
 def test_ecr_reopen_is_idempotent_when_the_finding_is_already_open(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
     monkeypatch.setattr(seccop_demo, "_ecr_scan", lambda *_: {"reason_code": "SECCOP_ECR_NON_COMPLIANT"})
     monkeypatch.setattr(seccop_demo, "_push_image", lambda *_: pytest.fail("unexpected ECR mutation"))
