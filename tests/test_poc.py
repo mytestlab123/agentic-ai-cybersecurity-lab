@@ -570,6 +570,25 @@ def test_ecr_operator_maps_inspector_result_and_preserves_trivy_default(monkeypa
     assert trivy["reason_code"] == "SECCOP_ECR_COMPLIANT"
 
 
+def test_ecr_approve_uses_matching_clean_fixture_and_current_verification(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    promoted: list[str] = []
+    scanned: list[tuple[str, str | None]] = []
+
+    monkeypatch.setattr(seccop_demo, "_ecr_promote_fixture", lambda _aws, _directory, fixture: promoted.append(fixture))
+
+    def fake_scan(_aws: object, _directory: Path, _scanner: str, fixture: str, tag_override: str | None = None) -> dict[str, object]:
+        scanned.append((fixture, tag_override))
+        return {"reason_code": "SECCOP_ECR_COMPLIANT"}
+
+    monkeypatch.setattr(seccop_demo, "_ecr_scan_selected", fake_scan)
+
+    result = seccop_demo._ecr_fix(object(), tmp_path, ecr_scanner="inspector", ecr_fixture="npm-vulnerable")
+
+    assert result["status"] == "VERIFIED"
+    assert promoted == ["npm-clean"]
+    assert scanned == [("npm-clean", "demo-current")]
+
+
 def test_ecr_operator_api_passes_explicit_scanner_without_running_aws(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv("SECCOP_DEMO_BACKEND", "AWS")
     monkeypatch.setenv("SECCOP_ECR_OPERATOR_MVP", "1")

@@ -21,6 +21,7 @@ import subprocess
 import sys
 import tarfile
 import tempfile
+import time
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -36,6 +37,7 @@ DEFAULT_TARGET_NAME = "seccop-project1-old-ami-host-r01"
 ECR_REPOSITORY = "seccop-ecr-operator-mvp"
 ECR_FIXTURE_TAGS = {
     "current": "demo-current",
+    "current-clean": "demo-clean",
     "vulnerable": "issue53-live-vulnerable",
     "clean": "issue53-live-clean",
     "python-vulnerable": "issue53-vulnerable",
@@ -45,12 +47,31 @@ ECR_FIXTURE_TAGS = {
 }
 ECR_FIXTURE_SPECS = {
     "current": {"tag": "demo-current", "cve_id": BAD_CVE, "ecosystem": "PYTHON"},
+    "current-clean": {"tag": "demo-clean", "cve_id": BAD_CVE, "ecosystem": "PYTHON"},
     "vulnerable": {"tag": "issue53-live-vulnerable", "cve_id": BAD_CVE, "ecosystem": "PYTHON"},
     "clean": {"tag": "issue53-live-clean", "cve_id": BAD_CVE, "ecosystem": "PYTHON"},
     "python-vulnerable": {"tag": "issue53-vulnerable", "cve_id": BAD_CVE, "ecosystem": "PYTHON"},
     "python-clean": {"tag": "issue53-clean", "cve_id": BAD_CVE, "ecosystem": "PYTHON"},
     "npm-vulnerable": {"tag": "issue53-npm-vulnerable", "cve_id": NPM_CVE, "ecosystem": "JAVASCRIPT_NPM"},
     "npm-clean": {"tag": "issue53-npm-clean", "cve_id": NPM_CVE, "ecosystem": "JAVASCRIPT_NPM"},
+}
+ECR_MATCHING_CLEAN_FIXTURE = {
+    "current": "current-clean",
+    "vulnerable": "clean",
+    "clean": "clean",
+    "python-vulnerable": "python-clean",
+    "python-clean": "python-clean",
+    "npm-vulnerable": "npm-clean",
+    "npm-clean": "npm-clean",
+}
+ECR_MATCHING_VULNERABLE_FIXTURE = {
+    "current": "python-vulnerable",
+    "vulnerable": "vulnerable",
+    "clean": "vulnerable",
+    "python-vulnerable": "python-vulnerable",
+    "python-clean": "python-vulnerable",
+    "npm-vulnerable": "npm-vulnerable",
+    "npm-clean": "npm-vulnerable",
 }
 
 
@@ -550,6 +571,52 @@ def _ecr_fixture_spec(fixture: str) -> dict[str, str]:
         raise DemoError("The ECR fixture selector is invalid.") from error
 
 
+def _ecr_paired_fixture(fixture: str, pairs: dict[str, str]) -> str:
+    try:
+        return pairs[fixture]
+    except KeyError as error:
+        raise DemoError("The ECR fixture selector is invalid.") from error
+
+
+def _ecr_promote_fixture(aws: AwsCli, directory: Path, fixture: str) -> None:
+    """Promote one retained fixture manifest to the mutable demo-current tag."""
+
+    source_tag = _ecr_fixture_tag(fixture)
+    images = aws.json(
+        "ecr",
+        "batch-get-image",
+        "--repository-name",
+        ECR_REPOSITORY,
+        "--image-ids",
+        f"imageTag={source_tag}",
+        "--accepted-media-types",
+        "application/vnd.docker.distribution.manifest.v2+json",
+    )
+    items = images.get("images")
+    if not isinstance(items, list) or len(items) != 1 or not isinstance(items[0], dict):
+        raise DemoError("The retained ECR fixture image was not available.")
+    manifest = items[0].get("imageManifest")
+    if not isinstance(manifest, str):
+        raise DemoError("The retained ECR fixture manifest was invalid.")
+    manifest_file = directory / "selected-image-manifest.json"
+    manifest_file.parent.mkdir(parents=True, exist_ok=True)
+    manifest_file.write_text(manifest, encoding="utf-8")
+    try:
+        aws.run(
+            "ecr",
+            "put-image",
+            "--repository-name",
+            ECR_REPOSITORY,
+            "--image-tag",
+            "demo-current",
+            "--image-manifest",
+            f"file://{manifest_file}",
+        )
+    except DemoError as error:
+        if "ImageAlreadyExistsException" not in str(error):
+            raise
+
+
 def _scan_ecr_inspector(aws: AwsCli, *, tag: str = "demo-current", cve_id: str = BAD_CVE) -> dict[str, Any]:
     """Read one ECR tag and its exact Inspector evidence without mutation."""
 
@@ -784,7 +851,7 @@ def _scan(aws: AwsCli, directory: Path, *, ecr_scanner: str = "trivy", ecr_fixtu
     }
 
 
-def _fix(aws: AwsCli, source: str, directory: Path) -> dict[str, Any]:
+def _fix(aws: AwsCli, source: str, directory: Path, *, ecr_fixture: str = "current") -> dict[str, Any]:
     if source == "ec2":
         raise DemoError("Use the SecCop live approval screen for the EC2 package fix.")
     if source == "s3":
@@ -801,42 +868,17 @@ def _fix(aws: AwsCli, source: str, directory: Path) -> dict[str, Any]:
         )
         return {"source": "S3_ARTIFACT", "alias": "ARTIFACT_01", "state": "FIXED", "reason_code": "SECCOP_S3_FIX_APPLIED"}
     if source == "ecr":
-        images = aws.json(
-            "ecr",
-            "batch-get-image",
-            "--repository-name",
-            ECR_REPOSITORY,
-            "--image-ids",
-            "imageTag=demo-clean",
-            "--accepted-media-types",
-            "application/vnd.docker.distribution.manifest.v2+json",
-        )
-        items = images.get("images")
-        if not isinstance(items, list) or len(items) != 1 or not isinstance(items[0], dict):
-            raise DemoError("The clean ECR image was not available.")
-        manifest = items[0].get("imageManifest")
-        if not isinstance(manifest, str):
-            raise DemoError("The clean ECR image manifest was invalid.")
-        manifest_file = _write_json(directory, "clean-image-manifest.json", json.loads(manifest))
-        aws.run(
-            "ecr",
-            "put-image",
-            "--repository-name",
-            ECR_REPOSITORY,
-            "--image-tag",
-            "demo-current",
-            "--image-manifest",
-            f"file://{manifest_file}",
-        )
+        clean_fixture = _ecr_paired_fixture(ecr_fixture, ECR_MATCHING_CLEAN_FIXTURE)
+        _ecr_promote_fixture(aws, directory, clean_fixture)
         return {"source": "ECR_IMAGE", "alias": "IMAGE_01", "state": "FIXED", "reason_code": "SECCOP_ECR_FIX_APPLIED"}
     raise DemoError("Choose one source: ec2, s3, or ecr.")
 
 
-def _ecr_scan(aws: AwsCli, directory: Path, *, ecr_scanner: str = "trivy", ecr_fixture: str = "current") -> dict[str, Any]:
+def _ecr_scan(aws: AwsCli, directory: Path, *, ecr_scanner: str = "trivy", ecr_fixture: str = "current", tag_override: str | None = None) -> dict[str, Any]:
     if ecr_scanner == "inspector":
         try:
             fixture = _ecr_fixture_spec(ecr_fixture)
-            source = _scan_ecr_inspector(aws, tag=fixture["tag"], cve_id=fixture["cve_id"])
+            source = _scan_ecr_inspector(aws, tag=tag_override or fixture["tag"], cve_id=fixture["cve_id"])
             source["package_ecosystem"] = fixture["ecosystem"]
         except DemoError:
             source = _ecr_public_result(BAD_CVE, "BLOCKED", "SECCOP_ECR_FIXTURE_INVALID")
@@ -891,10 +933,10 @@ def _ecr_scan(aws: AwsCli, directory: Path, *, ecr_scanner: str = "trivy", ecr_f
     }
 
 
-def _ecr_scan_selected(aws: AwsCli, directory: Path, ecr_scanner: str, ecr_fixture: str = "current") -> dict[str, Any]:
+def _ecr_scan_selected(aws: AwsCli, directory: Path, ecr_scanner: str, ecr_fixture: str = "current", tag_override: str | None = None) -> dict[str, Any]:
     """Select the provider while retaining the legacy Trivy call shape."""
 
-    return _ecr_scan(aws, directory) if ecr_scanner == "trivy" else _ecr_scan(aws, directory, ecr_scanner=ecr_scanner, ecr_fixture=ecr_fixture)
+    return _ecr_scan(aws, directory) if ecr_scanner == "trivy" else _ecr_scan(aws, directory, ecr_scanner=ecr_scanner, ecr_fixture=ecr_fixture, tag_override=tag_override)
 
 
 def _ecr_start(aws: AwsCli, directory: Path, *, ecr_scanner: str = "trivy", ecr_fixture: str = "current") -> dict[str, Any]:
@@ -906,8 +948,16 @@ def _ecr_start(aws: AwsCli, directory: Path, *, ecr_scanner: str = "trivy", ecr_
 
 
 def _ecr_fix(aws: AwsCli, directory: Path, *, ecr_scanner: str = "trivy", ecr_fixture: str = "current") -> dict[str, Any]:
-    _fix(aws, "ecr", directory)
-    result = _ecr_scan_selected(aws, directory, ecr_scanner, ecr_fixture)
+    clean_fixture = _ecr_paired_fixture(ecr_fixture, ECR_MATCHING_CLEAN_FIXTURE)
+    _fix(aws, "ecr", directory, ecr_fixture=ecr_fixture)
+    result = _ecr_scan_selected(aws, directory, ecr_scanner, clean_fixture, tag_override="demo-current")
+    for _ in range(12):
+        if result["reason_code"] == "SECCOP_ECR_COMPLIANT":
+            break
+        if result["reason_code"] not in {"SECCOP_ECR_SCAN_PENDING", "SECCOP_ECR_EVIDENCE_BLOCKED"}:
+            break
+        time.sleep(5)
+        result = _ecr_scan_selected(aws, directory, ecr_scanner, clean_fixture, tag_override="demo-current")
     if result["reason_code"] != "SECCOP_ECR_COMPLIANT":
         raise DemoError("The ECR clean digest verification failed.")
     provider = "Amazon Inspector" if ecr_scanner == "inspector" else "local Trivy"
@@ -915,11 +965,23 @@ def _ecr_fix(aws: AwsCli, directory: Path, *, ecr_scanner: str = "trivy", ecr_fi
 
 
 def _ecr_reset(aws: AwsCli, directory: Path, *, ecr_scanner: str = "trivy", ecr_fixture: str = "current") -> dict[str, Any]:
-    before = _ecr_scan_selected(aws, directory, ecr_scanner, ecr_fixture)
-    if before["reason_code"] == "SECCOP_ECR_NON_COMPLIANT":
+    tag_override = "demo-current" if ecr_scanner == "inspector" else None
+    before = _ecr_scan_selected(aws, directory, ecr_scanner, ecr_fixture, tag_override=tag_override)
+    if before["reason_code"] == "SECCOP_ECR_NON_COMPLIANT" and ecr_scanner != "inspector":
         return {"status": "READY", "reason_code": "SECCOP_ECR_REOPEN_READY", "message": "The ECR finding is already action required."}
-    _push_image(aws, directory, BAD_VERSION, "demo-current")
-    after = _ecr_scan_selected(aws, directory, ecr_scanner, ecr_fixture)
+    if ecr_scanner == "inspector":
+        vulnerable_fixture = _ecr_paired_fixture(ecr_fixture, ECR_MATCHING_VULNERABLE_FIXTURE)
+        _ecr_promote_fixture(aws, directory, vulnerable_fixture)
+    else:
+        _push_image(aws, directory, BAD_VERSION, "demo-current")
+    after = _ecr_scan_selected(aws, directory, ecr_scanner, ecr_fixture, tag_override=tag_override)
+    for _ in range(12):
+        if after["reason_code"] == "SECCOP_ECR_NON_COMPLIANT":
+            break
+        if after["reason_code"] not in {"SECCOP_ECR_SCAN_PENDING", "SECCOP_ECR_EVIDENCE_BLOCKED"}:
+            break
+        time.sleep(5)
+        after = _ecr_scan_selected(aws, directory, ecr_scanner, ecr_fixture, tag_override=tag_override)
     if after["reason_code"] != "SECCOP_ECR_NON_COMPLIANT":
         raise DemoError("The ECR reopen verification failed.")
     provider = "Amazon Inspector" if ecr_scanner == "inspector" else "local Trivy"
