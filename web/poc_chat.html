@@ -92,6 +92,8 @@
     .result-head { display:flex; align-items:center; justify-content:space-between; gap:12px; margin-bottom:13px; }
     .result-title { font-size:.85rem; font-weight:650; }
     .badge { padding:4px 8px; color:#fbe2a4; background:#483b1e; border:1px solid #725d2a; border-radius:999px; font-size:.7rem; font-weight:700; }
+    .badge.action-required { color:#ffd2d2; background:#552626; border-color:#9c4545; }
+    .badge.protected { color:#d9f8e9; background:#18352b; border-color:#34795e; }
     .evidence-grid { display:grid; grid-template-columns:repeat(3,minmax(0,1fr)); gap:8px; }
     .evidence-cell { padding:9px 10px; background:#242424; border-radius:7px; }
     .evidence-label { color:#818181; font-size:.68rem; text-transform:uppercase; letter-spacing:.05em; }
@@ -151,12 +153,12 @@
       </div>
       <div class="scan-panel">
         <div class="side-label" style="padding:0">DEMO</div>
-        <div class="usage-note">Check the server, stored file, and container image together.</div>
+        <div id="scan-note" class="usage-note">Check the server, stored file, and container image together.</div>
         <button id="scan-environment" type="button">Scan environment</button>
         <button id="start-real-demo" type="button" hidden>Start AWS DEMO</button>
       </div>
       <div class="side-spacer"></div>
-      <details class="technical-path">
+      <details id="technical-evidence-fallback" class="technical-path">
         <summary>Technical evidence fallback</summary>
         <label class="upload-button" for="evidence-upload"><span>↑</span><span>Upload read-only evidence</span><input id="evidence-upload" type="file" accept="application/json,.json"></label>
       <div class="live-panel">
@@ -181,7 +183,7 @@
         </details>
       </div>
       </details>
-      <div class="usage-panel" aria-label="AI usage">
+      <div id="ai-usage-panel" class="usage-panel" aria-label="AI usage">
         <div class="side-label" style="padding:0">AI USAGE</div>
         <div id="govtech-usage" class="usage-value">GovTech inference: not used</div>
         <div class="usage-note">This deterministic path uses no model credits. Billing remains portal-authoritative.</div>
@@ -191,10 +193,10 @@
 
     <main class="main">
       <header class="topbar">
-        <div><div class="eyebrow">SECCOP POC</div><h1>Vulnerability review</h1></div>
+        <div><div class="eyebrow">SECCOP POC</div><h1 id="review-title">Vulnerability review</h1></div>
         <div id="mode-status" class="status-pill"><span class="mode-dot"></span>Offline demo</div>
       </header>
-      <div class="safety-banner"><strong>Safe demo boundary.</strong> Paste one CVE to check all demo sources. A server change always needs a separate review and approval.</div>
+      <div id="safety-banner" class="safety-banner"><strong>Safe demo boundary.</strong> Paste one CVE to check all demo sources. A server change always needs a separate review and approval.</div>
 
       <section class="chat" aria-live="polite">
         <div class="flow-strip" aria-label="Operator workflow">
@@ -202,8 +204,8 @@
         </div>
         <div id="welcome" class="welcome">
           <div class="welcome-mark">S</div>
-          <h2>What would you like to check?</h2>
-          <p>Paste one CVE to check the demo environment, or scan all three sources.</p>
+          <h2 id="welcome-title">What would you like to check?</h2>
+          <p id="welcome-copy">Paste one CVE to check the demo environment, or scan all three sources.</p>
           <div class="welcome-actions">
             <button id="codex-preflight" class="btn primary" type="button">Check Codex connection</button>
             <button id="cve-welcome" class="btn primary" type="button">Check a CVE</button>
@@ -213,7 +215,8 @@
         <div id="messages" class="messages"></div>
       </section>
 
-      <div class="composer-wrap">
+      <button id="toggle-composer" class="btn primary hidden" type="button">Ask SecCop (optional)</button>
+      <div id="composer-wrap" class="composer-wrap">
         <form id="run-form" class="composer">
           <div class="composer-toolbar"><span>Ask SecCop</span><select id="input-mode" aria-label="What to check"><option value="CVE_REVIEW">Check a CVE</option><option value="SYNTHETIC_LAB">Run guided example</option></select></div>
           <div class="composer-row">
@@ -235,6 +238,13 @@
     const inputModeEl = document.querySelector('#input-mode');
     const runButton = document.querySelector('#run');
     const codexPreflightButton = document.querySelector('#codex-preflight');
+    const composerWrap = document.querySelector('#composer-wrap');
+    const toggleComposerButton = document.querySelector('#toggle-composer');
+    const reviewTitle = document.querySelector('#review-title');
+    const safetyBanner = document.querySelector('#safety-banner');
+    const welcomeTitle = document.querySelector('#welcome-title');
+    const welcomeCopy = document.querySelector('#welcome-copy');
+    const scanNote = document.querySelector('#scan-note');
     const scanButton = document.querySelector('#scan-environment');
     const cveWelcomeButton = document.querySelector('#cve-welcome');
     const scanWelcomeButton = document.querySelector('#scan-welcome');
@@ -250,6 +260,8 @@
     const compareCsvButton = document.querySelector('#compare-csv');
     const modeStatus = document.querySelector('#mode-status');
     const backendNote = document.querySelector('#backend-note');
+    const technicalEvidenceFallback = document.querySelector('#technical-evidence-fallback');
+    const aiUsagePanel = document.querySelector('#ai-usage-panel');
     const welcome = document.querySelector('#welcome');
     const messages = document.querySelector('#messages');
     const newChat = document.querySelector('#new-chat');
@@ -258,6 +270,38 @@
     let lastLiveProposalId = null;
     let lastLiveProposalHash = null;
     let demoBackend = 'LOCAL';
+    let s3Review = false;
+
+    function s3Badge(reasonCode, fallback) {
+      if (reasonCode === 'SECCOP_S3_NON_COMPLIANT') return { label: 'X ACTION REQUIRED', className: 'action-required' };
+      if (reasonCode === 'SECCOP_S3_COMPLIANT' || reasonCode === 'SECCOP_S3_EXPOSURE_RISK_REMEDIATED') return { label: 'CHECK PROTECTED', className: 'protected' };
+      return { label: fallback, className: '' };
+    }
+
+    function setS3FlowStep(stepNumber) {
+      if (!s3Review) return;
+      document.querySelectorAll('.flow-step').forEach((step, index) => step.classList.toggle('active', index < stepNumber));
+    }
+
+    function configureS3Review() {
+      s3Review = true;
+      document.title = 'Security Copilot - S3 Security Posture Review';
+      reviewTitle.textContent = 'S3 Security Posture Review';
+      safetyBanner.innerHTML = '<strong>S3 review boundary.</strong> Scan and recommendation are safe; a human must approve every AWS change.';
+      welcomeTitle.textContent = 'Review S3 security posture';
+      welcomeCopy.textContent = 'Review three real empty private buckets and one exact Block Public Access recommendation.';
+      scanNote.textContent = 'Check three private buckets for Block Public Access drift.';
+      backendNote.innerHTML = '<span class="mode-dot"></span>Live AWS S3 review - Human approval required';
+      scanButton.textContent = 'Scan S3 bucket';
+      if (scanWelcomeButton) scanWelcomeButton.textContent = 'Scan S3 bucket';
+      document.querySelectorAll('.source-tab').forEach((tab) => tab.classList.toggle('active', tab.textContent === 'S3'));
+      if (codexPreflightButton) codexPreflightButton.classList.add('hidden');
+      if (cveWelcomeButton) cveWelcomeButton.classList.add('hidden');
+      if (technicalEvidenceFallback) technicalEvidenceFallback.classList.add('hidden');
+      if (aiUsagePanel) aiUsagePanel.classList.add('hidden');
+      composerWrap.classList.add('hidden');
+      toggleComposerButton.classList.remove('hidden');
+    }
     const labels = {
       mock_inspector_finding: 'Inspector finding lookup',
       mock_instance_context: 'EC2 instance context',
@@ -394,25 +438,41 @@
       const card = node('div', 'result-card');
       const head = node('div', 'result-head');
       head.appendChild(node('div', 'result-title', 'Security scan summary'));
-      head.appendChild(node('span', 'badge', result.reason_code || result.status || 'BLOCKED'));
+      const scanBadge = s3Review ? s3Badge(result.reason_code, result.status || 'BLOCKED') : { label: result.reason_code || result.status || 'BLOCKED', className: '' };
+      head.appendChild(node('span', 'badge ' + scanBadge.className, scanBadge.label));
       card.appendChild(head);
       const grid = node('div', 'evidence-grid');
       evidenceCell(grid, 'Findings', (result.findings || []).length);
       evidenceCell(grid, 'Real fix path', (result.findings || []).filter((item) => item.remediation_mode === 'REAL_APPROVAL_REQUIRED').length);
       evidenceCell(grid, 'Demo suggestions', (result.findings || []).filter((item) => item.remediation_mode === 'DEMO_ONLY').length);
       evidenceCell(grid, 'Scan', result.status);
+      if (s3Review) evidenceCell(grid, 'Technical evidence', result.reason_code);
       evidenceCell(grid, 'GovTech', 'Inference not used');
       card.appendChild(grid);
+      if (s3Review && result.bucket_status) {
+        const buckets = node('div', 'activity');
+        for (const bucket of result.bucket_status) {
+          const protectedState = bucket.state === 'PROTECTED';
+          const row = node('div', 'activity-row' + (protectedState ? '' : ' blocked'));
+          row.appendChild(node('span', 'activity-icon', protectedState ? 'OK' : '!'));
+          row.appendChild(node('span', '', bucket.label));
+          row.appendChild(node('span', 'activity-state', bucket.state));
+          buckets.appendChild(row);
+        }
+        card.appendChild(buckets);
+      }
 
       const findings = node('div', 'scan-findings');
       for (const finding of result.findings || []) {
         const item = node('section', 'scan-finding');
         const findingHead = node('div', 'scan-finding-head');
         findingHead.appendChild(node('div', 'scan-finding-title', finding.title));
-        findingHead.appendChild(node('span', 'badge', finding.severity));
+        const findingBadge = s3Review ? s3Badge(finding.reason_code, finding.severity) : { label: finding.severity, className: '' };
+        findingHead.appendChild(node('span', 'badge ' + findingBadge.className, findingBadge.label));
         item.appendChild(findingHead);
         item.appendChild(node('div', 'scan-finding-meta', `${finding.source_type} · ${finding.resource_alias} · ${finding.reference}`));
         const findingGrid = node('div', 'evidence-grid');
+        evidenceCell(findingGrid, 'Severity', s3Review && finding.severity === 'NOT_APPLICABLE' ? 'CONFIGURATION RISK' : finding.severity);
         evidenceCell(findingGrid, 'Problem', finding.problem_summary);
         evidenceCell(findingGrid, 'Observed', finding.observed_state);
         evidenceCell(findingGrid, 'Recommended', finding.recommended_state);
@@ -427,6 +487,7 @@
       }
       card.appendChild(findings);
       body.appendChild(card);
+      setS3FlowStep(1);
       if (payload.agent) renderHybridAgent(payload.agent, 'Security guidance ready');
     }
 
@@ -508,14 +569,16 @@
       addMessage('user', finding.action_label + ': ' + finding.title);
       if (finding.remediation_mode === 'REAL_APPROVAL_REQUIRED') {
         if (finding.source_type !== 'EC2_PACKAGE') {
-          const body = addMessage('assistant', 'The clean replacement is ready for review. Approve it to replace only this DEMO artifact.');
+          const isS3Risk = finding.source_type === 'S3_BUCKET';
+          if (isS3Risk) setS3FlowStep(3);
+          const body = addMessage('assistant', isS3Risk ? 'Security misconfiguration confirmed. Approve Once to enable all four Block Public Access controls.' : 'The clean replacement is ready for review. Approve it to replace only this DEMO artifact.');
           const card = node('div', 'approval-card');
           const grid = node('div', 'evidence-grid');
           evidenceCell(grid, 'Source', finding.source_type);
           evidenceCell(grid, 'Change', finding.recommended_state);
           evidenceCell(grid, 'After', 'The clean item will be scanned again');
           card.appendChild(grid);
-          const approve = node('button', 'btn approve', 'Approve and fix');
+          const approve = node('button', 'btn approve', isS3Risk ? 'Approve Once' : 'Approve and fix');
           approve.type = 'button';
           approve.addEventListener('click', () => approveDemoFix(finding, approve));
           card.appendChild(approve);
@@ -550,9 +613,10 @@
 
     async function approveDemoFix(finding, button) {
       button.disabled = true;
-      addMessage('user', 'Approve and fix: ' + finding.title);
-      const thinking = addMessage('assistant', 'Applying the approved replacement and checking it again...');
-      const source = finding.source_type === 'S3_ARTIFACT' ? 's3' : 'ecr';
+      if (finding.source_type === 'S3_BUCKET') setS3FlowStep(4);
+      addMessage('user', 'Approve Once: ' + finding.title);
+      const thinking = addMessage('assistant', finding.source_type === 'S3_BUCKET' ? 'Enabling Block Public Access and verifying the protected state...' : 'Applying the approved replacement and checking it again...');
+      const source = finding.source_type === 'S3_BUCKET' || finding.source_type === 'S3_ARTIFACT' ? 's3' : 'ecr';
       try {
         const payload = await post('/api/demo/fix', { source, confirm: true });
         thinking.parentElement.remove();
@@ -569,20 +633,47 @@
       const body = addMessage('assistant', result.message || 'The approved DEMO fix was recorded.');
       const card = node('div', 'result-card');
       const head = node('div', 'result-head');
-      head.appendChild(node('div', 'result-title', 'Approved DEMO fix'));
-      head.appendChild(node('span', 'badge', result.reason_code || result.status || 'BLOCKED'));
+      head.appendChild(node('div', 'result-title', sourceType === 'S3_BUCKET' ? 'Exposure-risk remediation verified' : 'Approved DEMO fix'));
+      const remediationBadge = s3Review && sourceType === 'S3_BUCKET' ? { label: 'CHECK VERIFIED', className: 'protected' } : { label: result.reason_code || result.status || 'BLOCKED', className: '' };
+      head.appendChild(node('span', 'badge ' + remediationBadge.className, remediationBadge.label));
       card.appendChild(head);
       const grid = node('div', 'evidence-grid');
       evidenceCell(grid, 'Source', sourceType);
       evidenceCell(grid, 'Change', result.state || 'Recorded');
       evidenceCell(grid, 'Approval', 'Human approved');
       evidenceCell(grid, 'Next', 'Run the scan again');
+      if (s3Review && sourceType === 'S3_BUCKET') evidenceCell(grid, 'Technical evidence', result.reason_code);
       card.appendChild(grid);
       const rescan = node('button', 'btn primary', 'Scan again');
       rescan.type = 'button';
       rescan.addEventListener('click', () => startScan(rescan));
       card.appendChild(rescan);
+      if (s3Review && sourceType === 'S3_BUCKET') {
+        const reset = node('button', 'btn reject', 'Reopen Finding');
+        reset.type = 'button';
+        reset.addEventListener('click', () => resetS3Demo(reset));
+        card.appendChild(reset);
+      }
       body.appendChild(card);
+      if (sourceType === 'S3_BUCKET') setS3FlowStep(5);
+    }
+
+    async function resetS3Demo(button) {
+      if (!window.confirm('Reopen this finding? Bucket-level protection will be temporarily removed from the private empty test bucket.')) return;
+      button.disabled = true;
+      addMessage('user', 'Reopen Finding');
+      const thinking = addMessage('assistant', 'Checking the approved empty private bucket before reopening the finding...');
+      try {
+        await post('/api/demo/reset', { confirm: true });
+        thinking.parentElement.remove();
+        messages.replaceChildren();
+        welcome.classList.remove('hidden');
+        setS3FlowStep(1);
+      } catch (error) {
+        thinking.textContent = 'The approved DEMO reset was blocked.';
+        thinking.classList.add('error-copy');
+        button.disabled = false;
+      }
     }
 
     async function startRealDemo() {
@@ -796,9 +887,9 @@
       if (scanButton) scanButton.disabled = true;
       if (scanWelcomeButton) scanWelcomeButton.disabled = true;
       const live = demoBackend === 'AWS';
-      setMode(live ? 'Live AWS scan' : 'Demo scan', live);
-      addMessage('user', live ? 'Scan live server' : 'Scan environment');
-      const thinking = addMessage('assistant', 'Checking server packages, stored artifact, and container image...');
+      setMode(s3Review ? 'S3 posture review' : (live ? 'Live AWS scan' : 'Demo scan'), live);
+      addMessage('user', s3Review ? 'Scan S3 bucket' : (live ? 'Scan live server' : 'Scan environment'));
+      const thinking = addMessage('assistant', s3Review ? 'Checking the bucket-level Block Public Access posture...' : 'Checking server packages, stored artifact, and container image...');
       try {
         const payload = await post('/api/scan', { mode:'DEMO' });
         thinking.parentElement.remove();
@@ -935,6 +1026,12 @@
 
     newChat.addEventListener('click', () => { messages.replaceChildren(); welcome.classList.remove('hidden'); inputModeEl.value = 'CVE_REVIEW'; promptEl.value = ''; promptEl.focus(); runId = null; lastLiveProposalId = null; lastLiveProposalHash = null; });
 
+    toggleComposerButton.addEventListener('click', () => {
+      const collapsed = composerWrap.classList.toggle('hidden');
+      toggleComposerButton.textContent = collapsed ? 'Ask SecCop (optional)' : 'Hide Ask SecCop';
+      if (!collapsed) promptEl.focus();
+    });
+
     if (cveWelcomeButton) cveWelcomeButton.addEventListener('click', () => { inputModeEl.value = 'CVE_REVIEW'; promptEl.focus(); });
     document.querySelectorAll('.composer-example').forEach((example) => {
       example.addEventListener('click', () => {
@@ -958,7 +1055,8 @@
         const response = await fetch('/api/health', { cache: 'no-store' });
         const health = await response.json();
         demoBackend = health.demo_backend || 'LOCAL';
-        if (demoBackend === 'AWS' && startRealDemoButton) {
+        if (health.review_mode === 'S3_COMPLIANCE') configureS3Review();
+        if (demoBackend === 'AWS' && !s3Review && startRealDemoButton) {
           scanButton.textContent = 'Scan live server';
           if (scanWelcomeButton) scanWelcomeButton.textContent = 'Scan live server';
           setMode('AWS DEMO', true);
