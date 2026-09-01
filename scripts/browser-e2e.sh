@@ -38,6 +38,16 @@ if ss -ltnH "sport = :${app_port}" | grep -q .; then
 fi
 install -d -m 700 "$evidence_dir"
 
+if [[ "$live_scan_only" == hybrid-local ]]; then
+  SECCOP_AWS_MCP=1 uv run python -c '
+from secure_agent_harness import poc_server as server
+result = server._run_hybrid_startup_proof()
+print(result["reason_code"])
+raise SystemExit(0 if result["status"] == "READY" else 1)
+' >"$evidence_dir/hybrid-startup-proof.txt"
+  export SECCOP_HYBRID_STARTUP_PROVEN=1
+fi
+
 powershell_bin=${POWERSHELL_WSL:-'/mnt/c/Windows/System32/WindowsPowerShell/v1.0/powershell.exe'}
 [[ -x "$powershell_bin" ]] || {
   printf 'Windows PowerShell not found: %s\n' "$powershell_bin" >&2
@@ -92,7 +102,7 @@ for ((attempt = 1; attempt <= 40; attempt++)); do
   }
   sleep 0.25
 done
-if [[ "$live_scan_only" == 1 ]]; then
+if [[ "$live_scan_only" == 1 || "$live_scan_only" == hybrid ]]; then
   jq -e '.status == "OK" and .demo_backend == "AWS"' "$evidence_dir/health.json" >/dev/null
 else
   jq -e '.status == "OK" and .mode == "LOCAL_SYNTHETIC"' "$evidence_dir/health.json" >/dev/null
@@ -192,6 +202,10 @@ screenshots=(
 )
 if [[ "$live_scan_only" == 1 ]]; then
   screenshots=(SecCop-Live-Workspace.png SecCop-Live-Finding.png SecCop-Live-Approval.png)
+elif [[ "$live_scan_only" == hybrid ]]; then
+  screenshots=(SecCop-Live-Workspace.png SecCop-Live-Finding.png SecCop-Live-Approval.png SecCop-Hybrid-After.png SecCop-Hybrid-Clean.png)
+elif [[ "$live_scan_only" == hybrid-local ]]; then
+  screenshots=(SecCop-Live-Workspace.png SecCop-Live-Finding.png SecCop-Hybrid-Knowledge.png)
 elif [[ "$live_scan_only" == codex ]]; then
   screenshots=(SecCop-Codex-Preflight.png SecCop-Codex-Preflight-card.png)
 elif [[ -n "$live_advisory" ]]; then

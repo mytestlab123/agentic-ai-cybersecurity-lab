@@ -14,7 +14,9 @@ const cdpUrl = process.env.CDP_URL;
 const evidenceDir = process.env.EVIDENCE_DIR;
 const reviewDir = process.env.REVIEW_DIR;
 const liveAdvisory = process.env.LIVE_ADVISORY;
-const liveScanOnly = process.env.LIVE_SCAN_ONLY === '1';
+const liveScanOnly = ['1', 'hybrid', 'hybrid-local'].includes(process.env.LIVE_SCAN_ONLY);
+const hybridLive = process.env.LIVE_SCAN_ONLY === 'hybrid';
+const hybridFixture = process.env.LIVE_SCAN_ONLY === 'hybrid-local';
 const codexPreflight = process.env.LIVE_SCAN_ONLY === 'codex';
 if (!appUrl || !cdpUrl || !evidenceDir || !reviewDir) {
   throw new Error('APP_URL, CDP_URL, EVIDENCE_DIR, and REVIEW_DIR are required');
@@ -94,17 +96,32 @@ try {
     });
   } else if (liveScanOnly) {
     const health = await page.evaluate(async () => (await fetch('/api/health')).json());
-    assert(health.demo_backend === 'AWS', 'The live scan runner did not reach the AWS backend');
-    const scanResponsePromise = page.waitForResponse((item) => item.url().endsWith('/api/scan'), { timeout: 180_000 });
+    assert(hybridFixture ? health.demo_backend === 'LOCAL' : health.demo_backend === 'AWS', 'The scan runner reached the wrong backend');
+    const scanResponsePromise = page.waitForResponse((item) => item.url().endsWith('/api/scan'), { timeout: 360_000 });
     await page.locator('#scan-environment').click();
     const scanPayload = await (await scanResponsePromise).json();
     assert(scanPayload.result.status === 'READY', 'The server-owned live scan was not READY');
-    assert(scanPayload.result.findings.length === 1, 'The live scan did not select exactly one finding');
+    assert(hybridFixture ? scanPayload.result.findings.length === 3 : scanPayload.result.findings.length === 1, 'The scan returned an unexpected finding count');
     assert(scanPayload.result.findings[0].source_type === 'EC2_PACKAGE', 'The live finding was not an EC2 package');
-    assert(!JSON.stringify(scanPayload).match(/arn:|i-[0-9a-f]{8,17}/), 'A private AWS identifier was exposed');
+    if (hybridLive || hybridFixture) {
+      assert(scanPayload.agent?.reason_code === 'HYBRID_INTEGRATION_READY', 'The hybrid integration was not ready');
+      assert(scanPayload.agent.aws_evidence_status === (hybridFixture ? 'DETERMINISTIC_FIXTURE' : 'SECCOP_ADAPTER'), 'The evidence source was not truthful');
+      assert(scanPayload.agent.aws_mcp_status === 'AWS_MCP_KNOWLEDGE_ONLY', 'The AWS MCP role was not truthful');
+    }
+    assert(!JSON.stringify(scanPayload).match(/arn:|i-[0-9a-f]{8,17}|\\Users\\|\/home\/|\/mnt\//), 'Private backend data was exposed');
     await page.locator('.composer-wrap').evaluate((element) => { element.style.display = 'none'; });
     await shot('SecCop-Live-Workspace.png', { fullPage: true });
     await focusedShot(page.locator('.scan-finding').first(), 'SecCop-Live-Finding.png');
+    if (hybridFixture) {
+      await focusedShot(page.locator('.hybrid-agent-card').first(), 'SecCop-Hybrid-Knowledge.png');
+      await saveJson('hybrid-local-state.json', {
+        finding: scanPayload.agent.reason_code,
+        evidence: scanPayload.agent.aws_evidence_status,
+        mcp_role: scanPayload.agent.aws_mcp_status,
+        mcp_mode: scanPayload.agent.aws_mcp_mode,
+        activity: scanPayload.agent.tool_activity,
+      });
+    } else {
 
     const proposalResponsePromise = page.waitForResponse((item) => item.url().endsWith('/api/live-scan-proposal'), { timeout: 180_000 });
     await page.getByRole('button', { name: 'Review live fix', exact: true }).click();
@@ -131,6 +148,45 @@ try {
     assert((wrongBinding.result || wrongBinding).reason_code === 'PROPOSAL_BINDING_MISMATCH', 'Wrong approval binding was not denied');
     const expectedConflict = consoleErrors.findIndex((message) => message.includes('status of 409'));
     if (expectedConflict >= 0) consoleErrors.splice(expectedConflict, 1);
+    if (hybridLive) {
+      const rejected = await page.evaluate(async ({ proposalId, proposalHash }) => {
+        const response = await fetch('/api/live-decision', { method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify({ proposal_id:proposalId, proposal_hash:proposalHash, decision:'REJECT' }) });
+        return response.json();
+      }, { proposalId:proposal.proposal_id, proposalHash:proposal.proposal_hash });
+      assert(rejected.result.reason_code === 'HUMAN_REJECTED', 'Reject did not fail closed');
+      const rejectedRun = await page.evaluate(async ({ proposalId, proposalHash }) => {
+        const response = await fetch('/api/live-remediation', { method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify({ proposal_id:proposalId, proposal_hash:proposalHash, reboot_approved:false }) });
+        return response.json();
+      }, { proposalId:proposal.proposal_id, proposalHash:proposal.proposal_hash });
+      assert(rejectedRun.result.reason_code === 'SSM_APPROVAL_REQUIRED', 'Rejected proposal could execute');
+
+      const secondProposalResponse = page.waitForResponse((item) => item.url().endsWith('/api/live-scan-proposal'), { timeout: 180_000 });
+      await page.getByRole('button', { name: 'Review live fix', exact: true }).click();
+      const secondProposal = (await (await secondProposalResponse).json()).result;
+      const remediationResponse = page.waitForResponse((item) => item.url().endsWith('/api/live-remediation'), { timeout: 300_000 });
+      await page.getByRole('button', { name: 'Approve exact package fix', exact: true }).last().click();
+      const remediationPayload = await (await remediationResponse).json();
+      assert(remediationPayload.result.mutation_performed === true, 'The approved package fix was not performed');
+      assert(['VERIFIED', 'PENDING_RESCAN'].includes(remediationPayload.result.verification_status), 'The follow-up status was not truthful');
+      assert(remediationPayload.result.agent_after?.reason_code === 'HYBRID_AFTER_EXPLAINED', 'The same-thread after explanation was not ready');
+      assert(!JSON.stringify(remediationPayload).match(/arn:|i-[0-9a-f]{8,17}|\\Users\\|\/home\/|\/mnt\//), 'Private backend data was exposed after remediation');
+      await focusedShot(page.locator('.hybrid-agent-card').last(), 'SecCop-Hybrid-After.png');
+
+      const rescanResponse = page.waitForResponse((item) => item.url().endsWith('/api/scan'), { timeout: 180_000 });
+      await page.locator('#scan-environment').click();
+      const rescanPayload = await (await rescanResponse).json();
+      assert(rescanPayload.result.status === 'NO_FINDINGS', 'The verified package was not clean on rescan');
+      await focusedShot(page.locator('.result-card').last(), 'SecCop-Hybrid-Clean.png');
+      await saveJson('hybrid-live-state.json', {
+        finding: scanPayload.agent.reason_code,
+        mcp_role: scanPayload.agent.aws_mcp_status,
+        rejected: rejected.result.reason_code,
+        approved_proposal: secondProposal.status,
+        verification: remediationPayload.result.verification_status,
+        after: remediationPayload.result.agent_after.reason_code,
+        rescan: rescanPayload.result.status,
+      });
+    }
     await saveJson('live-scan-state.json', {
       scan_status: scanPayload.result.status,
       proposal_status: proposal.status,
@@ -138,6 +194,7 @@ try {
       binding_denial: (wrongBinding.result || wrongBinding).reason_code,
       mutation_performed: false,
     });
+    }
   } else if (liveAdvisory) {
     await page.locator('#advisory-upload').setInputFiles(liveAdvisory);
     const checkResponse = page.waitForResponse((item) => item.url().endsWith('/api/live-advisory'), { timeout: 60_000 });
