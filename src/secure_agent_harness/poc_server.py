@@ -49,6 +49,7 @@ from .seccop_scan import review_demo_cve, run_demo_scan
 
 _HTML_PATH = Path(__file__).resolve().parents[2] / "web" / "poc_chat.html"
 _DEMO_SCRIPT = Path(__file__).resolve().parents[2] / "scripts" / "seccop_demo.py"
+_S3_COMPLIANCE_SCRIPT = Path(__file__).resolve().parents[2] / "scripts" / "issue47_s3_compliance.py"
 _ENGINE = PocEngine()
 _SECCOP_PROPOSALS: dict[str, SecCopRemediationProposal] = {}
 _SECCOP_REQUESTS: dict[str, SecCopCsvRequest] = {}
@@ -56,6 +57,7 @@ _SECCOP_ADVISORIES: dict[str, SecCopAdvisoryRequest] = {}
 _SECCOP_TARGET_IDS: dict[str, str] = {}
 _SERVER_SCAN_REQUEST: SecCopAdvisoryRequest | None = None
 _HYBRID_SESSION: "_HybridSession | None" = None
+_S3_APPROVAL_READY = False
 
 
 @dataclass(frozen=True)
@@ -530,6 +532,20 @@ def _run_real_demo(command: str, *, source: str | None = None) -> dict[str, obje
             "reason_code": "AWS_DEMO_DISABLED",
             "message": "The local server is using synthetic mode. Enable the AWS DEMO backend explicitly.",
         }
+    global _S3_APPROVAL_READY
+    if os.environ.get("SECCOP_S3_COMPLIANCE_E2E") == "1":
+        mapped = {"scan": "scan", "fix": "apply"}.get(command)
+        if mapped is None or (mapped == "apply" and (source != "s3" or not _S3_APPROVAL_READY)):
+            return {"status": "BLOCKED", "reason_code": "APPROVAL_REQUIRED", "message": "Approve the exact S3 proposal before remediation."}
+        args = [sys.executable, str(_S3_COMPLIANCE_SCRIPT), mapped, "--profile", os.environ["SECCOP_PROFILE"], "--region", os.environ["AWS_REGION"], "--bucket", os.environ["SECCOP_S3_BUCKET"]]
+        completed = subprocess.run(args, capture_output=True, text=True, check=False, timeout=120, env=os.environ.copy())
+        try:
+            payload = json.loads(completed.stdout)
+        except json.JSONDecodeError:
+            return {"status": "BLOCKED", "reason_code": "SECCOP_S3_BACKEND_BLOCKED", "message": "The S3 operation was blocked."}
+        if mapped == "scan" and payload.get("reason_code") == "SECCOP_S3_NON_COMPLIANT": _S3_APPROVAL_READY = True
+        if mapped == "apply" and payload.get("status") == "VERIFIED": _S3_APPROVAL_READY = False
+        return payload
     allowed_commands = {"start", "scan", "rescan", "fix"}
     if command not in allowed_commands:
         return {"status": "BLOCKED", "reason_code": "REQUEST_REJECTED", "message": "The DEMO command was not allowed."}
@@ -1082,6 +1098,9 @@ class _Handler(BaseHTTPRequestHandler):
                 SecCopScanRequest.model_validate(payload)
             except ValidationError:
                 self._send_json(400, {"status": "BLOCKED", "reason_code": "REQUEST_REJECTED"})
+                return
+            if os.environ.get("SECCOP_S3_COMPLIANCE_E2E") == "1":
+                self._send_json(200, {"result": _run_real_demo("scan"), "events": []})
                 return
             fixture_hybrid = os.environ.get("SECCOP_HYBRID_FIXTURE") == "1"
             scan = _live_server_scan() if _real_demo_enabled() else _fixture_hybrid_scan() if fixture_hybrid else run_demo_scan()
