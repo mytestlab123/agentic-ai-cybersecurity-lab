@@ -1052,6 +1052,7 @@ class _Handler(BaseHTTPRequestHandler):
                     "status": "OK",
                     "mode": "AWS_DEMO" if _real_demo_enabled() else "LOCAL_SYNTHETIC",
                     "demo_backend": "AWS" if _real_demo_enabled() else "LOCAL",
+                    "review_mode": "S3_COMPLIANCE" if os.environ.get("SECCOP_S3_COMPLIANCE_E2E") == "1" else "GENERAL",
                 },
             )
             return

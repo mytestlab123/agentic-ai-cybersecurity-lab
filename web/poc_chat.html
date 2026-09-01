@@ -92,6 +92,8 @@
     .result-head { display:flex; align-items:center; justify-content:space-between; gap:12px; margin-bottom:13px; }
     .result-title { font-size:.85rem; font-weight:650; }
     .badge { padding:4px 8px; color:#fbe2a4; background:#483b1e; border:1px solid #725d2a; border-radius:999px; font-size:.7rem; font-weight:700; }
+    .badge.action-required { color:#ffd2d2; background:#552626; border-color:#9c4545; }
+    .badge.protected { color:#d9f8e9; background:#18352b; border-color:#34795e; }
     .evidence-grid { display:grid; grid-template-columns:repeat(3,minmax(0,1fr)); gap:8px; }
     .evidence-cell { padding:9px 10px; background:#242424; border-radius:7px; }
     .evidence-label { color:#818181; font-size:.68rem; text-transform:uppercase; letter-spacing:.05em; }
@@ -151,7 +153,7 @@
       </div>
       <div class="scan-panel">
         <div class="side-label" style="padding:0">DEMO</div>
-        <div class="usage-note">Check the server, stored file, and container image together.</div>
+        <div id="scan-note" class="usage-note">Check the server, stored file, and container image together.</div>
         <button id="scan-environment" type="button">Scan environment</button>
         <button id="start-real-demo" type="button" hidden>Start AWS DEMO</button>
       </div>
@@ -191,10 +193,10 @@
 
     <main class="main">
       <header class="topbar">
-        <div><div class="eyebrow">SECCOP POC</div><h1>Vulnerability review</h1></div>
+        <div><div class="eyebrow">SECCOP POC</div><h1 id="review-title">Vulnerability review</h1></div>
         <div id="mode-status" class="status-pill"><span class="mode-dot"></span>Offline demo</div>
       </header>
-      <div class="safety-banner"><strong>Safe demo boundary.</strong> Paste one CVE to check all demo sources. A server change always needs a separate review and approval.</div>
+      <div id="safety-banner" class="safety-banner"><strong>Safe demo boundary.</strong> Paste one CVE to check all demo sources. A server change always needs a separate review and approval.</div>
 
       <section class="chat" aria-live="polite">
         <div class="flow-strip" aria-label="Operator workflow">
@@ -202,8 +204,8 @@
         </div>
         <div id="welcome" class="welcome">
           <div class="welcome-mark">S</div>
-          <h2>What would you like to check?</h2>
-          <p>Paste one CVE to check the demo environment, or scan all three sources.</p>
+          <h2 id="welcome-title">What would you like to check?</h2>
+          <p id="welcome-copy">Paste one CVE to check the demo environment, or scan all three sources.</p>
           <div class="welcome-actions">
             <button id="codex-preflight" class="btn primary" type="button">Check Codex connection</button>
             <button id="cve-welcome" class="btn primary" type="button">Check a CVE</button>
@@ -213,7 +215,8 @@
         <div id="messages" class="messages"></div>
       </section>
 
-      <div class="composer-wrap">
+      <button id="toggle-composer" class="btn primary hidden" type="button">Ask SecCop (optional)</button>
+      <div id="composer-wrap" class="composer-wrap">
         <form id="run-form" class="composer">
           <div class="composer-toolbar"><span>Ask SecCop</span><select id="input-mode" aria-label="What to check"><option value="CVE_REVIEW">Check a CVE</option><option value="SYNTHETIC_LAB">Run guided example</option></select></div>
           <div class="composer-row">
@@ -235,6 +238,13 @@
     const inputModeEl = document.querySelector('#input-mode');
     const runButton = document.querySelector('#run');
     const codexPreflightButton = document.querySelector('#codex-preflight');
+    const composerWrap = document.querySelector('#composer-wrap');
+    const toggleComposerButton = document.querySelector('#toggle-composer');
+    const reviewTitle = document.querySelector('#review-title');
+    const safetyBanner = document.querySelector('#safety-banner');
+    const welcomeTitle = document.querySelector('#welcome-title');
+    const welcomeCopy = document.querySelector('#welcome-copy');
+    const scanNote = document.querySelector('#scan-note');
     const scanButton = document.querySelector('#scan-environment');
     const cveWelcomeButton = document.querySelector('#cve-welcome');
     const scanWelcomeButton = document.querySelector('#scan-welcome');
@@ -258,6 +268,30 @@
     let lastLiveProposalId = null;
     let lastLiveProposalHash = null;
     let demoBackend = 'LOCAL';
+    let s3Review = false;
+
+    function s3Badge(reasonCode, fallback) {
+      if (reasonCode === 'SECCOP_S3_NON_COMPLIANT') return { label: 'X ACTION REQUIRED', className: 'action-required' };
+      if (reasonCode === 'SECCOP_S3_COMPLIANT' || reasonCode === 'SECCOP_S3_EXPOSURE_RISK_REMEDIATED') return { label: 'CHECK PROTECTED', className: 'protected' };
+      return { label: fallback, className: '' };
+    }
+
+    function configureS3Review() {
+      s3Review = true;
+      document.title = 'Security Copilot - S3 Security Posture Review';
+      reviewTitle.textContent = 'S3 Security Posture Review';
+      safetyBanner.innerHTML = '<strong>S3 review boundary.</strong> Scan and recommendation are safe; a human must approve every AWS change.';
+      welcomeTitle.textContent = 'Review S3 security posture';
+      welcomeCopy.textContent = 'Scan the retained private bucket and review the exact Block Public Access recommendation.';
+      scanNote.textContent = 'Check one private bucket for Block Public Access drift.';
+      scanButton.textContent = 'Scan S3 bucket';
+      if (scanWelcomeButton) scanWelcomeButton.textContent = 'Scan S3 bucket';
+      document.querySelectorAll('.source-tab').forEach((tab) => tab.classList.toggle('active', tab.textContent === 'S3'));
+      if (codexPreflightButton) codexPreflightButton.classList.add('hidden');
+      if (cveWelcomeButton) cveWelcomeButton.classList.add('hidden');
+      composerWrap.classList.add('hidden');
+      toggleComposerButton.classList.remove('hidden');
+    }
     const labels = {
       mock_inspector_finding: 'Inspector finding lookup',
       mock_instance_context: 'EC2 instance context',
@@ -394,13 +428,15 @@
       const card = node('div', 'result-card');
       const head = node('div', 'result-head');
       head.appendChild(node('div', 'result-title', 'Security scan summary'));
-      head.appendChild(node('span', 'badge', result.reason_code || result.status || 'BLOCKED'));
+      const scanBadge = s3Review ? s3Badge(result.reason_code, result.status || 'BLOCKED') : { label: result.reason_code || result.status || 'BLOCKED', className: '' };
+      head.appendChild(node('span', 'badge ' + scanBadge.className, scanBadge.label));
       card.appendChild(head);
       const grid = node('div', 'evidence-grid');
       evidenceCell(grid, 'Findings', (result.findings || []).length);
       evidenceCell(grid, 'Real fix path', (result.findings || []).filter((item) => item.remediation_mode === 'REAL_APPROVAL_REQUIRED').length);
       evidenceCell(grid, 'Demo suggestions', (result.findings || []).filter((item) => item.remediation_mode === 'DEMO_ONLY').length);
       evidenceCell(grid, 'Scan', result.status);
+      if (s3Review) evidenceCell(grid, 'Technical evidence', result.reason_code);
       evidenceCell(grid, 'GovTech', 'Inference not used');
       card.appendChild(grid);
 
@@ -409,7 +445,8 @@
         const item = node('section', 'scan-finding');
         const findingHead = node('div', 'scan-finding-head');
         findingHead.appendChild(node('div', 'scan-finding-title', finding.title));
-        findingHead.appendChild(node('span', 'badge', finding.severity));
+        const findingBadge = s3Review ? s3Badge(finding.reason_code, finding.severity) : { label: finding.severity, className: '' };
+        findingHead.appendChild(node('span', 'badge ' + findingBadge.className, findingBadge.label));
         item.appendChild(findingHead);
         item.appendChild(node('div', 'scan-finding-meta', `${finding.source_type} · ${finding.resource_alias} · ${finding.reference}`));
         const findingGrid = node('div', 'evidence-grid');
@@ -571,13 +608,15 @@
       const card = node('div', 'result-card');
       const head = node('div', 'result-head');
       head.appendChild(node('div', 'result-title', sourceType === 'S3_BUCKET' ? 'Exposure-risk remediation verified' : 'Approved DEMO fix'));
-      head.appendChild(node('span', 'badge', result.reason_code || result.status || 'BLOCKED'));
+      const remediationBadge = s3Review && sourceType === 'S3_BUCKET' ? { label: 'CHECK VERIFIED', className: 'protected' } : { label: result.reason_code || result.status || 'BLOCKED', className: '' };
+      head.appendChild(node('span', 'badge ' + remediationBadge.className, remediationBadge.label));
       card.appendChild(head);
       const grid = node('div', 'evidence-grid');
       evidenceCell(grid, 'Source', sourceType);
       evidenceCell(grid, 'Change', result.state || 'Recorded');
       evidenceCell(grid, 'Approval', 'Human approved');
       evidenceCell(grid, 'Next', 'Run the scan again');
+      if (s3Review && sourceType === 'S3_BUCKET') evidenceCell(grid, 'Technical evidence', result.reason_code);
       card.appendChild(grid);
       const rescan = node('button', 'btn primary', 'Scan again');
       rescan.type = 'button';
@@ -797,9 +836,9 @@
       if (scanButton) scanButton.disabled = true;
       if (scanWelcomeButton) scanWelcomeButton.disabled = true;
       const live = demoBackend === 'AWS';
-      setMode(live ? 'Live AWS scan' : 'Demo scan', live);
-      addMessage('user', live ? 'Scan live server' : 'Scan environment');
-      const thinking = addMessage('assistant', 'Checking server packages, stored artifact, and container image...');
+      setMode(s3Review ? 'S3 posture review' : (live ? 'Live AWS scan' : 'Demo scan'), live);
+      addMessage('user', s3Review ? 'Scan S3 bucket' : (live ? 'Scan live server' : 'Scan environment'));
+      const thinking = addMessage('assistant', s3Review ? 'Checking the bucket-level Block Public Access posture...' : 'Checking server packages, stored artifact, and container image...');
       try {
         const payload = await post('/api/scan', { mode:'DEMO' });
         thinking.parentElement.remove();
@@ -936,6 +975,12 @@
 
     newChat.addEventListener('click', () => { messages.replaceChildren(); welcome.classList.remove('hidden'); inputModeEl.value = 'CVE_REVIEW'; promptEl.value = ''; promptEl.focus(); runId = null; lastLiveProposalId = null; lastLiveProposalHash = null; });
 
+    toggleComposerButton.addEventListener('click', () => {
+      const collapsed = composerWrap.classList.toggle('hidden');
+      toggleComposerButton.textContent = collapsed ? 'Ask SecCop (optional)' : 'Hide Ask SecCop';
+      if (!collapsed) promptEl.focus();
+    });
+
     if (cveWelcomeButton) cveWelcomeButton.addEventListener('click', () => { inputModeEl.value = 'CVE_REVIEW'; promptEl.focus(); });
     document.querySelectorAll('.composer-example').forEach((example) => {
       example.addEventListener('click', () => {
@@ -959,7 +1004,8 @@
         const response = await fetch('/api/health', { cache: 'no-store' });
         const health = await response.json();
         demoBackend = health.demo_backend || 'LOCAL';
-        if (demoBackend === 'AWS' && startRealDemoButton) {
+        if (health.review_mode === 'S3_COMPLIANCE') configureS3Review();
+        if (demoBackend === 'AWS' && !s3Review && startRealDemoButton) {
           scanButton.textContent = 'Scan live server';
           if (scanWelcomeButton) scanWelcomeButton.textContent = 'Scan live server';
           setMode('AWS DEMO', true);
