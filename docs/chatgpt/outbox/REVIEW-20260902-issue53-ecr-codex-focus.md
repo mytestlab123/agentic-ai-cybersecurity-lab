@@ -1,6 +1,8 @@
-# ChatGPT STRICT / FOCUS contract — Issue #53
+# ChatGPT STRICT / FOCUS contract — Issue #53 v2
 
 Canonical Issue: https://github.com/mytestlab123/agentic-ai-cybersecurity-lab/issues/53
+
+Implementation PR: https://github.com/mytestlab123/agentic-ai-cybersecurity-lab/pull/54
 
 Collaboration protocol: https://gist.github.com/amitkarpe/c8d29ad89cafe3ba178fcae29de3c238
 
@@ -10,149 +12,246 @@ Implementation branch:
 chatgpt/issue53-ecr-codex-focus
 ```
 
-This file is the anti-drift contract for the implementation PR. The Issue defines **what** must be proven. This PR/branch defines **where Codex must implement it**. Do not create a replacement implementation branch or a second overlapping PR unless Amit explicitly asks.
+The Issue defines **WHAT** must be proven. PR #54/this branch defines **WHERE** Codex implements it. Do not create a replacement implementation Issue, branch, or PR unless Amit explicitly asks.
 
 ## One outcome only
 
-Prove exactly one repeatable SecCop operator journey:
-
 ```text
-real vulnerable ECR image
-  -> ECR Enhanced Scanning / Amazon Inspector produces one real finding
-  -> current SecCop GUI sends sanitized real BEFORE evidence to one real Codex App Server thread
-  -> Codex explains the finding and recommends the existing bounded ECR clean-image action
-  -> existing SecCop proposal says APPROVAL REQUIRED
-  -> Reject proves zero mutation
+real vulnerable ECR digest
+  -> ECR Enhanced Scanning / Amazon Inspector finding
+  -> real user request reaches Codex App Server
+  -> SAME Codex thread gets sanitized real BEFORE facts
+  -> Codex explains/recommends from those facts
+  -> exact proposal-bound clean-digest promotion
+  -> APPROVAL REQUIRED
+  -> Reject = zero mutation
   -> fresh proposal + Approve Once
-  -> existing bounded ECR promotion/rebuild path runs
-  -> fresh AWS-native ECR/Inspector after-state is read
-  -> the SAME Codex thread receives sanitized AFTER evidence
-  -> Codex explains VERIFIED / PENDING_RESCAN / FAILED truthfully
+  -> existing bounded ECR promotion path
+  -> demo-current == exact approved clean digest
+  -> Inspector proves target CVE absent on THAT digest
+  -> SAME Codex thread gets sanitized AFTER facts
+  -> Codex explains truthful final state
 ```
 
-Nothing else is the objective of this PR.
+Nothing else is the objective.
 
-## Non-negotiable architecture
+---
+
+# Non-negotiable truth boundaries
+
+- **Codex App Server** = conversation/reasoning layer.
+- **Amazon ECR Enhanced Scanning / Amazon Inspector** = AWS-native vulnerability evidence source.
+- **SecCop proposal + policy + one-time approval + executor** = only mutation authority.
+- **AWS MCP / Agent Toolkit** = optional knowledge tooling only unless a real run proves more.
+- **Local Trivy** may remain secondary evidence but cannot satisfy #53 scanner or verification acceptance by itself.
+
+Do not call this autonomous AWS remediation. Do not give Codex generic shell/AWS CLI/AWS MCP write authority.
+
+---
+
+# Critical prior gaps that #53 must actually close
+
+## PR #52 gap
+
+PR #52 uses AWS ECR for storage but LOCAL_TRIVY as scanner. It also uses `_ECR_APPROVAL_READY` boolean state for the simple ECR operator lane.
+
+For #53:
+
+1. scanner evidence must be real ECR Enhanced Scanning / Amazon Inspector;
+2. approval must become proposal-bound to exact target/action/pre-state, not just a readiness boolean.
+
+## PR #46 gap
+
+PR #46 proves a real Codex App Server connection plus AWS-MCP knowledge-only integration. It does not prove a full real AWS before/after journey through one Codex thread.
+
+For #53:
+
+1. user's natural-language request must actually participate in the Codex turn;
+2. real sanitized BEFORE facts must be sent to the real thread;
+3. Codex must generate the explanation/recommendation from those facts;
+4. sanitized AFTER facts must go to the **same** thread;
+5. no fixed backend sentence may be represented as Codex output.
+
+---
+
+# STRICT execution order
+
+## Gate 0A — registry scanning safety
+
+Enhanced Scanning is a private-registry scanning configuration for a Region and is narrowed with repository filters.
+
+Before any real scanner configuration mutation:
+
+1. privately read/snapshot the current registry scanning configuration;
+2. determine whether the demo repository is already covered;
+3. if a change is required, present Amit the exact BEFORE -> AFTER config;
+4. prefer an exact/narrow repository filter with `SCAN_ON_PUSH` for this POC unless continuous scanning is required and justified;
+5. do not enable wildcard/all-repository continuous scanning merely for the demo;
+6. keep the exact restore configuration and cleanup command.
+
+Official references:
+
+- https://docs.aws.amazon.com/AmazonECR/latest/userguide/image-scanning-enhanced-enabling.html
+- https://docs.aws.amazon.com/AmazonECR/latest/userguide/image-scanning-filters.html
+
+No real change before Amit explicitly approves the exact profile/Region/config/cost/restore plan.
+
+## Gate 0B — pre-scan BOTH digests for a fast demo
+
+Prefer to establish this before wiring product behavior:
 
 ```text
-SecCop GUI
-    |
-    v
-existing SecCop Python backend
-    |
-    +--> narrow real ECR / Inspector evidence adapter
-    |        |
-    |        +--> sanitized aliases/facts only
-    |                  |
-    |                  v
-    +------------> Codex App Server
-    |                  |
-    |                  +--> same thread for BEFORE + AFTER
-    |
-    v
-existing exact proposal / deterministic policy
-    |
-    v
-Approve Once / Reject
-    |
-    v
-existing bounded ECR mutation path
-    |
-    v
-fresh AWS-native verification
+VULNERABLE_DIGEST
+  Enhanced Scan ready
+  TARGET_CVE = PRESENT
+
+CLEAN_DIGEST
+  Enhanced Scan ready
+  TARGET_CVE = ABSENT
 ```
 
-### Authority rule
+Then the live approved action can promote/re-tag the already-scanned clean digest, avoiding avoidable Inspector wait time during the presentation.
 
-- **Codex App Server** = reasoning/conversation layer.
-- **Amazon ECR Enhanced Scanning / Amazon Inspector** = AWS-native vulnerability evidence source for this milestone.
-- **SecCop deterministic proposal + approval + executor** = only mutation authority.
+Start with urllib3 / `CVE-2019-11324` only if Inspector actually reports it. Do not hard-code the CVE before proof. If it is not reproducible, choose one similarly small deterministic package CVE and record why.
 
-Do not route the ECR write through generic Codex shell, generic AWS MCP, `run_script`, unrestricted AWS CLI, or a new agent framework.
+If a practical AWS-native finding cannot be produced, **STOP**. Leave PR #54 draft and report the blocker. Never silently substitute Trivy and declare success.
 
-## Critical corrections that MUST survive implementation
+## Gate 1 — exact digest correlation
 
-1. **PR #52 is not AWS-native scanning proof.** It uses AWS ECR for storage and local Trivy for scanning. Trivy may remain optional secondary evidence, but #53 is not complete until an AWS-native ECR Enhanced Scanning / Inspector finding is proven.
-
-2. **PR #46 is not end-to-end Codex agent proof.** It proves real Codex App Server connectivity plus a knowledge-only AWS MCP lane. Do not present deterministic/server-composed explanation text as if Codex generated it.
-
-3. **AWS MCP is optional for #53.** The previous `--read-only` runtime exposed documentation/skill tools but no useful Inspector/EC2/SSM account-resource reads. Do not make direct AWS MCP reads a blocker and do not credit AWS MCP with the finding unless a real run proves that exact path.
-
-4. **Do not claim Agent Toolkit runtime integration unless actually installed and exercised.** No marketing-by-label.
-
-## STRICT execution order
-
-### Gate 0 — prove scanner truth before GUI/product wiring
-
-Before hard-coding a CVE or changing the GUI around a scanner result, privately prove in the approved personal/test AWS account that:
-
-- the bounded ECR repository/config is covered by Enhanced Scanning;
-- Amazon Inspector actually reports one reproducible package CVE for the vulnerable image;
-- the clean image does not report that same CVE, or the after-state is truthfully `PENDING_RESCAN`;
-- expected scan latency is practical for the demo;
-- exact read APIs and any scanner-configuration mutation are known;
-- cost and cleanup/restore implications are known.
-
-Start by testing the current urllib3 / `CVE-2019-11324` image only if Inspector Enhanced Scanning actually detects it. **Do not hard-code the UI/tests around that CVE before real proof.** If it is not reproducible, choose one similarly small deterministic package CVE that Inspector reliably detects and record why.
-
-If no practical AWS-native finding can be produced, **STOP** and comment the blocker on #53 and this PR. Do not silently fall back to Trivy and call the milestone complete.
-
-### Gate 1 — map one real AWS-native finding
-
-Add only the narrow adapter needed to map one real ECR/Inspector finding into the existing SecCop finding contract.
-
-Public-safe fields only:
+Privately correlate:
 
 ```text
-resource_alias
-storage_provider = AWS_ECR
-scanner_provider = AMAZON_INSPECTOR / ECR_ENHANCED_SCANNING
-cve_id
-package_name
-installed/vulnerable version when available
+repository
+current tag alias (demo-current or existing equivalent)
+vulnerable digest
+target CVE
+package/version evidence
+approved clean digest
+```
+
+Use Inspector's exact ECR image hash/digest correlation internally (`ecrImageHash` is available in Inspector finding filters).
+
+Public rendering remains aliases only. Never expose repository URI, raw digest, ARN, account ID, raw Inspector payload, auth/session token, private path, or private log.
+
+## Gate 2 — real user request + real Codex BEFORE turn
+
+The natural-language GUI path is functional, not cosmetic.
+
+Example:
+
+```text
+Investigate the vulnerable ECR image, explain the risk, and remediate it safely.
+```
+
+The user's bounded text must actually be part of the Codex turn. Do not ignore it and replace the interaction with only a fixed backend prompt.
+
+The backend still owns resource identity and mutation authority. User text cannot supply repository URI, digest, AWS command, or write target.
+
+Send only sanitized real facts to Codex:
+
+```text
+resource alias
+storage = AWS_ECR
+scanner = ECR_ENHANCED_SCANNING / AMAZON_INSPECTOR
+target CVE
+package/version evidence
 severity
-fixed/clean state when available
+allowed clean-state recommendation
 ```
 
-No account IDs, ARNs, repository URIs, raw image digests, raw Inspector payloads, auth/session tokens, private filesystem paths, or private logs may reach the browser or Git.
+Codex's response must be the actual App Server response generated from these facts.
 
-### Gate 2 — feed REAL BEFORE evidence to the existing Codex thread
+## Gate 3 — proposal-bound ECR authority
 
-Reuse the App Server bridge from PRs #45/#46. Do not build another agent loop.
+Do not carry `_ECR_APPROVAL_READY` boolean as the final authorization contract.
 
-The actual Codex turn must receive the sanitized real AWS facts and generate the explanation/recommendation. Remove/avoid any fixed server-generated sentence that could be mistaken for a Codex answer.
-
-The browser should show only sanitized response text and safe state/tool metadata.
-
-### Gate 3 — preserve SecCop approval authority
-
-Reuse the current ECR proposal and mutation path from PR #52.
-
-Required proof:
+Reuse SecCop's existing proposal hash/expiry/one-time approval concepts and bind the ECR proposal privately to at least:
 
 ```text
-Reject -> zero ECR mutation
-Approve Once -> exact bounded ECR action
-wrong/replayed/drifted approval -> denied by existing authority
+proposal_id / version
+repository alias
+current tag alias
+expected vulnerable digest
+approved clean digest
+target CVE
+exact action = promote approved clean digest
+expected pre-state hash
+expiry
+proposal hash
 ```
 
-Do not widen the write surface just because Codex is now present.
+Required:
 
-### Gate 4 — AWS-native after-state + same Codex thread
+```text
+Reject -> zero mutation
+Approve Once -> one exact promotion
+replay -> DENY
+expired -> DENY
+demo-current changed/drift -> DENY
+wrong target/action -> DENY
+```
 
-After the approved action:
+Immediately before promotion, re-read `demo-current` privately and prove it still resolves to the proposal-bound vulnerable digest.
 
-- obtain a fresh ECR Enhanced Scanning / Inspector result;
-- determine the exact target CVE state;
-- return only `VERIFIED`, `PENDING_RESCAN`, or `FAILED`;
-- send sanitized AFTER facts to the **same Codex thread**;
-- show Codex's after-state explanation in the current GUI.
+## Gate 4 — fast AWS-native AFTER verification
 
-`VERIFIED` requires AWS-native evidence that the target CVE is absent from the current/promoted image. Local Trivy alone cannot satisfy #53 verification.
+After approval:
 
-## Expected implementation files
+1. promote/re-tag only the proposal-bound clean digest;
+2. re-read `demo-current` and prove it equals that exact clean digest;
+3. prove AWS-native scanner evidence for the clean digest is usable/current;
+4. query Inspector findings for the exact clean `ecrImageHash` and target CVE;
+5. select only a truthful final state.
 
-Prefer modifying only existing paths already used by #52/#46:
+```text
+VERIFIED
+  = demo-current == approved clean digest
+    AND scanner evidence for that digest is ready
+    AND target CVE is absent for that exact digest
+
+PENDING_RESCAN
+  = demo-current == approved clean digest
+    BUT AWS-native scanner evidence is not ready/eligible
+
+FAILED
+  = digest mismatch, scan failure/ambiguity,
+    CVE still present, or required correlation failed
+```
+
+**No findings returned** is not sufficient for `VERIFIED` unless scanner readiness/coverage for that exact digest is also proven.
+
+## Gate 5 — same Codex thread AFTER
+
+The exact App Server `threadId` used for BEFORE must also receive AFTER. Do not silently create a replacement thread and claim continuity.
+
+Public UI may show a safe alias such as `THREAD_01`; raw thread IDs stay private.
+
+If thread continuity is lost, return a truthful reason such as:
+
+```text
+CODEX_THREAD_UNAVAILABLE
+```
+
+For this single-user POC, one active ECR demo conversation at a time is acceptable. Concurrent sessions must fail closed rather than mix thread/global state.
+
+Send sanitized AFTER facts only:
+
+```text
+resource alias
+current image alias
+scanner provider
+promotion state
+verification state
+target CVE state
+```
+
+Codex then explains the actual after-state.
+
+---
+
+# Expected implementation files
+
+Prefer reuse and keep product changes around existing paths:
 
 ```text
 scripts/seccop_demo.py
@@ -161,89 +260,77 @@ web/poc_chat.html
 tests/test_poc.py
 ```
 
-A small documentation/config file may be added only if required for truthful ECR Enhanced Scanning setup. File/line counts are warning signals, not rigid limits, but unrelated files are a drift signal.
+A small setup/restore note may be added if needed. File/line counts are warning signals, not rigid limits; unrelated files are a drift signal.
 
-## Do NOT build in this PR
+---
 
-- AgentGuard work;
-- another S3 feature;
-- new EC2 lab;
+# Minimum meaningful validation
+
+Do not grow tests for count.
+
+1. fake Inspector finding bound to exact vulnerable digest;
+2. wrong digest / ambiguous evidence -> fail closed;
+3. proposal-bound ECR approval happy path;
+4. Reject / replay / expiry / drift / wrong-target negative paths;
+5. clean exact digest + scanner ready + target CVE absent -> `VERIFIED`;
+6. exact clean digest + scanner unavailable/pending -> `PENDING_RESCAN`;
+7. same fake App Server `threadId` receives BEFORE and AFTER;
+8. lost/mismatched thread -> fail closed;
+9. user request is actually included in Codex input while AWS target/action remain server-owned;
+10. existing relevant EC2/S3/ECR regressions;
+11. build/diff/public-safety checks;
+12. one separately approved real browser/AWS rehearsal.
+
+---
+
+# DO NOT build
+
+- AgentGuard/S3/new EC2 work;
 - OpenAI Agents SDK;
 - AgentCore or Strands migration;
-- Open WebUI/LibreChat replacement;
-- custom generic MCP gateway/server;
-- direct generic AWS MCP write path;
-- unrestricted shell/AWS CLI agent authority;
-- RAG/vector DB;
-- persistent memory/database;
+- Open WebUI/LibreChat;
+- RAG/database/memory;
 - multi-agent orchestration;
-- second CVE/demo journey;
-- production/enterprise platform architecture.
+- custom generic MCP gateway;
+- generic AWS MCP write path;
+- unrestricted Codex shell/AWS CLI authority;
+- second CVE/operator journey;
+- production platform redesign.
 
-## Hard AWS mutation gate
+---
 
-This PR is allowed to contain implementation code, but a **real AWS scanner/configuration mutation or ECR mutation still requires Amit's explicit approval** under the project protocol.
+# Ready-for-review gate
 
-Before any new scanner/configuration mutation, Codex must present:
+Do not mark PR #54 ready until all are true:
 
-1. profile/account alias and Region;
-2. exact ECR/Inspector configuration change;
-3. whether the change is registry-wide or filter-scoped;
-4. exact APIs/commands;
-5. expected cost and scan latency;
-6. cleanup/restore plan;
-7. the candidate CVE and evidence that Inspector actually reports it.
-
-Do not widen IAM to bypass a blocker without separate approval.
-
-## Minimum validation — no test proliferation
-
-Use the smallest meaningful validation:
-
-1. fake Inspector ECR finding -> existing SecCop finding contract;
-2. fake clean after-state -> `VERIFIED`;
-3. pending scanner refresh -> `PENDING_RESCAN`;
-4. Reject -> zero mutation;
-5. wrong/replayed approval -> denied using existing controls;
-6. fake App Server transport proves BEFORE and AFTER messages use the same thread;
-7. unexpected Codex command/filesystem/tool events remain fail-closed;
-8. existing relevant EC2/S3/ECR regressions;
-9. existing public-safety/build/diff checks.
-
-Then run **one real browser/AWS rehearsal** only after the required approval gates.
-
-## PR completion checklist
-
-Do not mark this PR ready/mergeable until all are true:
-
-- [ ] real ECR Enhanced Scanning / Inspector finding proven;
-- [ ] scanner/storage labels are truthful;
-- [ ] same real Codex App Server thread receives real sanitized BEFORE evidence;
-- [ ] Codex—not a fixed backend sentence—explains/recommends from those facts;
-- [ ] Reject proves zero mutation;
-- [ ] Approve Once uses only the existing bounded SecCop ECR write path;
-- [ ] fresh AWS-native after-state is obtained;
-- [ ] same Codex thread receives AFTER evidence;
-- [ ] final state is truthful `VERIFIED`, `PENDING_RESCAN`, or `FAILED`;
-- [ ] no private AWS/Codex data exposed publicly;
-- [ ] no unrelated architecture or feature work added;
-- [ ] Amit performs/accepts the visible demo before merge.
+- [ ] exact repository scanning scope is safe and restorable;
+- [ ] real vulnerable digest has a real Inspector finding;
+- [ ] clean digest has usable AWS-native scan evidence;
+- [ ] user's natural-language request reaches the real Codex turn;
+- [ ] same App Server thread receives real sanitized BEFORE and AFTER;
+- [ ] Codex generates actual explanations from those facts;
+- [ ] ECR action is proposal-bound, not boolean-ready;
+- [ ] Reject/replay/expiry/drift/wrong-target deny correctly;
+- [ ] Approve Once promotes only the approved clean digest;
+- [ ] `demo-current` is re-read and equals that clean digest;
+- [ ] Inspector verification is tied to the exact clean digest + target CVE;
+- [ ] final state is truthful;
+- [ ] public output is sanitized;
+- [ ] no unrelated scope is added;
+- [ ] Amit accepts the visible demo.
 
 ## Terminal stop condition
 
-Stop when exactly this is repeatable:
+Stop when exactly one repeatable journey proves:
 
 ```text
-real vulnerable ECR image
-+ real Amazon Inspector/ECR Enhanced finding
-+ same Codex App Server thread gets sanitized BEFORE
-+ Codex explains/recommends
-+ exact SecCop proposal
-+ human Approve Once
-+ existing bounded ECR action
-+ fresh AWS-native AFTER
-+ same Codex thread explains AFTER
-+ VERIFIED / truthful PENDING_RESCAN
+real ECR/Inspector finding
++ real user -> Codex interaction
++ same Codex thread BEFORE/AFTER
++ proposal-bound one-time human approval
++ exact clean-digest promotion
++ exact AWS-native digest/CVE verification
++ truthful operator result
 ```
 
-If any required proof cannot be achieved, leave the PR draft/open and document the blocker. Do not reinterpret the objective to obtain a green checkmark.
+If any proof cannot be achieved, leave PR #54 draft/open and document the blocker. Do not reinterpret #53 to obtain a green checkmark.
