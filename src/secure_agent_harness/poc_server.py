@@ -534,7 +534,7 @@ def _run_real_demo(command: str, *, source: str | None = None) -> dict[str, obje
         }
     global _S3_APPROVAL_READY
     if os.environ.get("SECCOP_S3_COMPLIANCE_E2E") == "1":
-        mapped = {"scan": "scan", "fix": "apply"}.get(command)
+        mapped = {"scan": "scan", "fix": "apply", "reset": "reset"}.get(command)
         if mapped is None or (mapped == "apply" and (source != "s3" or not _S3_APPROVAL_READY)):
             return {"status": "BLOCKED", "reason_code": "APPROVAL_REQUIRED", "message": "Approve the exact S3 proposal before remediation."}
         args = [sys.executable, str(_S3_COMPLIANCE_SCRIPT), mapped, "--profile", os.environ["SECCOP_PROFILE"], "--region", os.environ["AWS_REGION"], "--bucket", os.environ["SECCOP_S3_BUCKET"]]
@@ -543,8 +543,23 @@ def _run_real_demo(command: str, *, source: str | None = None) -> dict[str, obje
             payload = json.loads(completed.stdout)
         except json.JSONDecodeError:
             return {"status": "BLOCKED", "reason_code": "SECCOP_S3_BACKEND_BLOCKED", "message": "The S3 operation was blocked."}
-        if mapped == "scan" and payload.get("reason_code") == "SECCOP_S3_NON_COMPLIANT": _S3_APPROVAL_READY = True
+        if mapped == "scan":
+            protected_buckets = os.environ.get("SECCOP_S3_PROTECTED_BUCKETS", "").split(",")
+            aliases = ["Finance reports", "Audit logs", "Application backups"]
+            states = ["ACTION REQUIRED" if payload.get("reason_code") == "SECCOP_S3_NON_COMPLIANT" else "PROTECTED"]
+            for bucket in filter(None, protected_buckets):
+                companion = subprocess.run(args[:-1] + [bucket], capture_output=True, text=True, check=False, timeout=120, env=os.environ.copy())
+                try:
+                    companion_payload = json.loads(companion.stdout)
+                except json.JSONDecodeError:
+                    return {"status": "BLOCKED", "reason_code": "SECCOP_S3_BACKEND_BLOCKED", "message": "The S3 operation was blocked."}
+                if companion_payload.get("reason_code") != "SECCOP_S3_COMPLIANT":
+                    return {"status": "BLOCKED", "reason_code": "SECCOP_S3_BACKEND_BLOCKED", "message": "The S3 operation was blocked."}
+                states.append("PROTECTED")
+            payload["bucket_status"] = [{"label": alias, "state": state} for alias, state in zip(aliases, states, strict=False)]
+            if payload.get("reason_code") == "SECCOP_S3_NON_COMPLIANT": _S3_APPROVAL_READY = True
         if mapped == "apply" and payload.get("status") == "VERIFIED": _S3_APPROVAL_READY = False
+        if mapped == "reset" and payload.get("reason_code") == "SECCOP_S3_RESET_READY": _S3_APPROVAL_READY = False
         return payload
     allowed_commands = {"start", "scan", "rescan", "fix"}
     if command not in allowed_commands:
@@ -1141,6 +1156,13 @@ class _Handler(BaseHTTPRequestHandler):
                 self._send_json(400, {"status": "BLOCKED", "reason_code": "REQUEST_REJECTED"})
                 return
             self._send_json(200, {"result": _run_real_demo("fix", source=source), "events": []})
+            return
+
+        if self.path == "/api/demo/reset":
+            if payload != {"confirm": True}:
+                self._send_json(400, {"status": "BLOCKED", "reason_code": "REQUEST_REJECTED"})
+                return
+            self._send_json(200, {"result": _run_real_demo("reset"), "events": []})
             return
 
         if self.path == "/api/demo/rescan":

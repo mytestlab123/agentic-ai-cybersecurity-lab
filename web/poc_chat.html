@@ -282,8 +282,9 @@
       reviewTitle.textContent = 'S3 Security Posture Review';
       safetyBanner.innerHTML = '<strong>S3 review boundary.</strong> Scan and recommendation are safe; a human must approve every AWS change.';
       welcomeTitle.textContent = 'Review S3 security posture';
-      welcomeCopy.textContent = 'Scan the retained private bucket and review the exact Block Public Access recommendation.';
-      scanNote.textContent = 'Check one private bucket for Block Public Access drift.';
+      welcomeCopy.textContent = 'Review three real empty private buckets and one exact Block Public Access recommendation.';
+      scanNote.textContent = 'Check three private buckets for Block Public Access drift.';
+      backendNote.innerHTML = '<span class="mode-dot"></span>Live AWS S3 demo<br>One approved exposure-risk control';
       scanButton.textContent = 'Scan S3 bucket';
       if (scanWelcomeButton) scanWelcomeButton.textContent = 'Scan S3 bucket';
       document.querySelectorAll('.source-tab').forEach((tab) => tab.classList.toggle('active', tab.textContent === 'S3'));
@@ -439,6 +440,18 @@
       if (s3Review) evidenceCell(grid, 'Technical evidence', result.reason_code);
       evidenceCell(grid, 'GovTech', 'Inference not used');
       card.appendChild(grid);
+      if (s3Review && result.bucket_status) {
+        const buckets = node('div', 'activity');
+        for (const bucket of result.bucket_status) {
+          const protectedState = bucket.state === 'PROTECTED';
+          const row = node('div', 'activity-row' + (protectedState ? '' : ' blocked'));
+          row.appendChild(node('span', 'activity-icon', protectedState ? 'OK' : '!'));
+          row.appendChild(node('span', '', bucket.label));
+          row.appendChild(node('span', 'activity-state', bucket.state));
+          buckets.appendChild(row);
+        }
+        card.appendChild(buckets);
+      }
 
       const findings = node('div', 'scan-findings');
       for (const finding of result.findings || []) {
@@ -622,7 +635,30 @@
       rescan.type = 'button';
       rescan.addEventListener('click', () => startScan(rescan));
       card.appendChild(rescan);
+      if (s3Review && sourceType === 'S3_BUCKET') {
+        const reset = node('button', 'btn reject', 'Reset demo');
+        reset.type = 'button';
+        reset.addEventListener('click', () => resetS3Demo(reset));
+        card.appendChild(reset);
+      }
       body.appendChild(card);
+    }
+
+    async function resetS3Demo(button) {
+      if (!window.confirm('Reset the approved S3 exposure-risk demo to action required?')) return;
+      button.disabled = true;
+      addMessage('user', 'Reset demo');
+      const thinking = addMessage('assistant', 'Checking the approved empty private bucket before resetting the demo...');
+      try {
+        const payload = await post('/api/demo/reset', { confirm: true });
+        thinking.parentElement.remove();
+        addMessage('assistant', payload.result.message || 'The demo was reset.');
+        startScan(scanButton);
+      } catch (error) {
+        thinking.textContent = 'The approved DEMO reset was blocked.';
+        thinking.classList.add('error-copy');
+        button.disabled = false;
+      }
     }
 
     async function startRealDemo() {

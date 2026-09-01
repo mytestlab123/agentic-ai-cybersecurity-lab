@@ -89,10 +89,24 @@ def apply(profile: str, region: str, bucket: str) -> dict[str, Any]:
     return {"status": "VERIFIED", "reason_code": "SECCOP_S3_EXPOSURE_RISK_REMEDIATED", "state": "COMPLIANT", "message": "SecCop detected and remediated an S3 exposure risk by enabling Block Public Access, then verified the protected state."}
 
 
+def reset(profile: str, region: str, bucket: str) -> dict[str, Any]:
+    """Return one server-owned, empty private bucket to the approved demo drift."""
+    before = scan(profile, region, bucket)
+    if before["reason_code"] != "SECCOP_S3_COMPLIANT":
+        raise RuntimeError("Reset requires a verified protected bucket")
+    aws(profile, region, "s3api", "delete-public-access-block", "--bucket", bucket)
+    after = scan(profile, region, bucket)
+    if after["reason_code"] != "SECCOP_S3_NON_COMPLIANT":
+        raise RuntimeError("S3 reset verification failed")
+    return {"status": "READY", "reason_code": "SECCOP_S3_RESET_READY", "message": "The approved S3 exposure-risk demo was reset to action required."}
+
+
 def main() -> int:
     parser = argparse.ArgumentParser()
-    parser.add_argument("command", choices=("create", "scan", "apply", "cleanup"))
+    parser.add_argument("command", choices=("create", "scan", "apply", "reset", "cleanup"))
     parser.add_argument("--profile", required=True); parser.add_argument("--region", required=True); parser.add_argument("--bucket", required=True)
+    parser.add_argument("--extra-bucket", action="append", default=[])
+    parser.add_argument("--protected", action="store_true")
     args = parser.parse_args()
     try:
         if args.command == "create":
@@ -105,11 +119,15 @@ def main() -> int:
             # The approved proof needs that one control absent, but the bucket
             # is already empty, BucketOwnerEnforced, and has no policy or website.
             aws(args.profile, args.region, "s3api", "delete-public-access-block", "--bucket", args.bucket, allow_missing=True)
+            if args.protected:
+                apply(args.profile, args.region, args.bucket)
             output = {"status": "READY", "reason_code": "SECCOP_S3_BASELINE_READY"}
         elif args.command == "scan": output = scan(args.profile, args.region, args.bucket)
         elif args.command == "apply": output = apply(args.profile, args.region, args.bucket)
+        elif args.command == "reset": output = reset(args.profile, args.region, args.bucket)
         else:
-            aws(args.profile, args.region, "s3api", "delete-bucket", "--bucket", args.bucket)
+            for bucket in [args.bucket, *args.extra_bucket]:
+                aws(args.profile, args.region, "s3api", "delete-bucket", "--bucket", bucket)
             output = {"status": "DELETED", "reason_code": "SECCOP_S3_CLEANUP_VERIFIED"}
         print(json.dumps(output, separators=(",", ":")))
         return 0
