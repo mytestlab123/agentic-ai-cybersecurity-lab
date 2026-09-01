@@ -192,6 +192,8 @@ screenshots=(
 )
 if [[ "$live_scan_only" == 1 ]]; then
   screenshots=(SecCop-Live-Workspace.png SecCop-Live-Finding.png SecCop-Live-Approval.png)
+elif [[ "$live_scan_only" == codex ]]; then
+  screenshots=(SecCop-Codex-Preflight.png SecCop-Codex-Preflight-card.png)
 elif [[ -n "$live_advisory" ]]; then
   screenshots=(SecCop-Live-Finding.png SecCop-Live-Approval.png SecCop-Live-After.png)
 fi

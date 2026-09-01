@@ -15,6 +15,7 @@ const evidenceDir = process.env.EVIDENCE_DIR;
 const reviewDir = process.env.REVIEW_DIR;
 const liveAdvisory = process.env.LIVE_ADVISORY;
 const liveScanOnly = process.env.LIVE_SCAN_ONLY === '1';
+const codexPreflight = process.env.LIVE_SCAN_ONLY === 'codex';
 if (!appUrl || !cdpUrl || !evidenceDir || !reviewDir) {
   throw new Error('APP_URL, CDP_URL, EVIDENCE_DIR, and REVIEW_DIR are required');
 }
@@ -68,7 +69,30 @@ try {
   assert((await page.locator('body').innerText()).includes('Safe demo boundary.'), 'Safety banner was not visible');
   await shot('SecCop-Scan-01.png');
 
-  if (liveScanOnly) {
+  if (codexPreflight) {
+    const preflightResponse = page.waitForResponse(
+      (item) => item.url().endsWith('/api/codex-preflight'),
+      { timeout: 180_000 },
+    );
+    await page.locator('#codex-preflight').click();
+    const preflightPayload = await (await preflightResponse).json();
+    const preflight = preflightPayload.result;
+    assert(preflight.reason_code === 'CODEX_CONNECTED', 'Codex did not connect');
+    assert(preflight.auth_status === 'CODEX_AUTHENTICATED', 'Codex authentication was unavailable');
+    assert(preflight.thread_status === 'THREAD_ACTIVE', 'The isolated thread did not complete');
+    assert(preflight.aws_mcp_status === 'AWS_MCP_UNAVAILABLE', 'Phase 1 AWS MCP status was not truthful');
+    assert(!JSON.stringify(preflightPayload).match(/arn:|i-[0-9a-f]{8,17}|\\Users\\|\/home\/|\/mnt\//), 'Private backend data was exposed');
+    await page.locator('.codex-preflight-card').waitFor({ state: 'visible', timeout: 10_000 });
+    await page.locator('.composer-wrap').evaluate((element) => { element.style.display = 'none'; });
+    await shot('SecCop-Codex-Preflight.png', { fullPage: true });
+    await focusedShot(page.locator('.codex-preflight-card'), 'SecCop-Codex-Preflight-card.png');
+    await saveJson('codex-preflight-state.json', {
+      reason_code: preflight.reason_code,
+      auth_status: preflight.auth_status,
+      thread_status: preflight.thread_status,
+      aws_mcp_status: preflight.aws_mcp_status,
+    });
+  } else if (liveScanOnly) {
     const health = await page.evaluate(async () => (await fetch('/api/health')).json());
     assert(health.demo_backend === 'AWS', 'The live scan runner did not reach the AWS backend');
     const scanResponsePromise = page.waitForResponse((item) => item.url().endsWith('/api/scan'), { timeout: 180_000 });
@@ -313,7 +337,10 @@ try {
     status: 'PASS',
     appUrl,
     viewport: { width: 1920, height: 1080 },
-    screenshots: liveScanOnly ? [
+    screenshots: codexPreflight ? [
+      'SecCop-Codex-Preflight.png',
+      'SecCop-Codex-Preflight-card.png',
+    ] : liveScanOnly ? [
       'SecCop-Live-Workspace.png',
       'SecCop-Live-Finding.png',
       'SecCop-Live-Approval.png',
