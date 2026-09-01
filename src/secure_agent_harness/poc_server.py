@@ -59,7 +59,7 @@ _SERVER_SCAN_REQUEST: SecCopAdvisoryRequest | None = None
 _HYBRID_SESSION: "_HybridSession | None" = None
 _S3_APPROVAL_READY = False
 _ECR_APPROVAL_READY = False
-_ECR_AFTER_TURN_TIMEOUT = 15.0
+_ECR_TURN_TIMEOUT = 15.0
 
 
 @dataclass(frozen=True)
@@ -391,7 +391,7 @@ def _start_ecr_codex_explanation(request_text: str, scan: dict[str, object]) -> 
             "Sanitized BEFORE facts:\n" + _ecr_codex_facts(scan) + "\n\n"
             "Explain the finding and recommend the safe, approval-gated next step. Do not use tools."
         )
-        response = _collect_codex_turn(session, prompt)
+        response = _collect_codex_turn(session, prompt, receive_timeout=_ECR_TURN_TIMEOUT)
         return {
             "status": "READY", "reason_code": "ECR_CODEX_BEFORE_READY",
             "aws_evidence_status": "AMAZON_INSPECTOR", "aws_mcp_status": "NOT_USED",
@@ -420,7 +420,7 @@ def _finish_ecr_codex_explanation(after: dict[str, object]) -> dict[str, object]
             "Sanitized AFTER facts for the same ECR review:\n" + _ecr_codex_facts(after_facts) + "\n\n"
             "Explain the verified final state in two short plain-language sentences. Do not use tools."
         )
-        response = _collect_codex_turn(session, prompt, receive_timeout=_ECR_AFTER_TURN_TIMEOUT)
+        response = _collect_codex_turn(session, prompt, receive_timeout=_ECR_TURN_TIMEOUT)
         return {
             "status": "READY", "reason_code": "ECR_CODEX_AFTER_EXPLAINED",
             "aws_evidence_status": "AMAZON_INSPECTOR", "aws_mcp_status": "NOT_USED",

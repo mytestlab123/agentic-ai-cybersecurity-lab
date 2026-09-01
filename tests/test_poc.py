@@ -283,7 +283,7 @@ def test_ecr_codex_after_uses_bounded_timeout(monkeypatch: pytest.MonkeyPatch) -
         poc_server._close_hybrid_session()
     assert result["status"] == "BLOCKED"
     assert result["reason_code"] == "CODEX_APP_SERVER_UNAVAILABLE"
-    assert observed == [poc_server._ECR_AFTER_TURN_TIMEOUT]
+    assert observed == [poc_server._ECR_TURN_TIMEOUT]
 
 
 def test_public_remediation_payload_excludes_private_evidence_path() -> None:
