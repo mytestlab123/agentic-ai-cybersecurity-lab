@@ -58,6 +58,7 @@ _SECCOP_TARGET_IDS: dict[str, str] = {}
 _SERVER_SCAN_REQUEST: SecCopAdvisoryRequest | None = None
 _HYBRID_SESSION: "_HybridSession | None" = None
 _S3_APPROVAL_READY = False
+_ECR_APPROVAL_READY = False
 
 
 @dataclass(frozen=True)
@@ -532,7 +533,21 @@ def _run_real_demo(command: str, *, source: str | None = None) -> dict[str, obje
             "reason_code": "AWS_DEMO_DISABLED",
             "message": "The local server is using synthetic mode. Enable the AWS DEMO backend explicitly.",
         }
-    global _S3_APPROVAL_READY
+    global _S3_APPROVAL_READY, _ECR_APPROVAL_READY
+    if os.environ.get("SECCOP_ECR_OPERATOR_MVP") == "1":
+        mapped = {"start": "ecr-start", "scan": "ecr-scan", "fix": "ecr-fix", "reset": "ecr-reset"}.get(command)
+        if mapped is None or (mapped == "ecr-fix" and (source != "ecr" or not _ECR_APPROVAL_READY)):
+            return {"status": "BLOCKED", "reason_code": "APPROVAL_REQUIRED", "message": "Approve the exact ECR proposal before promotion."}
+        args = [sys.executable, str(_DEMO_SCRIPT), mapped, "--profile", os.environ["SECCOP_PROFILE"], "--region", os.environ["AWS_REGION"]]
+        if mapped != "ecr-scan": args.append("--confirm")
+        completed = subprocess.run(args, capture_output=True, text=True, check=False, timeout=300, env=os.environ.copy())
+        try:
+            payload = json.loads(completed.stdout)
+        except json.JSONDecodeError:
+            return {"status": "BLOCKED", "reason_code": "SECCOP_ECR_BACKEND_BLOCKED", "message": "The ECR operation was blocked."}
+        if mapped == "ecr-scan" and payload.get("reason_code") == "SECCOP_ECR_NON_COMPLIANT": _ECR_APPROVAL_READY = True
+        if mapped in {"ecr-fix", "ecr-reset"} and payload.get("status") in {"VERIFIED", "READY"}: _ECR_APPROVAL_READY = False
+        return payload
     if os.environ.get("SECCOP_S3_COMPLIANCE_E2E") == "1":
         mapped = {"scan": "scan", "fix": "apply", "reset": "reset"}.get(command)
         if mapped is None or (mapped == "apply" and (source != "s3" or not _S3_APPROVAL_READY)):
@@ -1067,7 +1082,7 @@ class _Handler(BaseHTTPRequestHandler):
                     "status": "OK",
                     "mode": "AWS_DEMO" if _real_demo_enabled() else "LOCAL_SYNTHETIC",
                     "demo_backend": "AWS" if _real_demo_enabled() else "LOCAL",
-                    "review_mode": "S3_COMPLIANCE" if os.environ.get("SECCOP_S3_COMPLIANCE_E2E") == "1" else "GENERAL",
+                    "review_mode": "ECR_OPERATOR" if os.environ.get("SECCOP_ECR_OPERATOR_MVP") == "1" else "S3_COMPLIANCE" if os.environ.get("SECCOP_S3_COMPLIANCE_E2E") == "1" else "GENERAL",
                 },
             )
             return
@@ -1115,7 +1130,7 @@ class _Handler(BaseHTTPRequestHandler):
             except ValidationError:
                 self._send_json(400, {"status": "BLOCKED", "reason_code": "REQUEST_REJECTED"})
                 return
-            if os.environ.get("SECCOP_S3_COMPLIANCE_E2E") == "1":
+            if os.environ.get("SECCOP_S3_COMPLIANCE_E2E") == "1" or os.environ.get("SECCOP_ECR_OPERATOR_MVP") == "1":
                 self._send_json(200, {"result": _run_real_demo("scan"), "events": []})
                 return
             fixture_hybrid = os.environ.get("SECCOP_HYBRID_FIXTURE") == "1"

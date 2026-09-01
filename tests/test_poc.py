@@ -292,6 +292,24 @@ def test_ecr_scan_names_storage_and_scanner(monkeypatch: pytest.MonkeyPatch, tmp
     assert result["scanner_provider"] == "LOCAL_TRIVY"
 
 
+def test_ecr_reopen_is_idempotent_when_the_finding_is_already_open(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    monkeypatch.setattr(seccop_demo, "_ecr_scan", lambda *_: {"reason_code": "SECCOP_ECR_NON_COMPLIANT"})
+    monkeypatch.setattr(seccop_demo, "_push_image", lambda *_: pytest.fail("unexpected ECR mutation"))
+
+    result = seccop_demo._ecr_reset(object(), tmp_path)
+
+    assert result["reason_code"] == "SECCOP_ECR_REOPEN_READY"
+
+
+def test_browser_has_persistent_ecr_reopen_control() -> None:
+    html = (Path(__file__).parents[1] / "web" / "poc_chat.html").read_text()
+
+    assert "configureEcrReview" in html
+    assert "Scan ECR image" in html
+    assert "Reopen this ECR finding?" in html
+    assert "ECR_OPERATOR" in Path(__file__).parents[1].joinpath("src/secure_agent_harness/poc_server.py").read_text()
+
+
 def test_live_evidence_upload_validates_without_echoing_untrusted_payload() -> None:
     server = ThreadingHTTPServer(("127.0.0.1", 0), _Handler)
     thread = Thread(target=server.serve_forever, daemon=True)
