@@ -205,6 +205,7 @@
           <h2>What would you like to check?</h2>
           <p>Paste one CVE to check the demo environment, or scan all three sources.</p>
           <div class="welcome-actions">
+            <button id="codex-preflight" class="btn primary" type="button">Check Codex connection</button>
             <button id="cve-welcome" class="btn primary" type="button">Check a CVE</button>
             <button id="scan-welcome" class="btn" type="button">Scan environment</button>
           </div>
@@ -233,6 +234,7 @@
     const promptEl = document.querySelector('#prompt');
     const inputModeEl = document.querySelector('#input-mode');
     const runButton = document.querySelector('#run');
+    const codexPreflightButton = document.querySelector('#codex-preflight');
     const scanButton = document.querySelector('#scan-environment');
     const cveWelcomeButton = document.querySelector('#cve-welcome');
     const scanWelcomeButton = document.querySelector('#scan-welcome');
@@ -792,6 +794,39 @@
       }
     }
 
+    async function startCodexPreflight(button) {
+      button.disabled = true;
+      setMode('Codex preflight', true);
+      addMessage('user', 'Check Codex connection');
+      const thinking = addMessage('assistant', 'Starting one isolated no-tool App Server turn...');
+      try {
+        const payload = await post('/api/codex-preflight', {});
+        thinking.parentElement.remove();
+        const result = payload.result || {};
+        const body = addMessage('assistant', result.message || 'The Codex preflight returned no result.');
+        const card = node('div', 'result-card codex-preflight-card');
+        const head = node('div', 'result-head');
+        head.appendChild(node('div', 'result-title', 'Codex App Server preflight'));
+        head.appendChild(node('span', 'badge', result.reason_code || 'BLOCKED'));
+        card.appendChild(head);
+        const grid = node('div', 'evidence-grid');
+        evidenceCell(grid, 'Codex', result.codex_status);
+        evidenceCell(grid, 'Authentication', result.auth_status);
+        evidenceCell(grid, 'Thread', result.thread_status);
+        evidenceCell(grid, 'AWS MCP', result.aws_mcp_status);
+        card.appendChild(grid);
+        if (result.response_text) {
+          card.appendChild(node('div', 'approval-copy', result.response_text));
+        }
+        body.appendChild(card);
+      } catch (error) {
+        thinking.textContent = 'The Codex App Server preflight was blocked.';
+        thinking.classList.add('error-copy');
+      } finally {
+        button.disabled = false;
+      }
+    }
+
     async function decide(decision, approveButton, rejectButton) {
       approveButton.disabled = true;
       rejectButton.disabled = true;
@@ -896,6 +931,7 @@
 
     scanButton.addEventListener('click', () => startScan(scanButton));
     scanWelcomeButton.addEventListener('click', () => startScan(scanWelcomeButton));
+    codexPreflightButton.addEventListener('click', () => startCodexPreflight(codexPreflightButton));
     if (startRealDemoButton) startRealDemoButton.addEventListener('click', startRealDemo);
 
     async function configureBackend() {

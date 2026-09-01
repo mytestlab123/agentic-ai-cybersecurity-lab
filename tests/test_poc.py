@@ -16,7 +16,12 @@ from secure_agent_harness.contracts import (
 )
 from secure_agent_harness.poc import PocEngine
 from secure_agent_harness import poc_server
-from secure_agent_harness.poc_server import _Handler
+from secure_agent_harness.poc_server import (
+    _CodexPreflightError,
+    _Handler,
+    _codex_request,
+    _run_codex_preflight,
+)
 from secure_agent_harness.seccop_scan import review_demo_cve
 from http.server import ThreadingHTTPServer
 
@@ -96,6 +101,8 @@ def test_browser_surface_is_local_and_has_the_gate_controls() -> None:
     assert "/api/live-evidence" in html
     assert "/api/scan" in html
     assert "/api/cve-review" in html
+    assert "/api/codex-preflight" in html
+    assert "Check Codex connection" in html
     assert "Check a CVE" in html
     assert "Scan environment" in html
     assert "Suggested fix only" in html
@@ -107,6 +114,93 @@ def test_browser_surface_is_local_and_has_the_gate_controls() -> None:
     assert "GovTech inference: not used" in html
     assert "Reject" in html
     assert "A server change always needs a separate review and approval" in html
+
+
+class _FakeCodexTransport:
+    def __init__(self, messages: list[dict[str, object]]) -> None:
+        self.messages = list(messages)
+        self.sent: list[dict[str, object]] = []
+
+    def send(self, message: dict[str, object]) -> None:
+        self.sent.append(message)
+
+    def receive(self, timeout: float) -> dict[str, object]:
+        assert timeout > 0
+        if not self.messages:
+            raise RuntimeError("fake App Server stream exhausted")
+        return self.messages.pop(0)
+
+
+def _codex_ready_messages() -> list[dict[str, object]]:
+    return [
+        {"id": 1, "result": {"userAgent": "codex"}},
+        {"id": 2, "result": {"account": {"type": "chatgpt"}, "requiresOpenaiAuth": True}},
+        {"id": 3, "result": {"data": [], "nextCursor": None}},
+        {"id": 4, "result": {"thread": {"id": "THREAD_ALIAS_01"}}},
+        {"id": 5, "result": {"turn": {"id": "TURN_ALIAS_01"}}},
+        {"method": "turn/started", "params": {"threadId": "THREAD_ALIAS_01", "turn": {"id": "TURN_ALIAS_01"}}},
+        {"method": "item/started", "params": {"item": {"id": "ITEM_ALIAS_01", "type": "agentMessage"}}},
+        {"method": "item/agentMessage/delta", "params": {"delta": "SecCop App Server preflight ready."}},
+        {"method": "item/completed", "params": {"item": {"id": "ITEM_ALIAS_01", "type": "agentMessage"}}},
+        {"method": "turn/completed", "params": {"threadId": "THREAD_ALIAS_01", "turn": {"id": "TURN_ALIAS_01", "status": "completed"}}},
+    ]
+
+
+def test_codex_preflight_maps_only_allowed_app_server_events() -> None:
+    transport = _FakeCodexTransport(_codex_ready_messages())
+
+    result = _run_codex_preflight(transport)
+
+    assert result == {
+        "status": "READY",
+        "reason_code": "CODEX_CONNECTED",
+        "codex_status": "CODEX_CONNECTED",
+        "auth_status": "CODEX_AUTHENTICATED",
+        "thread_status": "THREAD_ACTIVE",
+        "aws_mcp_status": "AWS_MCP_UNAVAILABLE",
+        "response_text": "SecCop App Server preflight ready.",
+        "message": "Codex App Server completed one isolated no-tool preflight turn.",
+    }
+    assert [item["method"] for item in transport.sent] == [
+        "initialize", "initialized", "account/read", "mcpServerStatus/list", "thread/start", "turn/start"
+    ]
+
+
+def test_codex_preflight_stops_when_authentication_is_unavailable() -> None:
+    transport = _FakeCodexTransport([
+        {"id": 1, "result": {"userAgent": "codex"}},
+        {"id": 2, "result": {"account": None, "requiresOpenaiAuth": True}},
+    ])
+
+    result = _run_codex_preflight(transport)
+
+    assert result["status"] == "BLOCKED"
+    assert result["reason_code"] == "CODEX_NOT_AUTHENTICATED"
+    assert result["thread_status"] == "NOT_STARTED"
+    assert all(item["method"] != "thread/start" for item in transport.sent)
+
+
+def test_codex_preflight_rejects_forbidden_tool_event_and_interrupts() -> None:
+    messages = _codex_ready_messages()[:5] + [
+        {"method": "item/started", "params": {"item": {"id": "ITEM_ALIAS_02", "type": "commandExecution"}}},
+        {"id": 99, "result": {}},
+    ]
+    transport = _FakeCodexTransport(messages)
+
+    result = _run_codex_preflight(transport)
+
+    assert result["status"] == "BLOCKED"
+    assert result["reason_code"] == "CODEX_EVENT_REJECTED"
+    assert transport.sent[-1]["method"] == "turn/interrupt"
+
+
+def test_codex_preflight_rejects_forbidden_rpc_before_transport() -> None:
+    transport = _FakeCodexTransport([])
+
+    with pytest.raises(_CodexPreflightError, match="CODEX_RPC_REJECTED"):
+        _codex_request(transport, 6, "command/exec", {}, [])
+
+    assert transport.sent == []
 
 
 def test_demo_cve_review_checks_three_sources_with_aliases_only() -> None:

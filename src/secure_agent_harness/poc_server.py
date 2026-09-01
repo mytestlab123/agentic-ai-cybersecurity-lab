@@ -3,6 +3,8 @@
 import json
 import hashlib
 import os
+import re
+import selectors
 import subprocess
 import sys
 from dataclasses import dataclass, replace
@@ -78,6 +80,219 @@ _ADVISORY_REASON_CODES = {
     "SSM_COMMAND_TIMEOUT",
     "AWS_BACKEND_UNAVAILABLE",
 }
+
+_CODEX_ALLOWED_METHODS = {
+    "initialize",
+    "account/read",
+    "mcpServerStatus/list",
+    "thread/start",
+    "turn/start",
+    "turn/interrupt",
+}
+_CODEX_SAFE_NOTIFICATIONS = {
+    "thread/started",
+    "thread/status/changed",
+    "turn/started",
+    "item/started",
+    "item/completed",
+    "item/agentMessage/delta",
+    "turn/completed",
+    "mcpServer/startupStatus/updated",
+    "remoteControl/status/changed",
+    "thread/tokenUsage/updated",
+    "account/rateLimits/updated",
+}
+_CODEX_SAFE_ITEM_TYPES = {"userMessage", "agentMessage", "reasoning"}
+_CODEX_PREFLIGHT_PROMPT = "Reply with exactly: SecCop App Server preflight ready. Do not use tools."
+
+
+class _CodexPreflightError(RuntimeError):
+    def __init__(self, reason_code: str) -> None:
+        super().__init__(reason_code)
+        self.reason_code = reason_code
+
+
+class _CodexProcessTransport:
+    def __init__(self) -> None:
+        self.process = subprocess.Popen(
+            ["codex", "app-server", "--stdio"],
+            stdin=subprocess.PIPE,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.DEVNULL,
+            text=True,
+            bufsize=1,
+        )
+
+    def send(self, message: dict[str, object]) -> None:
+        if self.process.stdin is None:
+            raise _CodexPreflightError("CODEX_APP_SERVER_UNAVAILABLE")
+        self.process.stdin.write(json.dumps(message, separators=(",", ":")) + "\n")
+        self.process.stdin.flush()
+
+    def receive(self, timeout: float) -> dict[str, object]:
+        if self.process.stdout is None:
+            raise _CodexPreflightError("CODEX_APP_SERVER_UNAVAILABLE")
+        selector = selectors.DefaultSelector()
+        selector.register(self.process.stdout, selectors.EVENT_READ)
+        try:
+            if not selector.select(timeout):
+                raise _CodexPreflightError("CODEX_APP_SERVER_UNAVAILABLE")
+            line = self.process.stdout.readline()
+        finally:
+            selector.close()
+        if not line:
+            raise _CodexPreflightError("CODEX_APP_SERVER_UNAVAILABLE")
+        try:
+            message = json.loads(line)
+        except json.JSONDecodeError as exc:
+            raise _CodexPreflightError("CODEX_APP_SERVER_OUTPUT_REJECTED") from exc
+        if not isinstance(message, dict):
+            raise _CodexPreflightError("CODEX_APP_SERVER_OUTPUT_REJECTED")
+        return message
+
+    def close(self) -> None:
+        if self.process.poll() is None:
+            self.process.terminate()
+            try:
+                self.process.wait(timeout=2)
+            except subprocess.TimeoutExpired:
+                self.process.kill()
+                self.process.wait(timeout=2)
+
+
+def _codex_request(
+    transport: Any,
+    request_id: int,
+    method: str,
+    params: dict[str, object],
+    pending: list[dict[str, object]],
+) -> dict[str, object]:
+    if method not in _CODEX_ALLOWED_METHODS:
+        raise _CodexPreflightError("CODEX_RPC_REJECTED")
+    transport.send({"method": method, "id": request_id, "params": params})
+    for _ in range(100):
+        message = transport.receive(15)
+        if message.get("id") != request_id:
+            event_method = message.get("method")
+            if "id" in message or event_method not in _CODEX_SAFE_NOTIFICATIONS:
+                raise _CodexPreflightError("CODEX_EVENT_REJECTED")
+            pending.append(message)
+            continue
+        if "error" in message:
+            raise _CodexPreflightError("CODEX_APP_SERVER_UNAVAILABLE")
+        result = message.get("result")
+        if not isinstance(result, dict):
+            raise _CodexPreflightError("CODEX_APP_SERVER_OUTPUT_REJECTED")
+        return result
+    raise _CodexPreflightError("CODEX_APP_SERVER_UNAVAILABLE")
+
+
+def _safe_codex_text(value: str) -> str:
+    text = " ".join(value.split())[:300]
+    if not text or re.search(r"(?:/home/|/mnt/|\\Users\\|arn:|\bi-[0-9a-f]{8,17}\b|sk-[A-Za-z0-9])", text):
+        raise _CodexPreflightError("CODEX_APP_SERVER_OUTPUT_REJECTED")
+    return text
+
+
+def _run_codex_preflight(transport: Any | None = None) -> dict[str, object]:
+    owned_transport = transport is None
+    thread_id: str | None = None
+    turn_id: str | None = None
+    pending: list[dict[str, object]] = []
+    if transport is None:
+        try:
+            transport = _CodexProcessTransport()
+        except OSError:
+            return _codex_blocked("CODEX_APP_SERVER_UNAVAILABLE")
+    try:
+        _codex_request(
+            transport,
+            1,
+            "initialize",
+            {"clientInfo": {"name": "seccop_poc", "title": "Security Copilot", "version": "0.1.0"}},
+            pending,
+        )
+        transport.send({"method": "initialized", "params": {}})
+        account = _codex_request(transport, 2, "account/read", {"refreshToken": False}, pending)
+        if account.get("account") is None and account.get("requiresOpenaiAuth") is True:
+            return _codex_blocked("CODEX_NOT_AUTHENTICATED", auth_status="CODEX_NOT_AUTHENTICATED")
+        auth_status = "CODEX_AUTHENTICATED" if account.get("account") is not None else "CODEX_AUTH_NOT_REQUIRED"
+        _codex_request(transport, 3, "mcpServerStatus/list", {"detail": "toolsAndAuthOnly"}, pending)
+        thread = _codex_request(
+            transport,
+            4,
+            "thread/start",
+            {"ephemeral": True, "approvalPolicy": "never", "sandbox": "read-only", "model": "gpt-5.6-luna"},
+            pending,
+        ).get("thread")
+        if not isinstance(thread, dict) or not isinstance(thread.get("id"), str):
+            raise _CodexPreflightError("CODEX_APP_SERVER_OUTPUT_REJECTED")
+        thread_id = thread["id"]
+        turn = _codex_request(
+            transport,
+            5,
+            "turn/start",
+            {"threadId": thread_id, "input": [{"type": "text", "text": _CODEX_PREFLIGHT_PROMPT}]},
+            pending,
+        ).get("turn")
+        if not isinstance(turn, dict) or not isinstance(turn.get("id"), str):
+            raise _CodexPreflightError("CODEX_APP_SERVER_OUTPUT_REJECTED")
+        turn_id = turn["id"]
+        response_parts: list[str] = []
+        for _ in range(500):
+            event = pending.pop(0) if pending else transport.receive(90)
+            method = event.get("method")
+            if not isinstance(method, str) or method not in _CODEX_SAFE_NOTIFICATIONS or "id" in event:
+                raise _CodexPreflightError("CODEX_EVENT_REJECTED")
+            params = event.get("params")
+            if not isinstance(params, dict):
+                raise _CodexPreflightError("CODEX_APP_SERVER_OUTPUT_REJECTED")
+            if method in {"item/started", "item/completed"}:
+                item = params.get("item")
+                if not isinstance(item, dict) or item.get("type") not in _CODEX_SAFE_ITEM_TYPES:
+                    raise _CodexPreflightError("CODEX_EVENT_REJECTED")
+            elif method == "item/agentMessage/delta":
+                delta = params.get("delta")
+                if not isinstance(delta, str):
+                    raise _CodexPreflightError("CODEX_APP_SERVER_OUTPUT_REJECTED")
+                response_parts.append(delta)
+            elif method == "turn/completed":
+                completed = params.get("turn")
+                if not isinstance(completed, dict) or completed.get("status") != "completed":
+                    raise _CodexPreflightError("CODEX_APP_SERVER_UNAVAILABLE")
+                return {
+                    "status": "READY",
+                    "reason_code": "CODEX_CONNECTED",
+                    "codex_status": "CODEX_CONNECTED",
+                    "auth_status": auth_status,
+                    "thread_status": "THREAD_ACTIVE",
+                    "aws_mcp_status": "AWS_MCP_UNAVAILABLE",
+                    "response_text": _safe_codex_text("".join(response_parts)),
+                    "message": "Codex App Server completed one isolated no-tool preflight turn.",
+                }
+        raise _CodexPreflightError("CODEX_APP_SERVER_UNAVAILABLE")
+    except _CodexPreflightError as error:
+        if thread_id is not None and turn_id is not None:
+            try:
+                _codex_request(transport, 99, "turn/interrupt", {"threadId": thread_id, "turnId": turn_id}, pending)
+            except _CodexPreflightError:
+                pass
+        return _codex_blocked(error.reason_code)
+    finally:
+        if owned_transport:
+            transport.close()
+
+
+def _codex_blocked(reason_code: str, *, auth_status: str = "UNKNOWN") -> dict[str, object]:
+    return {
+        "status": "BLOCKED",
+        "reason_code": reason_code,
+        "codex_status": "CODEX_APP_SERVER_UNAVAILABLE" if reason_code != "CODEX_EVENT_REJECTED" else "CODEX_EVENT_REJECTED",
+        "auth_status": auth_status,
+        "thread_status": "NOT_STARTED",
+        "aws_mcp_status": "AWS_MCP_UNAVAILABLE",
+        "message": "The isolated Codex App Server preflight stopped safely.",
+    }
 
 
 def _session_payload(session: Any) -> dict[str, object]:
@@ -610,6 +825,13 @@ class _Handler(BaseHTTPRequestHandler):
                 return
             session = _ENGINE.start(request)
             self._send_json(200, _session_payload(session))
+            return
+
+        if self.path == "/api/codex-preflight":
+            if payload:
+                self._send_json(400, {"status": "BLOCKED", "reason_code": "REQUEST_REJECTED"})
+                return
+            self._send_json(200, {"result": _run_codex_preflight(), "events": []})
             return
 
         if self.path == "/api/scan":
