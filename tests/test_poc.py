@@ -846,6 +846,10 @@ def test_browser_sidebar_and_composer_management_view() -> None:
     assert "Hide Ask SecCop" in html
     assert "aria-expanded" in html
     assert "advisory-upload" in html and "scan-environment" in html
+    assert "function configureEcrReview()" in html
+    assert "function configureS3Review()" in html
+    for control_id in ("scan-environment", "reopen-s3-finding", "start-real-demo", "advisory-upload", "compare-live", "csv-upload", "compare-csv"):
+        assert f'id="{control_id}"' in html
     assert 'id="backend-note" class="side-footer" hidden' in html
     assert 'id="mode-status" class="status-pill"' in html
 
