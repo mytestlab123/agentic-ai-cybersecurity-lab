@@ -730,8 +730,16 @@ def _run_real_demo(command: str, *, source: str | None = None, request_text: str
             "reason_code": "AWS_DEMO_DISABLED",
             "message": "The local server is using synthetic mode. Enable the AWS DEMO backend explicitly.",
         }
+    combined = os.environ.get("SECCOP_ECR_S3_COMBINED") == "1"
+    if combined:
+        if source not in {"ecr", "s3"}:
+            return {"status": "BLOCKED", "reason_code": "REQUEST_REJECTED", "message": "Select exactly one configured source."}
+        if source == "ecr" and os.environ.get("SECCOP_ECR_OPERATOR_MVP") != "1":
+            return {"status": "BLOCKED", "reason_code": "SOURCE_UNAVAILABLE", "message": "The ECR source is unavailable."}
+        if source == "s3" and os.environ.get("SECCOP_S3_COMPLIANCE_E2E") != "1":
+            return {"status": "BLOCKED", "reason_code": "SOURCE_UNAVAILABLE", "message": "The S3 source is unavailable."}
     global _S3_APPROVAL_READY, _ECR_APPROVAL_READY, _ECR_SCAN_TAG_OVERRIDE
-    if os.environ.get("SECCOP_ECR_OPERATOR_MVP") == "1":
+    if os.environ.get("SECCOP_ECR_OPERATOR_MVP") == "1" and (not combined or source == "ecr"):
         mapped = {"start": "ecr-start", "scan": "ecr-scan", "fix": "ecr-fix", "reset": "ecr-reset"}.get(command)
         if mapped is None or (mapped == "ecr-fix" and (source != "ecr" or not _ECR_APPROVAL_READY)):
             return {"status": "BLOCKED", "reason_code": "APPROVAL_REQUIRED", "message": "Approve the exact ECR proposal before promotion."}
@@ -763,7 +771,7 @@ def _run_real_demo(command: str, *, source: str | None = None, request_text: str
         elif os.environ.get("SECCOP_ECR_APP_SERVER") == "1" and mapped == "ecr-fix" and payload.get("status") in {"VERIFIED", "READY"}:
             payload["agent_after"] = _finish_ecr_codex_explanation(payload)
         return payload
-    if os.environ.get("SECCOP_S3_COMPLIANCE_E2E") == "1":
+    if os.environ.get("SECCOP_S3_COMPLIANCE_E2E") == "1" and (not combined or source == "s3"):
         mapped = {"scan": "scan", "fix": "apply", "reset": "reset"}.get(command)
         if mapped is None:
             return {"status": "BLOCKED", "reason_code": "REQUEST_REJECTED", "message": "The S3 operation was blocked."}
@@ -1319,13 +1327,17 @@ class _Handler(BaseHTTPRequestHandler):
 
     def do_GET(self) -> None:  # noqa: N802 - stdlib handler API
         if self.path == "/api/health":
+            combined = os.environ.get("SECCOP_ECR_S3_COMBINED") == "1"
+            ecr_enabled = os.environ.get("SECCOP_ECR_OPERATOR_MVP") == "1"
+            s3_enabled = os.environ.get("SECCOP_S3_COMPLIANCE_E2E") == "1"
             self._send_json(
                 200,
                 {
                     "status": "OK",
                     "mode": "AWS_DEMO" if _real_demo_enabled() else "LOCAL_SYNTHETIC",
                     "demo_backend": "AWS" if _real_demo_enabled() else "LOCAL",
-                    "review_mode": "ECR_OPERATOR" if os.environ.get("SECCOP_ECR_OPERATOR_MVP") == "1" else "S3_COMPLIANCE" if os.environ.get("SECCOP_S3_COMPLIANCE_E2E") == "1" else "GENERAL",
+                    "review_mode": "ECR_S3_COMBINED" if combined else "ECR_OPERATOR" if ecr_enabled else "S3_COMPLIANCE" if s3_enabled else "GENERAL",
+                    "enabled_sources": [source for source, enabled in (("ecr", ecr_enabled), ("s3", s3_enabled)) if enabled],
                 },
             )
             return
@@ -1373,8 +1385,12 @@ class _Handler(BaseHTTPRequestHandler):
             except ValidationError:
                 self._send_json(400, {"status": "BLOCKED", "reason_code": "REQUEST_REJECTED"})
                 return
+            combined = os.environ.get("SECCOP_ECR_S3_COMBINED") == "1"
+            if combined and request.source is None:
+                self._send_json(400, {"status": "BLOCKED", "reason_code": "SOURCE_REQUIRED", "message": "Select ECR or S3 before scanning."})
+                return
             if os.environ.get("SECCOP_S3_COMPLIANCE_E2E") == "1" or os.environ.get("SECCOP_ECR_OPERATOR_MVP") == "1":
-                result = _run_real_demo("scan", request_text=request.request_text)
+                result = _run_real_demo("scan", source=request.source, request_text=request.request_text)
                 agent = result.pop("agent", None)
                 response: dict[str, object] = {"result": result, "events": []}
                 if agent is not None:
@@ -1429,6 +1445,12 @@ class _Handler(BaseHTTPRequestHandler):
             return
 
         if self.path == "/api/demo/reset":
+            if os.environ.get("SECCOP_ECR_S3_COMBINED") == "1":
+                if set(payload) != {"confirm", "source"} or payload.get("confirm") is not True or payload.get("source") not in {"ecr", "s3"}:
+                    self._send_json(400, {"status": "BLOCKED", "reason_code": "REQUEST_REJECTED"})
+                    return
+                self._send_json(200, {"result": _run_real_demo("reset", source=payload["source"]), "events": []})
+                return
             if payload != {"confirm": True}:
                 self._send_json(400, {"status": "BLOCKED", "reason_code": "REQUEST_REJECTED"})
                 return
