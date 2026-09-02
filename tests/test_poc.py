@@ -119,7 +119,7 @@ def test_browser_surface_is_local_and_has_the_gate_controls() -> None:
     assert "Upload read-only evidence" in html
     assert "Approve mock remediation" in html
     assert "Generate remediation suggestion" in html
-    assert "GovTech inference: not used" in html
+    assert "GovTech inference: not used" not in html
     assert "Reject" in html
     assert "A server change always needs a separate review and approval" in html
 
@@ -850,7 +850,7 @@ def test_browser_sidebar_and_composer_management_view() -> None:
     assert "function configureS3Review()" in html
     for control_id in ("scan-environment", "reopen-s3-finding", "start-real-demo", "advisory-upload", "compare-live", "csv-upload", "compare-csv"):
         assert f'id="{control_id}"' in html
-    assert 'id="backend-note" class="side-footer" hidden' in html
+    assert '<div id="backend-note" class="side-footer hidden" aria-hidden="true" hidden></div>' in html
     assert 'id="mode-status" class="status-pill"' in html
 
 
