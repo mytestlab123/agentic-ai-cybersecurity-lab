@@ -1155,6 +1155,11 @@ def main() -> int:
         default=os.environ.get("SECCOP_ECR_FIXTURE", "current"),
         help="select the retained ECR fixture alias for Inspector reads",
     )
+    parser.add_argument(
+        "--ecr-tag-override",
+        default=os.environ.get("SECCOP_ECR_TAG_OVERRIDE"),
+        help="read one exact retained ECR tag instead of the fixture tag",
+    )
     parser.add_argument("--confirm", action="store_true", help="allow the requested DEMO preparation/fix")
     args = parser.parse_args()
     if args.command in {"start", "fix", "verify", "cleanup", "ecr-start", "ecr-fix", "ecr-reset", "ecr-fixtures"} and not args.confirm:
@@ -1172,7 +1177,13 @@ def main() -> int:
             elif args.command == "ecr-fixtures":
                 result = _ecr_fixtures(aws, Path(run_dir))
             elif args.command == "ecr-scan":
-                result = _ecr_scan(aws, Path(run_dir), ecr_scanner=args.ecr_scanner, ecr_fixture=args.ecr_fixture)
+                result = _ecr_scan(
+                    aws,
+                    Path(run_dir),
+                    ecr_scanner=args.ecr_scanner,
+                    ecr_fixture=args.ecr_fixture,
+                    tag_override=args.ecr_tag_override,
+                )
             elif args.command == "ecr-fix":
                 result = _ecr_fix(aws, Path(run_dir), ecr_scanner=args.ecr_scanner, ecr_fixture=args.ecr_fixture)
             elif args.command == "ecr-reset":

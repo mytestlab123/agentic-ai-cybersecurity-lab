@@ -59,6 +59,7 @@ _SERVER_SCAN_REQUEST: SecCopAdvisoryRequest | None = None
 _HYBRID_SESSION: "_HybridSession | None" = None
 _S3_APPROVAL_READY = False
 _ECR_APPROVAL_READY = False
+_ECR_SCAN_TAG_OVERRIDE: str | None = None
 _ECR_TURN_TIMEOUT = 60.0
 _CODEX_PREFLIGHT_TURN_TIMEOUT = 30.0
 _CODEX_STDERR_DIR = Path.home() / ".AGENTS-temp" / "agentic-ai-cybersecurity-lab" / "issue53-app-server-observability" / "app-server-stderr"
@@ -728,7 +729,7 @@ def _run_real_demo(command: str, *, source: str | None = None, request_text: str
             "reason_code": "AWS_DEMO_DISABLED",
             "message": "The local server is using synthetic mode. Enable the AWS DEMO backend explicitly.",
         }
-    global _S3_APPROVAL_READY, _ECR_APPROVAL_READY
+    global _S3_APPROVAL_READY, _ECR_APPROVAL_READY, _ECR_SCAN_TAG_OVERRIDE
     if os.environ.get("SECCOP_ECR_OPERATOR_MVP") == "1":
         mapped = {"start": "ecr-start", "scan": "ecr-scan", "fix": "ecr-fix", "reset": "ecr-reset"}.get(command)
         if mapped is None or (mapped == "ecr-fix" and (source != "ecr" or not _ECR_APPROVAL_READY)):
@@ -739,6 +740,8 @@ def _run_real_demo(command: str, *, source: str | None = None, request_text: str
         args = [sys.executable, str(_DEMO_SCRIPT), mapped, "--profile", os.environ["SECCOP_PROFILE"], "--region", os.environ["AWS_REGION"]]
         args.extend(["--ecr-scanner", ecr_scanner])
         args.extend(["--ecr-fixture", os.environ.get("SECCOP_ECR_FIXTURE", "current")])
+        if mapped == "ecr-scan" and _ECR_SCAN_TAG_OVERRIDE is not None:
+            args.extend(["--ecr-tag-override", _ECR_SCAN_TAG_OVERRIDE])
         if mapped != "ecr-scan": args.append("--confirm")
         completed = subprocess.run(args, capture_output=True, text=True, check=False, timeout=300, env=os.environ.copy())
         try:
@@ -746,7 +749,12 @@ def _run_real_demo(command: str, *, source: str | None = None, request_text: str
         except json.JSONDecodeError:
             return {"status": "BLOCKED", "reason_code": "SECCOP_ECR_BACKEND_BLOCKED", "message": "The ECR operation was blocked."}
         if mapped == "ecr-scan" and payload.get("reason_code") == "SECCOP_ECR_NON_COMPLIANT": _ECR_APPROVAL_READY = True
-        if mapped in {"ecr-fix", "ecr-reset"} and payload.get("status") in {"VERIFIED", "READY"}: _ECR_APPROVAL_READY = False
+        if mapped == "ecr-fix" and payload.get("status") == "VERIFIED":
+            _ECR_APPROVAL_READY = False
+            _ECR_SCAN_TAG_OVERRIDE = "demo-current"
+        if mapped == "ecr-reset" and payload.get("status") == "READY":
+            _ECR_APPROVAL_READY = False
+            _ECR_SCAN_TAG_OVERRIDE = "demo-current"
         if os.environ.get("SECCOP_ECR_APP_SERVER") == "1" and mapped == "ecr-scan":
             payload["agent"] = _start_ecr_codex_explanation(
                 request_text or "Investigate the ECR finding and explain the safe next step.", payload,

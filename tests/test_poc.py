@@ -739,6 +739,54 @@ def test_ecr_approve_uses_matching_clean_fixture_and_current_verification(monkey
     assert scanned == [("npm-clean", "demo-current")]
 
 
+def test_ecr_scan_tag_override_reads_mutable_current_target(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    selected: list[str] = []
+
+    def fake_scan(_aws: object, *, tag: str, **_: object) -> dict[str, object]:
+        selected.append(tag)
+        return {"source": "ECR_IMAGE", "alias": "ECR_IMAGE_01", "state": "COMPLIANT", "reason_code": "SECCOP_ECR_INSPECTOR_CVE_ABSENT", "scanner_provider": "AMAZON_INSPECTOR", "scanner_mode": "ECR_ENHANCED_SCANNING", "cve_id": seccop_demo.NPM_CVE}
+
+    monkeypatch.setattr(seccop_demo, "_scan_ecr_inspector", fake_scan)
+    result = seccop_demo._ecr_scan(
+        object(), tmp_path, ecr_scanner="inspector", ecr_fixture="npm-vulnerable", tag_override="demo-current"
+    )
+
+    assert result["reason_code"] == "SECCOP_ECR_COMPLIANT"
+    assert selected == ["demo-current"]
+
+
+def test_ecr_operator_switches_scan_to_current_after_fix_and_reset(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("SECCOP_DEMO_BACKEND", "AWS")
+    monkeypatch.setenv("SECCOP_ECR_OPERATOR_MVP", "1")
+    monkeypatch.setenv("SECCOP_ECR_SCANNER", "inspector")
+    monkeypatch.setenv("SECCOP_PROFILE", "amit")
+    monkeypatch.setenv("AWS_REGION", "ap-southeast-1")
+    monkeypatch.delenv("SECCOP_ECR_APP_SERVER", raising=False)
+    monkeypatch.setattr(poc_server, "_ECR_APPROVAL_READY", False)
+    monkeypatch.setattr(poc_server, "_ECR_SCAN_TAG_OVERRIDE", None)
+    captured: list[list[str]] = []
+
+    def fake_run(args: list[str], **_: object) -> SimpleNamespace:
+        captured.append(args)
+        command = next(item for item in ("ecr-scan", "ecr-fix", "ecr-reset") if item in args)
+        payload = {
+            "ecr-scan": {"status": "READY", "reason_code": "SECCOP_ECR_NON_COMPLIANT"},
+            "ecr-fix": {"status": "VERIFIED", "reason_code": "SECCOP_ECR_PROMOTION_VERIFIED"},
+            "ecr-reset": {"status": "READY", "reason_code": "SECCOP_ECR_REOPEN_READY"},
+        }[command]
+        return SimpleNamespace(stdout=json.dumps(payload))
+
+    monkeypatch.setattr(poc_server.subprocess, "run", fake_run)
+    assert poc_server._run_real_demo("scan")["reason_code"] == "SECCOP_ECR_NON_COMPLIANT"
+    monkeypatch.setattr(poc_server, "_ECR_APPROVAL_READY", True)
+    assert poc_server._run_real_demo("fix", source="ecr")["status"] == "VERIFIED"
+    assert poc_server._run_real_demo("scan")["status"] == "READY"
+    assert captured[-1][captured[-1].index("--ecr-tag-override") + 1] == "demo-current"
+    assert poc_server._run_real_demo("reset")["status"] == "READY"
+    assert poc_server._run_real_demo("scan")["status"] == "READY"
+    assert captured[-1][captured[-1].index("--ecr-tag-override") + 1] == "demo-current"
+
+
 def test_ecr_operator_api_passes_explicit_scanner_without_running_aws(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv("SECCOP_DEMO_BACKEND", "AWS")
     monkeypatch.setenv("SECCOP_ECR_OPERATOR_MVP", "1")
