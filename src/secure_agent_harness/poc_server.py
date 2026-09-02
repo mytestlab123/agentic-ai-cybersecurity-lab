@@ -58,6 +58,7 @@ _SECCOP_TARGET_IDS: dict[str, str] = {}
 _SERVER_SCAN_REQUEST: SecCopAdvisoryRequest | None = None
 _HYBRID_SESSION: "_HybridSession | None" = None
 _S3_APPROVAL_READY = False
+_S3_PROPOSALS: dict[str, dict[str, str | bool]] = {}
 _ECR_APPROVAL_READY = False
 _ECR_SCAN_TAG_OVERRIDE: str | None = None
 _ECR_TURN_TIMEOUT = 60.0
@@ -720,7 +721,7 @@ def _real_demo_enabled() -> bool:
     return os.environ.get("SECCOP_DEMO_BACKEND", "LOCAL").upper() == "AWS"
 
 
-def _run_real_demo(command: str, *, source: str | None = None, request_text: str | None = None) -> dict[str, object]:
+def _run_real_demo(command: str, *, source: str | None = None, request_text: str | None = None, proposal_id: str | None = None, proposal_hash: str | None = None) -> dict[str, object]:
     """Run the repo-owned AWS DEMO command and return sanitized JSON only."""
 
     if not _real_demo_enabled():
@@ -764,10 +765,17 @@ def _run_real_demo(command: str, *, source: str | None = None, request_text: str
         return payload
     if os.environ.get("SECCOP_S3_COMPLIANCE_E2E") == "1":
         mapped = {"scan": "scan", "fix": "apply", "reset": "reset"}.get(command)
-        if mapped is None or (mapped == "apply" and (source != "s3" or not _S3_APPROVAL_READY)):
+        if mapped is None:
+            return {"status": "BLOCKED", "reason_code": "REQUEST_REJECTED", "message": "The S3 operation was blocked."}
+        if mapped == "apply":
+            proposal = _S3_PROPOSALS.get(proposal_id or "")
+            if source != "s3" or not _S3_APPROVAL_READY or proposal is None or proposal_hash != proposal.get("proposal_hash") or proposal.get("consumed"):
+                return {"status": "BLOCKED", "reason_code": "APPROVAL_REQUIRED", "message": "Approve the exact S3 proposal before remediation."}
+            proposal["consumed"] = True
+        if mapped == "reset" and source not in {None, "s3"}:
             return {"status": "BLOCKED", "reason_code": "APPROVAL_REQUIRED", "message": "Approve the exact S3 proposal before remediation."}
         args = [sys.executable, str(_S3_COMPLIANCE_SCRIPT), mapped, "--profile", os.environ["SECCOP_PROFILE"], "--region", os.environ["AWS_REGION"], "--bucket", os.environ["SECCOP_S3_BUCKET"]]
-        completed = subprocess.run(args, capture_output=True, text=True, check=False, timeout=120, env=os.environ.copy())
+        completed = subprocess.run(args, capture_output=True, text=True, check=False, timeout=480, env=os.environ.copy())
         try:
             payload = json.loads(completed.stdout)
         except json.JSONDecodeError:
@@ -786,7 +794,16 @@ def _run_real_demo(command: str, *, source: str | None = None, request_text: str
                     return {"status": "BLOCKED", "reason_code": "SECCOP_S3_BACKEND_BLOCKED", "message": "The S3 operation was blocked."}
                 states.append("PROTECTED")
             payload["bucket_status"] = [{"label": alias, "state": state} for alias, state in zip(aliases, states, strict=False)]
-            if payload.get("reason_code") == "SECCOP_S3_NON_COMPLIANT": _S3_APPROVAL_READY = True
+            if payload.get("reason_code") == "SECCOP_S3_NON_COMPLIANT":
+                proposal_id = _next_proposal_id()
+                basis = {"source": "s3", "rule": payload.get("config_rule_name") or "s3-bucket-level-public-access-prohibited", "document": payload.get("remediation_document") or "AWSConfigRemediation-ConfigureS3BucketPublicAccessBlock", "target": "S3_BUCKET_ALIAS_03", "pre_state": payload.get("reason_code"), "scan_id": payload.get("scan_id")}
+                proposal_hash = hashlib.sha256(json.dumps(basis, sort_keys=True).encode()).hexdigest()
+                _S3_PROPOSALS[proposal_id] = {"proposal_hash": proposal_hash, "consumed": False}
+                for finding in payload.get("findings", []):
+                    if isinstance(finding, dict):
+                        finding.update({"proposal_id": proposal_id, "proposal_hash": proposal_hash, "config_rule_name": payload.get("config_rule_name"), "remediation_document": payload.get("remediation_document")})
+                payload.update({"proposal_id": proposal_id, "proposal_hash": proposal_hash})
+                _S3_APPROVAL_READY = True
         if mapped == "apply" and payload.get("status") == "VERIFIED": _S3_APPROVAL_READY = False
         if mapped == "reset" and payload.get("reason_code") == "SECCOP_S3_RESET_READY": _S3_APPROVAL_READY = False
         return payload
@@ -842,6 +859,18 @@ def _run_real_demo(command: str, *, source: str | None = None, request_text: str
             "message": "The AWS DEMO command did not complete.",
         }
     return payload
+
+
+def _reject_s3_proposal(proposal_id: str | None, proposal_hash: str | None) -> dict[str, object]:
+    if not proposal_id or not proposal_hash:
+        return {"status": "BLOCKED", "reason_code": "PROPOSAL_REQUIRED", "message": "The exact S3 proposal is required."}
+    proposal = _S3_PROPOSALS.get(proposal_id)
+    if proposal is None or proposal.get("proposal_hash") != proposal_hash or proposal.get("consumed"):
+        return {"status": "BLOCKED", "reason_code": "PROPOSAL_INVALID", "message": "The S3 proposal is stale or invalid."}
+    _S3_PROPOSALS.pop(proposal_id, None)
+    global _S3_APPROVAL_READY
+    _S3_APPROVAL_READY = False
+    return {"status": "REJECTED", "reason_code": "HUMAN_REJECTED", "state": "NON_COMPLIANT", "mutation_performed": False, "message": "The exact S3 exposure-risk proposal was rejected; no AWS mutation was performed."}
 
 
 def _live_server_scan() -> SecCopScanResult:
@@ -1389,7 +1418,14 @@ class _Handler(BaseHTTPRequestHandler):
             if source not in {"s3", "ecr"} or payload.get("confirm") is not True:
                 self._send_json(400, {"status": "BLOCKED", "reason_code": "REQUEST_REJECTED"})
                 return
-            self._send_json(200, {"result": _run_real_demo("fix", source=source), "events": []})
+            self._send_json(200, {"result": _run_real_demo("fix", source=source, proposal_id=payload.get("proposal_id"), proposal_hash=payload.get("proposal_hash")), "events": []})
+            return
+
+        if self.path == "/api/demo/reject":
+            if payload.get("source") != "s3" or payload.get("confirm") is not True:
+                self._send_json(400, {"status": "BLOCKED", "reason_code": "REQUEST_REJECTED"})
+                return
+            self._send_json(200, {"result": _reject_s3_proposal(payload.get("proposal_id"), payload.get("proposal_hash")), "events": []})
             return
 
         if self.path == "/api/demo/reset":

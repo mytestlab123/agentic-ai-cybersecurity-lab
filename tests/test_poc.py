@@ -28,6 +28,7 @@ from secure_agent_harness.poc_server import (
     _collect_codex_turn,
     _HybridSession,
     _public_remediation_payload,
+    _reject_s3_proposal,
     _run_codex_preflight,
 )
 from secure_agent_harness.seccop_scan import review_demo_cve
@@ -108,6 +109,9 @@ def test_browser_surface_is_local_and_has_the_gate_controls() -> None:
     assert "/api/decision" in html
     assert "/api/live-evidence" in html
     assert "/api/scan" in html
+    assert "/api/demo/reject" in html
+    assert "isS3Risk ? 'Remediate'" in html
+    assert "Exposure-risk remediation rejected" in html
     assert "/api/cve-review" in html
     assert "/api/codex-preflight" in html
     assert "Check Codex connection" in html
@@ -122,6 +126,18 @@ def test_browser_surface_is_local_and_has_the_gate_controls() -> None:
     assert "GovTech inference: not used" not in html
     assert "Reject" in html
     assert "A server change always needs a separate review and approval" in html
+
+
+def test_s3_proposal_reject_is_bound_and_non_mutating() -> None:
+    poc_server._S3_PROPOSALS.clear()
+    poc_server._S3_PROPOSALS["SECCOP_PROPOSAL_TEST"] = {"proposal_hash": "hash", "consumed": False}
+
+    result = _reject_s3_proposal("SECCOP_PROPOSAL_TEST", "hash")
+
+    assert result["status"] == "REJECTED"
+    assert result["reason_code"] == "HUMAN_REJECTED"
+    assert result["mutation_performed"] is False
+    assert "SECCOP_PROPOSAL_TEST" not in poc_server._S3_PROPOSALS
 
 
 class _FakeCodexTransport:

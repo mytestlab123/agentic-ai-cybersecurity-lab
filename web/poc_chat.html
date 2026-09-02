@@ -604,17 +604,23 @@
           const isS3Risk = finding.source_type === 'S3_BUCKET';
           const isEcrRisk = ecrReview && finding.source_type === 'ECR_IMAGE';
           if (isS3Risk || isEcrRisk) setS3FlowStep(3);
-          const body = addMessage('assistant', isS3Risk ? 'Security misconfiguration confirmed. Approve Once to enable all four Block Public Access controls.' : isEcrRisk ? 'Amazon Inspector confirmed the ECR finding. Approve Once to promote the clean digest.' : 'The clean replacement is ready for review. Approve it to replace only this DEMO artifact.');
+          const body = addMessage('assistant', isS3Risk ? 'Security misconfiguration confirmed. Remediate to enable all four Block Public Access controls, or Reject this proposal.' : isEcrRisk ? 'Amazon Inspector confirmed the ECR finding. Approve Once to promote the clean digest.' : 'The clean replacement is ready for review. Approve it to replace only this DEMO artifact.');
           const card = node('div', 'approval-card');
           const grid = node('div', 'evidence-grid');
           evidenceCell(grid, 'Source', finding.source_type);
           evidenceCell(grid, 'Change', finding.recommended_state);
           evidenceCell(grid, 'After', 'The clean item will be scanned again');
           card.appendChild(grid);
-          const approve = node('button', 'btn approve', isS3Risk || isEcrRisk ? 'Approve Once' : 'Approve and fix');
+          const approve = node('button', 'btn approve', isS3Risk ? 'Remediate' : isEcrRisk ? 'Approve Once' : 'Approve and fix');
           approve.type = 'button';
           approve.addEventListener('click', () => approveDemoFix(finding, approve));
           card.appendChild(approve);
+          if (isS3Risk) {
+            const reject = node('button', 'btn reject', 'Reject');
+            reject.type = 'button';
+            reject.addEventListener('click', () => rejectDemoFinding(finding, reject));
+            card.appendChild(reject);
+          }
           body.appendChild(card);
           return body;
         }
@@ -647,11 +653,12 @@
     async function approveDemoFix(finding, button) {
       button.disabled = true;
       if (finding.source_type === 'S3_BUCKET' || (ecrReview && finding.source_type === 'ECR_IMAGE')) setS3FlowStep(4);
-      addMessage('user', 'Approve Once: ' + finding.title);
+      addMessage('user', (finding.source_type === 'S3_BUCKET' ? 'Remediate: ' : 'Approve Once: ') + finding.title);
       const thinking = addMessage('assistant', finding.source_type === 'S3_BUCKET' ? 'Enabling Block Public Access and verifying the protected state...' : ecrReview ? 'Promoting the clean digest and verifying it with Amazon Inspector...' : 'Applying the approved replacement and checking it again...');
       const source = finding.source_type === 'S3_BUCKET' || finding.source_type === 'S3_ARTIFACT' ? 's3' : 'ecr';
       try {
-        const payload = await post('/api/demo/fix', { source, confirm: true });
+        const approval = source === 's3' ? { proposal_id: finding.proposal_id, proposal_hash: finding.proposal_hash } : {};
+        const payload = await post('/api/demo/fix', { source, confirm: true, ...approval });
         thinking.parentElement.remove();
         renderDemoFixResult(payload, finding.source_type);
       } catch (error) {
@@ -661,19 +668,48 @@
       }
     }
 
+    async function rejectDemoFinding(finding, button) {
+      button.disabled = true;
+      addMessage('user', 'Reject: ' + finding.title);
+      const thinking = addMessage('assistant', 'Recording the rejection without changing AWS...');
+      try {
+        const payload = await post('/api/demo/reject', { source: 's3', confirm: true, proposal_id: finding.proposal_id, proposal_hash: finding.proposal_hash });
+        thinking.parentElement.remove();
+        const result = payload.result || {};
+        const body = addMessage('assistant', result.message || 'The proposal was rejected.');
+        const card = node('div', 'result-card');
+        const head = node('div', 'result-head');
+        head.appendChild(node('div', 'result-title', 'Exposure-risk remediation rejected'));
+        head.appendChild(node('span', 'badge', result.reason_code || result.status || 'REJECTED'));
+        card.appendChild(head);
+        const grid = node('div', 'evidence-grid');
+        evidenceCell(grid, 'Source', 'S3_BUCKET');
+        evidenceCell(grid, 'AWS mutation', result.mutation_performed === false ? 'None' : 'Blocked');
+        evidenceCell(grid, 'State', result.state || 'NON_COMPLIANT');
+        card.appendChild(grid);
+        body.appendChild(card);
+        button.disabled = false;
+      } catch (error) {
+        button.disabled = false;
+        thinking.textContent = 'The rejection was blocked.';
+        thinking.classList.add('error-copy');
+      }
+    }
+
     function renderDemoFixResult(payload, sourceType) {
       const result = payload.result || {};
       const body = addMessage('assistant', result.message || 'The approved DEMO fix was recorded.');
       const card = node('div', 'result-card');
       const head = node('div', 'result-head');
-      head.appendChild(node('div', 'result-title', sourceType === 'S3_BUCKET' ? 'Exposure-risk remediation verified' : ecrReview && sourceType === 'ECR_IMAGE' ? 'ECR promotion verified' : 'Approved DEMO fix'));
-      const remediationBadge = (s3Review && sourceType === 'S3_BUCKET') || (ecrReview && sourceType === 'ECR_IMAGE') ? { label: 'CHECK VERIFIED', className: 'protected' } : { label: result.reason_code || result.status || 'BLOCKED', className: '' };
+      const verified = result.status === 'VERIFIED';
+      head.appendChild(node('div', 'result-title', sourceType === 'S3_BUCKET' ? (verified ? 'Exposure-risk remediation verified' : 'Exposure-risk remediation blocked') : ecrReview && sourceType === 'ECR_IMAGE' ? 'ECR promotion verified' : 'Approved DEMO fix'));
+      const remediationBadge = ((s3Review && sourceType === 'S3_BUCKET') || (ecrReview && sourceType === 'ECR_IMAGE')) && verified ? { label: 'CHECK VERIFIED', className: 'protected' } : { label: result.reason_code || result.status || 'BLOCKED', className: '' };
       head.appendChild(node('span', 'badge ' + remediationBadge.className, remediationBadge.label));
       card.appendChild(head);
       const grid = node('div', 'evidence-grid');
       evidenceCell(grid, 'Source', sourceType);
       evidenceCell(grid, 'Change', result.state || 'Recorded');
-      evidenceCell(grid, 'Approval', 'Human approved');
+      evidenceCell(grid, 'Approval', verified ? 'Human approved' : 'Not executed');
       evidenceCell(grid, 'Next', 'Run the scan again');
       if (s3Review && sourceType === 'S3_BUCKET') evidenceCell(grid, 'Technical evidence', result.reason_code);
       card.appendChild(grid);
