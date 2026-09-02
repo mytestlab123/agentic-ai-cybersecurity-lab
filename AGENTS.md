@@ -35,9 +35,19 @@ This is a public personal-learning repository.
 ## AWS and cost boundary
 
 - Local fixtures and mocks are the default.
-- Personal profile `amit` remains the default for future AWS work. The
-  explicitly approved Project1 SecCop DEMO uses the existing local `vagent`
-  profile only for its tagged Singapore resources.
+- Project1 through the local `vagent` profile is the preferred/default account
+  for low-cost personal AI/agentic POCs. Verify that the exact required AWS
+  service is registered before planning a live proof.
+- If Project1 lacks a required service subscription, stop and report the
+  blocker. Never fall back automatically to the paid personal `amit` profile;
+  using `amit` requires separate approval for the exact experiment and cost.
+- Amit explicitly approved the existing public VPC/subnet path for personal
+  AI/agentic POCs. A public IPv4 address is allowed for a disposable target
+  when its dedicated security group has no ingress and operation uses SSM
+  instead of SSH. Do not create new networking merely to make the target
+  private.
+- This public-network exception does not apply to PROD, TRUST, GCC, GovTech,
+  restricted, employer/client, or otherwise private-only environments.
 - Never run `aws sso login`.
 - Do not create or mutate AWS resources without explicit approval for the exact
   experiment and a same-day cleanup plan.
