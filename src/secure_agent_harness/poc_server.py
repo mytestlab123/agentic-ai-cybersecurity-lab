@@ -265,6 +265,12 @@ def _collect_codex_turn(session: _HybridSession, prompt: str, *, receive_timeout
                 raise _CodexPreflightError("CODEX_APP_SERVER_UNAVAILABLE")
             session.turns_completed += 1
             return _safe_codex_text("".join(response_parts))
+        elif method == "thread/status/changed":
+            status = params.get("status")
+            if params.get("threadId") != session.thread_id or not isinstance(status, dict) or status.get("type") != "idle":
+                continue
+            session.turns_completed += 1
+            return _safe_codex_text("".join(response_parts))
     raise _CodexPreflightError("CODEX_APP_SERVER_UNAVAILABLE")
 
 
@@ -606,6 +612,20 @@ def _run_codex_preflight(transport: Any | None = None) -> dict[str, object]:
                 completed = params.get("turn")
                 if not isinstance(completed, dict) or completed.get("status") != "completed":
                     raise _CodexPreflightError("CODEX_APP_SERVER_UNAVAILABLE")
+                return {
+                    "status": "READY",
+                    "reason_code": "CODEX_CONNECTED",
+                    "codex_status": "CODEX_CONNECTED",
+                    "auth_status": auth_status,
+                    "thread_status": "THREAD_ACTIVE",
+                    "aws_mcp_status": "AWS_MCP_UNAVAILABLE",
+                    "response_text": _safe_codex_text("".join(response_parts)),
+                    "message": "Codex App Server completed one isolated no-tool preflight turn.",
+                }
+            elif method == "thread/status/changed":
+                status = params.get("status")
+                if params.get("threadId") != thread_id or not isinstance(status, dict) or status.get("type") != "idle":
+                    continue
                 return {
                     "status": "READY",
                     "reason_code": "CODEX_CONNECTED",

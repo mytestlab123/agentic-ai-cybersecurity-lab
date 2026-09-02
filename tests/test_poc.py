@@ -223,6 +223,18 @@ def test_hybrid_turn_rejects_command_event() -> None:
         _collect_codex_turn(_HybridSession(transport, "THREAD_ALIAS_01", [], 7), "Safe prompt")
 
 
+def test_hybrid_turn_accepts_idle_thread_status_as_completion() -> None:
+    transport = _FakeCodexTransport([
+        {"id": 7, "result": {"turn": {"id": "TURN_ALIAS_02"}}},
+        {"method": "item/agentMessage/delta", "params": {"delta": "Idle completion."}},
+        {"method": "thread/status/changed", "params": {"threadId": "THREAD_ALIAS_01", "status": {"type": "idle"}}},
+    ])
+    session = _HybridSession(transport, "THREAD_ALIAS_01", [], 7)
+
+    assert _collect_codex_turn(session, "Safe prompt") == "Idle completion."
+    assert session.turns_completed == 1
+
+
 def test_ecr_scan_request_bounds_user_text_without_granting_authority() -> None:
     request = SecCopScanRequest.model_validate({"mode": "DEMO", "request_text": "Explain the ECR finding and safe next step."})
     assert request.request_text.startswith("Explain")
