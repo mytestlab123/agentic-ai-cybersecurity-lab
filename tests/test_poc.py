@@ -236,6 +236,45 @@ def test_hybrid_turn_accepts_idle_thread_status_as_completion() -> None:
     assert session.turns_completed == 1
 
 
+def test_hybrid_turn_uses_completed_agent_message_text_when_delta_is_empty() -> None:
+    transport = _FakeCodexTransport([
+        {"id": 7, "result": {"turn": {"id": "TURN_ALIAS_02"}}},
+        {"method": "item/completed", "params": {"item": {
+            "id": "ITEM_ALIAS_02", "type": "agentMessage", "text": "Completed fallback.",
+        }}},
+        {"method": "turn/completed", "params": {"turn": {"id": "TURN_ALIAS_02", "status": "completed"}}},
+    ])
+
+    assert _collect_codex_turn(_HybridSession(transport, "THREAD_ALIAS_01", [], 7), "Safe prompt") == "Completed fallback."
+
+
+def test_hybrid_turn_ignores_buffered_completion_from_prior_turn() -> None:
+    transport = _FakeCodexTransport([
+        {"id": 7, "result": {"turn": {"id": "TURN_ALIAS_02"}}},
+        {"method": "turn/completed", "params": {"turn": {"id": "TURN_ALIAS_01", "status": "completed"}}},
+        {"method": "item/completed", "params": {"item": {
+            "id": "ITEM_ALIAS_02", "type": "agentMessage", "text": "Current completion.",
+        }}},
+        {"method": "turn/completed", "params": {"turn": {"id": "TURN_ALIAS_02", "status": "completed"}}},
+    ])
+
+    assert _collect_codex_turn(_HybridSession(transport, "THREAD_ALIAS_01", [], 7), "Safe prompt") == "Current completion."
+
+
+@pytest.mark.parametrize("completed_text", ["/home/private/path", 42, None])
+def test_hybrid_turn_rejects_unsafe_or_missing_completed_agent_message_text(completed_text: object) -> None:
+    transport = _FakeCodexTransport([
+        {"id": 7, "result": {"turn": {"id": "TURN_ALIAS_02"}}},
+        {"method": "item/completed", "params": {"item": {
+            "id": "ITEM_ALIAS_02", "type": "agentMessage", "text": completed_text,
+        }}},
+        {"method": "turn/completed", "params": {"turn": {"id": "TURN_ALIAS_02", "status": "completed"}}},
+    ])
+
+    with pytest.raises(_CodexPreflightError, match="CODEX_APP_SERVER_OUTPUT_REJECTED"):
+        _collect_codex_turn(_HybridSession(transport, "THREAD_ALIAS_01", [], 7), "Safe prompt")
+
+
 def test_ecr_scan_request_bounds_user_text_without_granting_authority() -> None:
     request = SecCopScanRequest.model_validate({"mode": "DEMO", "request_text": "Explain the ECR finding and safe next step."})
     assert request.request_text.startswith("Explain")

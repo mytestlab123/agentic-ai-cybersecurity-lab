@@ -251,7 +251,19 @@ def _collect_codex_turn(session: _HybridSession, prompt: str, *, receive_timeout
     ).get("turn")
     if not isinstance(turn, dict) or not isinstance(turn.get("id"), str):
         raise _CodexPreflightError("CODEX_APP_SERVER_OUTPUT_REJECTED")
+    turn_id = turn["id"]
     response_parts: list[str] = []
+    completed_agent_text: object = None
+    completed_agent_seen = False
+
+    def response_text() -> str:
+        delta_text = "".join(response_parts)
+        if delta_text.strip():
+            return _safe_codex_text(delta_text)
+        if not completed_agent_seen or not isinstance(completed_agent_text, str):
+            raise _CodexPreflightError("CODEX_APP_SERVER_OUTPUT_REJECTED")
+        return _safe_codex_text(completed_agent_text)
+
     for _ in range(500):
         if session.pending:
             event = session.pending.pop(0)
@@ -268,22 +280,27 @@ def _collect_codex_turn(session: _HybridSession, prompt: str, *, receive_timeout
             item = params.get("item")
             if not isinstance(item, dict) or item.get("type") not in _CODEX_SAFE_ITEM_TYPES:
                 raise _CodexPreflightError("CODEX_EVENT_REJECTED")
+            if method == "item/completed" and item.get("type") == "agentMessage":
+                completed_agent_seen = True
+                completed_agent_text = item.get("text")
         elif method == "item/agentMessage/delta":
             if not isinstance(params.get("delta"), str):
                 raise _CodexPreflightError("CODEX_APP_SERVER_OUTPUT_REJECTED")
             response_parts.append(params["delta"])
         elif method == "turn/completed":
             completed = params.get("turn")
-            if not isinstance(completed, dict) or completed.get("status") != "completed":
+            if not isinstance(completed, dict) or completed.get("id") != turn_id:
+                continue
+            if completed.get("status") != "completed":
                 raise _CodexPreflightError("CODEX_APP_SERVER_UNAVAILABLE")
             session.turns_completed += 1
-            return _safe_codex_text("".join(response_parts))
+            return response_text()
         elif method == "thread/status/changed":
             status = params.get("status")
             if params.get("threadId") != session.thread_id or not isinstance(status, dict) or status.get("type") != "idle":
                 continue
             session.turns_completed += 1
-            return _safe_codex_text("".join(response_parts))
+            return response_text()
     raise _CodexPreflightError("CODEX_APP_SERVER_UNAVAILABLE")
 
 
