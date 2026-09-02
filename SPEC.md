@@ -34,7 +34,8 @@ deterministic read-only tools backed by synthetic fixtures.
 
 SecCop is now a working real-AWS MVP. Repo-owned disposable SecCop DEV
 rehearsals and retries are pre-approved on profile `amit` in
-`ap-southeast-1`; use Project1 only when the required AWS service is eligible.
+`ap-southeast-1`, which is the sole current SecCop AWS authority. There is no
+Project1 or `vagent` fallback; if `amit` is unavailable, stop.
 
 No repeated approval is required for one-at-a-time, repo-owned runs using:
 

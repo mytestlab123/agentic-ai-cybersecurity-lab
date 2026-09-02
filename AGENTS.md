@@ -35,12 +35,13 @@ This is a public personal-learning repository.
 ## AWS and cost boundary
 
 - Local fixtures and mocks are the default.
-- Project1 through the local `vagent` profile is the preferred/default account
-  for low-cost personal AI/agentic POCs. Verify that the exact required AWS
-  service is registered before planning a live proof.
-- If Project1 lacks a required service subscription, stop and report the
-  blocker. Never fall back automatically to the paid personal `amit` profile;
-  using `amit` requires separate approval for the exact experiment and cost.
+- Current SecCop AWS work is explicitly pinned to the `amit` profile in
+  `ap-southeast-1`. Set `AWS_PROFILE=amit`, `AWS_DEFAULT_PROFILE=amit`,
+  `AWS_REGION=ap-southeast-1`, and `AWS_DEFAULT_REGION=ap-southeast-1` for
+  every live SecCop command.
+- There is no implicit `vagent`/Project1 or other-profile fallback for SecCop.
+  If the explicit `amit` STS check fails, stop and request credential renewal;
+  do not switch profiles or run `aws sso login`.
 - Amit explicitly approved the existing public VPC/subnet path for personal
   AI/agentic POCs. A public IPv4 address is allowed for a disposable target
   when its dedicated security group has no ingress and operation uses SSM

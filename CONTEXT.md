@@ -1,5 +1,10 @@
 # Context
 
+Current SecCop AWS execution profile: use only `AWS_PROFILE=amit` and
+`AWS_DEFAULT_PROFILE=amit` in `ap-southeast-1` (also set the matching region
+variables). There is no `vagent`/Project1/default-profile fallback; stop if the
+explicit `amit` STS check fails.
+
 Current objective: persistent Security Copilot (SecCop) live demo after the
 local visual POC and fake-tested read-only adapter.
 
@@ -15,7 +20,8 @@ explicit `apply --confirm`, read-only `collect`, and tag-checked
 SSM path, no-ingress security group, IAM instance profile, available AMI, and
 enabled Inspector EC2 coverage.
 
-Current truth: Project1 reuses the existing Singapore default public VPC and
+Historical Project1 facts (preserved for record, not current SecCop authority):
+Project1 reuses the existing Singapore default public VPC and
 shared SSM profile. The SecCop rehearsal has no running EC2 target, tagged EBS
 volume, dedicated security group, or new network. The three private empty S3
 demo buckets and the private `seccop-ecr-operator-mvp` repository are retained
