@@ -23,6 +23,19 @@ AUTOMATION_ROLE = "SecCopIssue55S3Automation"
 CONFIG_SERVICE_ROLE = "AWSServiceRoleForConfig"
 CONFIG_TIMEOUT_SECONDS = 240
 
+# Issue #55 EC2 compliance slice.  This remains in the existing bounded
+# compliance operator so the EC2 path does not become a second runner.
+EC2_CONFIG_RULE = "ec2-imdsv2-check"
+EC2_CONFIG_SOURCE = "EC2_IMDSV2_CHECK"
+EC2_SSM_DOCUMENT = "AWSConfigRemediation-EnforceEC2InstanceIMDSv2"
+EC2_SSM_DOCUMENT_VERSION = "4"
+EC2_AUTOMATION_ROLE = "SecCopIssue55S3Automation"
+EC2_AUTOMATION_POLICY = "SecCopIssue55Ec2ImdsV2"
+EC2_TARGET_NAME = "seccop-amit-inspector-host-r01"
+EC2_INSTANCE_PROFILE = "AmazonSSMRoleForInstancesQuickSetup"
+EC2_AMI_NAME = "al2023-ami-2023.12.20260831.0-kernel-6.18-x86_64"
+EC2_CONFIG_TIMEOUT_SECONDS = 360
+
 
 def call(args: list[str], *, allow_missing: bool = False) -> dict[str, Any]:
     completed = subprocess.run(args, capture_output=True, text=True, check=False, timeout=60)
@@ -250,6 +263,368 @@ def _automation_executions(profile: str, region: str) -> list[dict[str, Any]]:
     return [item for item in values if isinstance(item, dict) and item.get("DocumentName") == SSM_DOCUMENT and str(item.get("DocumentVersion")) == SSM_DOCUMENT_VERSION]
 
 
+def _ec2_evidence(name: str, value: object) -> None:
+    root = os.environ.get("SECCOP_EC2_EVIDENCE_DIR")
+    if not root:
+        return
+    directory = Path(root)
+    directory.mkdir(parents=True, exist_ok=True, mode=0o700)
+    path = directory / f"{name}.json"
+    path.write_text(json.dumps(value, indent=2, default=str) + "\n", encoding="utf-8")
+    path.chmod(0o600)
+
+
+def _ec2_call(profile: str, region: str, *args: str, allow_missing: bool = False) -> dict[str, Any]:
+    completed = subprocess.run(
+        ["aws", "--profile", profile, "--region", region, *args, "--output", "json"],
+        capture_output=True, text=True, check=False, timeout=90,
+    )
+    if completed.returncode and not allow_missing:
+        _ec2_evidence("aws-error", {"operation": args[0:3], "stderr": completed.stderr[-2000:]})
+        raise RuntimeError("EC2 AWS operation failed")
+    try:
+        value = json.loads(completed.stdout or "{}")
+    except json.JSONDecodeError as exc:
+        raise RuntimeError("EC2 AWS returned invalid output") from exc
+    return value if isinstance(value, dict) else {}
+
+
+def _ec2_state_path() -> Path:
+    value = os.environ.get("SECCOP_EC2_STATE")
+    if not value:
+        raise RuntimeError("EC2 state path is missing")
+    return Path(value)
+
+
+def _ec2_load_state() -> dict[str, Any]:
+    try:
+        value = json.loads(_ec2_state_path().read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError) as exc:
+        raise RuntimeError("EC2 state is unavailable") from exc
+    if not isinstance(value, dict) or value.get("target_name") != EC2_TARGET_NAME:
+        raise RuntimeError("EC2 state target binding is invalid")
+    return value
+
+
+def _ec2_save_state(value: dict[str, Any]) -> None:
+    path = _ec2_state_path()
+    path.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
+    path.write_text(json.dumps(value, indent=2) + "\n", encoding="utf-8")
+    path.chmod(0o600)
+
+
+def _ec2_account(profile: str, region: str) -> str:
+    identity = _ec2_call(profile, region, "sts", "get-caller-identity")
+    account = identity.get("Account")
+    if not isinstance(account, str) or not account.isdigit():
+        raise RuntimeError("EC2 AWS account identity is unavailable")
+    _ec2_evidence("identity", identity)
+    return account
+
+
+def _ec2_select_subnet(profile: str, region: str) -> str:
+    response = _ec2_call(
+        profile, region, "ec2", "describe-subnets", "--filters",
+        "Name=tag:Name,Values=public", "Name=map-public-ip-on-launch,Values=true", "Name=state,Values=available",
+    )
+    candidates = [item for item in response.get("Subnets", []) if isinstance(item, dict)]
+    if len(candidates) != 1 or not isinstance(candidates[0].get("SubnetId"), str):
+        raise RuntimeError("Approved public subnet selection is not unique")
+    _ec2_evidence("selected-subnet", {"candidate_count": len(candidates), "approved_alias": "PUBLIC_SUBNET_01", "available_ips": candidates[0].get("AvailableIpAddressCount")})
+    return str(candidates[0]["SubnetId"])
+
+
+def _ec2_budget_gate(profile: str, region: str, account: str) -> None:
+    result = _ec2_call(profile, region, "budgets", "describe-budgets", "--account-id", account)
+    budgets = result.get("Budgets", [])
+    if not budgets:
+        raise RuntimeError("Monthly budget evidence is unavailable")
+    budget = budgets[0]
+    limit = float(budget.get("BudgetLimit", {}).get("Amount", "0"))
+    forecast = float(budget.get("CalculatedSpend", {}).get("ForecastedSpend", {}).get("Amount", "0"))
+    _ec2_evidence("budget", {"monthly_limit_usd": limit, "forecast_usd": forecast})
+    if limit <= 0 or forecast >= 20.0:
+        raise RuntimeError("EC2 cost forecast exceeded the approved USD 20 gate")
+
+
+def _ec2_target(profile: str, region: str) -> dict[str, Any]:
+    response = _ec2_call(
+        profile, region, "ec2", "describe-instances", "--filters",
+        f"Name=tag:Name,Values={EC2_TARGET_NAME}", "Name=tag:Repo,Values=agentic-ai-cybersecurity-lab",
+        "Name=instance-state-name,Values=pending,running,stopping,stopped",
+    )
+    instances = [
+        item for reservation in response.get("Reservations", []) if isinstance(reservation, dict)
+        for item in reservation.get("Instances", []) if isinstance(item, dict)
+    ]
+    if len(instances) != 1:
+        raise RuntimeError("EC2 target is missing or ambiguous")
+    return instances[0]
+
+
+def _ec2_wait_ssm(profile: str, region: str, instance_id: str) -> None:
+    deadline = time.monotonic() + 360
+    while time.monotonic() < deadline:
+        response = _ec2_call(
+            profile, region, "ssm", "describe-instance-information",
+            "--filters", f"Key=InstanceIds,Values={instance_id}",
+        )
+        nodes = [item for item in response.get("InstanceInformationList", []) if isinstance(item, dict) and item.get("InstanceId") == instance_id]
+        if len(nodes) == 1 and nodes[0].get("PingStatus") == "Online":
+            _ec2_evidence("ssm-online", {"resource_alias": "EC2_RESOURCE_01", "state": "Online"})
+            return
+        time.sleep(5)
+    raise RuntimeError("EC2 SSM registration did not reach Online")
+
+
+def _ec2_recorder_setup(profile: str, region: str) -> bool:
+    recorders = _ec2_call(profile, region, "configservice", "describe-configuration-recorders").get("ConfigurationRecorders", [])
+    channels = _ec2_call(profile, region, "configservice", "describe-delivery-channels").get("DeliveryChannels", [])
+    if len(recorders) != 1 or len(channels) != 1:
+        raise RuntimeError("Existing Config recorder/delivery dependency is not exact")
+    recorder = recorders[0]
+    if recorder.get("name") != CONFIG_RECORDER or not isinstance(recorder.get("roleARN"), str):
+        raise RuntimeError("Existing Config recorder is not the approved recorder")
+    group = recorder.get("recordingGroup", {})
+    types = list(group.get("resourceTypes", [])) if isinstance(group, dict) else []
+    if "AWS::S3::Bucket" not in types:
+        raise RuntimeError("Existing S3 recorder scope would not be preserved")
+    if "AWS::EC2::Instance" in types:
+        return False
+    config = {"name": CONFIG_RECORDER, "roleARN": recorder["roleARN"]}
+    recording_group = {"allSupported": False, "includeGlobalResourceTypes": False, "resourceTypes": sorted(set(types + ["AWS::EC2::Instance"]))}
+    payload = Path(os.environ.get("SECCOP_EC2_EVIDENCE_DIR", "/tmp")) / "configuration-recorder.json"
+    payload.write_text(json.dumps(config), encoding="utf-8"); payload.chmod(0o600)
+    group_file = payload.with_name("recording-group.json")
+    group_file.write_text(json.dumps(recording_group), encoding="utf-8"); group_file.chmod(0o600)
+    _ec2_call(profile, region, "configservice", "stop-configuration-recorder", "--configuration-recorder-name", CONFIG_RECORDER)
+    _ec2_call(profile, region, "configservice", "put-configuration-recorder", "--configuration-recorder", f"file://{payload}", "--recording-group", f"file://{group_file}")
+    _ec2_call(profile, region, "configservice", "start-configuration-recorder", "--configuration-recorder-name", CONFIG_RECORDER)
+    status = _ec2_call(profile, region, "configservice", "describe-configuration-recorder-status")
+    matching = [item for item in status.get("ConfigurationRecordersStatus", []) if item.get("name") == CONFIG_RECORDER]
+    if len(matching) != 1 or matching[0].get("recording") is not True:
+        raise RuntimeError("Existing Config recorder did not return to recording")
+    _ec2_evidence("recorder-updated", {"recorder": CONFIG_RECORDER, "preserved_resource_types": recording_group["resourceTypes"], "recording": True})
+    return True
+
+
+def _ec2_config_setup(profile: str, region: str, instance_id: str, account: str) -> None:
+    role = _ec2_call(profile, region, "iam", "get-role", "--role-name", EC2_AUTOMATION_ROLE)
+    role_arn = role.get("Role", {}).get("Arn")
+    if not isinstance(role_arn, str):
+        raise RuntimeError("Existing Issue #55 Automation role is unavailable")
+    policy = {
+        "Version": "2012-10-17",
+        "Statement": [
+            {"Sid": "Ec2DescribeForImdsVerification", "Effect": "Allow", "Action": "ec2:DescribeInstances", "Resource": "*"},
+            {"Sid": "Ec2ModifyExactTarget", "Effect": "Allow", "Action": "ec2:ModifyInstanceMetadataOptions", "Resource": f"arn:aws:ec2:{region}:{account}:instance/{instance_id}"},
+        ],
+    }
+    policy_file = Path(os.environ.get("SECCOP_EC2_EVIDENCE_DIR", "/tmp")) / "ec2-automation-policy.json"
+    policy_file.write_text(json.dumps(policy), encoding="utf-8"); policy_file.chmod(0o600)
+    _ec2_call(profile, region, "iam", "put-role-policy", "--role-name", EC2_AUTOMATION_ROLE, "--policy-name", EC2_AUTOMATION_POLICY, "--policy-document", f"file://{policy_file}")
+    rule_probe = _ec2_call(profile, region, "configservice", "describe-config-rules", "--config-rule-names", EC2_CONFIG_RULE, allow_missing=True)
+    if rule_probe.get("ConfigRules"):
+        raise RuntimeError("EC2 Config rule already exists unexpectedly")
+    rule = {"ConfigRuleName": EC2_CONFIG_RULE, "Description": "Issue #55 exact EC2 IMDSv2 control", "Scope": {"ComplianceResourceTypes": ["AWS::EC2::Instance"], "ComplianceResourceId": instance_id}, "Source": {"Owner": "AWS", "SourceIdentifier": EC2_CONFIG_SOURCE}}
+    rule_file = policy_file.with_name("ec2-config-rule.json"); rule_file.write_text(json.dumps(rule), encoding="utf-8"); rule_file.chmod(0o600)
+    _ec2_call(profile, region, "configservice", "put-config-rule", "--config-rule", f"file://{rule_file}")
+    remediation = {"ConfigRuleName": EC2_CONFIG_RULE, "TargetType": "SSM_DOCUMENT", "TargetId": EC2_SSM_DOCUMENT, "TargetVersion": EC2_SSM_DOCUMENT_VERSION, "Parameters": {"AutomationAssumeRole": {"StaticValue": {"Values": [role_arn]}}, "InstanceId": {"ResourceValue": {"Value": "RESOURCE_ID"}}}, "Automatic": False}
+    remediation_file = policy_file.with_name("ec2-remediation.json"); remediation_file.write_text(json.dumps([remediation]), encoding="utf-8"); remediation_file.chmod(0o600)
+    _ec2_call(profile, region, "configservice", "put-remediation-configurations", "--remediation-configurations", f"file://{remediation_file}")
+    _ec2_evidence("config-bindings", {"rule": EC2_CONFIG_RULE, "source": EC2_CONFIG_SOURCE, "document": EC2_SSM_DOCUMENT, "document_version": EC2_SSM_DOCUMENT_VERSION, "automatic": False, "role": "EXISTING_ISSUE55_ROLE", "resource_alias": "EC2_RESOURCE_01"})
+
+
+def ec2_setup(profile: str, region: str) -> dict[str, Any]:
+    if profile != "amit" or region != "ap-southeast-1":
+        raise RuntimeError("EC2 Issue #55 requires amit/ap-southeast-1")
+    account = _ec2_account(profile, region)
+    _ec2_budget_gate(profile, region, account)
+    subnet_id = _ec2_select_subnet(profile, region)
+    existing = _ec2_call(profile, region, "ec2", "describe-instances", "--filters", f"Name=tag:Name,Values={EC2_TARGET_NAME}", "Name=tag:Repo,Values=agentic-ai-cybersecurity-lab", "Name=instance-state-name,Values=pending,running,stopping,stopped")
+    if any(reservation.get("Instances") for reservation in existing.get("Reservations", []) if isinstance(reservation, dict)):
+        raise RuntimeError("EC2 target name is already in use")
+    repo_dir = Path(__file__).resolve().parents[1]
+    env = os.environ.copy()
+    env.update({"SECCOP_PROFILE": profile, "SECCOP_REGION": region, "SECCOP_AMI_NAME_PATTERN": os.environ.get("SECCOP_EC2_AMI_NAME_PATTERN", EC2_AMI_NAME)})
+    start = subprocess.run([
+        str(repo_dir / "scripts" / "start-demo.sh"), "--ec2-only", "--profile", profile, "--region", region,
+        "--expected-principal", "amit", "--instance-profile", EC2_INSTANCE_PROFILE, "--subnet-id", subnet_id,
+        "--target-name", EC2_TARGET_NAME, "--confirm",
+    ], capture_output=True, text=True, check=False, timeout=900, env=env)
+    _ec2_evidence("target-start", {"returncode": start.returncode, "stdout": start.stdout[-2000:], "stderr": start.stderr[-2000:]})
+    if start.returncode != 0:
+        raise RuntimeError("Repo-owned EC2 target start was blocked")
+    target = _ec2_target(profile, region)
+    instance_id = target.get("InstanceId")
+    if not isinstance(instance_id, str) or target.get("InstanceType") not in {"t3.nano", "t3.micro", "t3.small"}:
+        raise RuntimeError("EC2 target shape is outside the approved small-instance envelope")
+    groups = target.get("SecurityGroups", [])
+    if len(groups) != 1 or not isinstance(groups[0], dict) or not isinstance(groups[0].get("GroupId"), str):
+        raise RuntimeError("EC2 target security-group shape is invalid")
+    group_id = groups[0]["GroupId"]
+    sg = _ec2_call(profile, region, "ec2", "describe-security-groups", "--group-ids", group_id)
+    if len(sg.get("SecurityGroups", [])) != 1 or sg["SecurityGroups"][0].get("IpPermissions") != []:
+        raise RuntimeError("EC2 target security group is not zero-ingress")
+    volume_id = target.get("BlockDeviceMappings", [{}])[0].get("Ebs", {}).get("VolumeId") if target.get("BlockDeviceMappings") else None
+    # Persist the exact target binding before subsequent setup mutations so a
+    # failure in recorder/rule wiring still leaves the repo-owned cleanup path
+    # able to remove only this disposable instance and its dedicated SG.
+    _ec2_save_state({"target_name": EC2_TARGET_NAME, "instance_id": instance_id, "security_group_id": group_id, "volume_id": volume_id, "subnet_id": subnet_id, "profile": profile, "region": region})
+    _ec2_call(profile, region, "ec2", "modify-instance-metadata-options", "--instance-id", instance_id, "--http-tokens", "optional")
+    _ec2_wait_ssm(profile, region, instance_id)
+    recorder_changed = _ec2_recorder_setup(profile, region)
+    _ec2_config_setup(profile, region, instance_id, account)
+    state = {"target_name": EC2_TARGET_NAME, "instance_id": instance_id, "security_group_id": group_id, "volume_id": volume_id, "subnet_id": subnet_id, "recorder_changed": recorder_changed, "role_policy": EC2_AUTOMATION_POLICY, "config_rule": EC2_CONFIG_RULE, "profile": profile, "region": region}
+    _ec2_save_state(state)
+    after = _ec2_target(profile, region)
+    metadata = after.get("MetadataOptions", {})
+    if metadata.get("HttpTokens") != "optional":
+        raise RuntimeError("EC2 target did not reach the required initial optional-token state")
+    _ec2_evidence("target-ready", {"resource_alias": "EC2_RESOURCE_01", "metadata_tokens": "optional", "ssm": "Online", "zero_ingress": True})
+    return {"status": "READY", "reason_code": "SECCOP_EC2_IMDSV2_SETUP_READY", "resource_alias": "EC2_RESOURCE_01", "state": "NON_COMPLIANT_BASELINE_READY"}
+
+
+def _ec2_compliance(profile: str, region: str, instance_id: str, expected: str) -> str:
+    try:
+        _ec2_call(profile, region, "configservice", "start-config-rules-evaluation", "--config-rule-names", EC2_CONFIG_RULE)
+    except RuntimeError:
+        pass
+    deadline = time.monotonic() + EC2_CONFIG_TIMEOUT_SECONDS
+    latest: dict[str, Any] = {}
+    while time.monotonic() < deadline:
+        latest = _ec2_call(profile, region, "configservice", "get-compliance-details-by-resource", "--resource-type", "AWS::EC2::Instance", "--resource-id", instance_id)
+        results = [item for item in latest.get("EvaluationResults", []) if item.get("EvaluationResultIdentifier", {}).get("EvaluationResultQualifier", {}).get("ConfigRuleName") == EC2_CONFIG_RULE]
+        if results:
+            state = str(results[0].get("ComplianceType", "UNKNOWN"))
+            if state == expected:
+                _ec2_evidence(f"config-compliance-{expected.lower()}", latest)
+                return state
+        time.sleep(10)
+    _ec2_evidence(f"config-compliance-timeout-{expected.lower()}", latest)
+    raise RuntimeError(f"EC2 Config compliance did not reach {expected}")
+
+
+def ec2_scan(profile: str, region: str) -> dict[str, Any]:
+    state = _ec2_load_state(); target = _ec2_target(profile, region); instance_id = state["instance_id"]
+    if target.get("InstanceId") != instance_id or target.get("State", {}).get("Name") != "running":
+        raise RuntimeError("EC2 target is not the exact running target")
+    tokens = target.get("MetadataOptions", {}).get("HttpTokens")
+    expected = "NON_COMPLIANT" if tokens == "optional" else "COMPLIANT" if tokens == "required" else "UNKNOWN"
+    if expected == "UNKNOWN" or _ec2_compliance(profile, region, instance_id, expected) != expected:
+        raise RuntimeError("EC2 Config and metadata states did not agree")
+    if expected == "NON_COMPLIANT":
+        return {"status": "READY", "reason_code": "SECCOP_EC2_IMDSV2_NON_COMPLIANT", "state": "NON_COMPLIANT", "config_rule_name": EC2_CONFIG_RULE, "source_status": [{"source_type": "EC2_CONFIG", "label": "EC2 IMDSv2 Config control", "state": "COMPLETE", "reason_code": "SECCOP_SOURCE_READY"}], "findings": [{"finding_id": "FINDING_01", "source_type": "EC2_CONFIG", "resource_alias": "EC2_RESOURCE_01", "reference": "EC2_IMDSV2_RULE_01", "severity": "MEDIUM", "title": "EC2 IMDSv2 is not enforced", "problem_summary": "AWS Config found an EC2 instance that still accepts IMDSv1.", "observed_state": "HttpTokens=optional; Config NON_COMPLIANT", "recommended_state": "Run only the manual AWS-managed IMDSv2 Automation and verify COMPLIANT.", "remediation_mode": "REAL_APPROVAL_REQUIRED", "reason_code": "SECCOP_EC2_IMDSV2_FINDING", "action_label": "Remediate"}], "message": "AWS Config found one EC2 IMDSv2 compliance finding. Human approval is required before remediation."}
+    return {"status": "NO_FINDINGS", "reason_code": "SECCOP_EC2_IMDSV2_COMPLIANT", "state": "COMPLIANT", "config_rule_name": EC2_CONFIG_RULE, "source_status": [{"source_type": "EC2_CONFIG", "label": "EC2 IMDSv2 Config control", "state": "COMPLETE", "reason_code": "SECCOP_SOURCE_READY"}], "findings": [], "message": "AWS Config verified the EC2 target is IMDSv2 compliant."}
+
+
+def ec2_reject(profile: str, region: str) -> dict[str, Any]:
+    result = ec2_scan(profile, region)
+    if result.get("reason_code") != "SECCOP_EC2_IMDSV2_NON_COMPLIANT":
+        raise RuntimeError("EC2 rejection requires a fresh NON_COMPLIANT finding")
+    return {"status": "REJECTED", "reason_code": "HUMAN_REJECTED", "state": "NON_COMPLIANT", "mutation_performed": False, "message": "The EC2 IMDSv2 remediation proposal was rejected; no AWS mutation was performed."}
+
+
+def _ec2_automation(profile: str, region: str, before_ids: set[str]) -> dict[str, Any]:
+    deadline = time.monotonic() + 480
+    while time.monotonic() < deadline:
+        executions = _ec2_call(profile, region, "ssm", "describe-automation-executions", "--filters", f"Key=DocumentNamePrefix,Values={EC2_SSM_DOCUMENT}", "--max-results", "50").get("AutomationExecutionMetadataList", [])
+        fresh = [item for item in executions if isinstance(item, dict) and item.get("DocumentName") == EC2_SSM_DOCUMENT and str(item.get("AutomationExecutionId")) not in before_ids]
+        if fresh:
+            execution = fresh[0]; status = execution.get("AutomationExecutionStatus")
+            if status in {"Success", "Failed", "TimedOut", "Cancelled"}:
+                execution_id = execution.get("AutomationExecutionId")
+                if status != "Success" or not isinstance(execution_id, str):
+                    raise RuntimeError("IMDSv2 Automation did not reach Success")
+                detail = _ec2_call(profile, region, "ssm", "get-automation-execution", "--automation-execution-id", execution_id)
+                steps = _ec2_call(profile, region, "ssm", "describe-automation-step-executions", "--automation-execution-id", execution_id)
+                _ec2_evidence("automation-terminal", {"status": "Success", "execution": detail, "steps": steps})
+                return {"status": "Success", "execution_alias": "AUTOMATION_EXECUTION_01"}
+        time.sleep(10)
+    raise RuntimeError("IMDSv2 Automation did not reach a terminal state")
+
+
+def ec2_apply(profile: str, region: str) -> dict[str, Any]:
+    state = _ec2_load_state(); before = ec2_scan(profile, region)
+    if before.get("reason_code") != "SECCOP_EC2_IMDSV2_NON_COMPLIANT":
+        raise RuntimeError("EC2 remediation requires a fresh NON_COMPLIANT finding")
+    configs = _ec2_call(profile, region, "configservice", "describe-remediation-configurations", "--config-rule-names", EC2_CONFIG_RULE).get("RemediationConfigurations", [])
+    if len(configs) != 1 or configs[0].get("TargetId") != EC2_SSM_DOCUMENT or configs[0].get("Automatic") is not False or str(configs[0].get("TargetVersion")) != EC2_SSM_DOCUMENT_VERSION:
+        raise RuntimeError("EC2 remediation binding is not exact and manual")
+    existing = _ec2_call(profile, region, "ssm", "describe-automation-executions", "--filters", f"Key=DocumentNamePrefix,Values={EC2_SSM_DOCUMENT}", "--max-results", "50").get("AutomationExecutionMetadataList", [])
+    before_ids = {str(item.get("AutomationExecutionId")) for item in existing if isinstance(item, dict)}
+    started = _ec2_call(profile, region, "configservice", "start-remediation-execution", "--config-rule-name", EC2_CONFIG_RULE, "--resource-keys", json.dumps([{"resourceType": "AWS::EC2::Instance", "resourceId": state["instance_id"]}]))
+    _ec2_evidence("remediation-start", started)
+    automation = _ec2_automation(profile, region, before_ids)
+    target = _ec2_target(profile, region)
+    if target.get("MetadataOptions", {}).get("HttpTokens") != "required":
+        raise RuntimeError("EC2 IMDSv2 metadata verification failed")
+    if _ec2_compliance(profile, region, state["instance_id"], "COMPLIANT") != "COMPLIANT":
+        raise RuntimeError("EC2 Config COMPLIANT verification failed")
+    return {"status": "VERIFIED", "reason_code": "SECCOP_EC2_IMDSV2_REMEDIATED", "state": "COMPLIANT", "metadata_http_tokens": "required", "automation_status": automation["status"], "message": "AWS Config remediation completed through AWSConfigRemediation-EnforceEC2InstanceIMDSv2 and the protected EC2 state was verified."}
+
+
+def ec2_cleanup(profile: str, region: str) -> dict[str, Any]:
+    try:
+        state = _ec2_load_state()
+    except RuntimeError:
+        return {"status": "CLEANED", "reason_code": "SECCOP_EC2_CLEANUP_VERIFIED", "resource_alias": "EC2_RESOURCE_01", "already_absent": True}
+    errors: list[str] = []
+    try:
+        _ec2_call(profile, region, "configservice", "delete-remediation-configuration", "--config-rule-name", EC2_CONFIG_RULE, allow_missing=True)
+        for _ in range(30):
+            remaining_remediation = _ec2_call(profile, region, "configservice", "describe-remediation-configurations", "--config-rule-names", EC2_CONFIG_RULE, allow_missing=True)
+            if not remaining_remediation.get("RemediationConfigurations"):
+                break
+            time.sleep(2)
+        else:
+            errors.append("config-remediation-remains")
+    except RuntimeError:
+        errors.append("delete-remediation-configuration")
+    if "config-remediation-remains" not in errors:
+        for attempt in range(6):
+            try:
+                _ec2_call(profile, region, "configservice", "delete-config-rule", "--config-rule-name", EC2_CONFIG_RULE, allow_missing=True)
+                break
+            except RuntimeError:
+                if attempt == 5:
+                    errors.append("delete-config-rule")
+                else:
+                    time.sleep(2)
+        if "delete-config-rule" not in errors:
+            for _ in range(30):
+                remaining_rule = _ec2_call(profile, region, "configservice", "describe-config-rules", "--config-rule-names", EC2_CONFIG_RULE, allow_missing=True)
+                if not remaining_rule.get("ConfigRules"):
+                    break
+                time.sleep(2)
+            else:
+                errors.append("config-rule-remains")
+    try:
+        _ec2_call(profile, region, "iam", "delete-role-policy", "--role-name", EC2_AUTOMATION_ROLE, "--policy-name", EC2_AUTOMATION_POLICY, allow_missing=True)
+    except RuntimeError:
+        errors.append("delete-role-policy")
+    repo_dir = Path(__file__).resolve().parents[1]
+    env = os.environ.copy(); env.update({"SECCOP_PROFILE": profile, "SECCOP_REGION": region, "SECCOP_AMI_NAME_PATTERN": os.environ.get("SECCOP_EC2_AMI_NAME_PATTERN", EC2_AMI_NAME)})
+    subnet = str(state.get("subnet_id", ""))
+    cleanup = subprocess.run([str(repo_dir / "scripts" / "cleanup-demo.sh"), "--ec2-only", "--profile", profile, "--region", region, "--expected-principal", "amit", "--instance-profile", EC2_INSTANCE_PROFILE, "--subnet-id", subnet, "--target-name", EC2_TARGET_NAME, "--confirm"], capture_output=True, text=True, check=False, timeout=900, env=env)
+    _ec2_evidence("target-cleanup", {"returncode": cleanup.returncode, "stdout": cleanup.stdout[-2000:], "stderr": cleanup.stderr[-2000:]})
+    if cleanup.returncode != 0:
+        errors.append("repo-owned-ec2-cleanup")
+    remaining = _ec2_call(profile, region, "ec2", "describe-instances", "--filters", f"Name=tag:Name,Values={EC2_TARGET_NAME}", "Name=tag:Repo,Values=agentic-ai-cybersecurity-lab", "Name=instance-state-name,Values=pending,running,stopping,stopped")
+    if any(reservation.get("Instances") for reservation in remaining.get("Reservations", []) if isinstance(reservation, dict)):
+        errors.append("target-remains")
+    rule = _ec2_call(profile, region, "configservice", "describe-config-rules", "--config-rule-names", EC2_CONFIG_RULE, allow_missing=True)
+    rem = _ec2_call(profile, region, "configservice", "describe-remediation-configurations", "--config-rule-names", EC2_CONFIG_RULE, allow_missing=True)
+    if rule.get("ConfigRules") or rem.get("RemediationConfigurations"):
+        errors.append("config-binding-remains")
+    else:
+        errors = [error for error in errors if error not in {"config-remediation-remains", "config-rule-remains", "delete-remediation-configuration", "delete-config-rule"}]
+    if errors:
+        raise RuntimeError("EC2 cleanup verification failed")
+    _ec2_state_path().unlink(missing_ok=True)
+    return {"status": "CLEANED", "reason_code": "SECCOP_EC2_CLEANUP_VERIFIED", "resource_alias": "EC2_RESOURCE_01", "target_absent": True, "config_binding_absent": True}
+
+
 def must_be_missing(profile: str, region: str, *args: str) -> None:
     completed = subprocess.run(["aws", "--profile", profile, "--region", region, *args, "--output", "json"], capture_output=True, text=True, check=False, timeout=60)
     if completed.returncode == 0:
@@ -345,18 +720,30 @@ def reset(profile: str, region: str, bucket: str) -> dict[str, Any]:
 
 def main() -> int:
     parser = argparse.ArgumentParser()
-    parser.add_argument("command", choices=("setup", "create", "scan", "apply", "reset", "cleanup"))
-    parser.add_argument("--profile", required=True); parser.add_argument("--region", required=True); parser.add_argument("--bucket", required=True)
+    parser.add_argument("command", choices=("setup", "create", "scan", "apply", "reset", "cleanup", "ec2-setup", "ec2-scan", "ec2-reject", "ec2-apply", "ec2-cleanup"))
+    parser.add_argument("--profile", required=True); parser.add_argument("--region", required=True); parser.add_argument("--bucket")
     parser.add_argument("--delivery-bucket")
     parser.add_argument("--extra-bucket", action="append", default=[])
     parser.add_argument("--protected", action="store_true")
     args = parser.parse_args()
     try:
-        if args.command == "setup":
+        if args.command == "ec2-setup":
+            output = ec2_setup(args.profile, args.region)
+        elif args.command == "ec2-scan":
+            output = ec2_scan(args.profile, args.region)
+        elif args.command == "ec2-reject":
+            output = ec2_reject(args.profile, args.region)
+        elif args.command == "ec2-apply":
+            output = ec2_apply(args.profile, args.region)
+        elif args.command == "ec2-cleanup":
+            output = ec2_cleanup(args.profile, args.region)
+        elif args.command == "setup":
             if not args.delivery_bucket:
                 raise RuntimeError("Config delivery bucket is required")
             output = _config_setup(args.profile, args.region, args.bucket, args.delivery_bucket)
         elif args.command == "create":
+            if not args.bucket:
+                raise RuntimeError("S3 bucket is required")
             aws(args.profile, args.region, "s3api", "create-bucket", "--bucket", args.bucket, "--create-bucket-configuration", f"LocationConstraint={args.region}")
             aws(args.profile, args.region, "s3api", "put-bucket-ownership-controls", "--bucket", args.bucket, "--ownership-controls", "Rules=[{ObjectOwnership=BucketOwnerEnforced}]")
             tagset = {"TagSet": [{"Key": key, "Value": value} for key, value in tags().items()]}
@@ -369,10 +756,21 @@ def main() -> int:
             if args.protected:
                 apply(args.profile, args.region, args.bucket)
             output = {"status": "READY", "reason_code": "SECCOP_S3_BASELINE_READY"}
-        elif args.command == "scan": output = scan(args.profile, args.region, args.bucket)
-        elif args.command == "apply": output = apply(args.profile, args.region, args.bucket)
-        elif args.command == "reset": output = reset(args.profile, args.region, args.bucket)
+        elif args.command == "scan":
+            if not args.bucket:
+                raise RuntimeError("S3 bucket is required")
+            output = scan(args.profile, args.region, args.bucket)
+        elif args.command == "apply":
+            if not args.bucket:
+                raise RuntimeError("S3 bucket is required")
+            output = apply(args.profile, args.region, args.bucket)
+        elif args.command == "reset":
+            if not args.bucket:
+                raise RuntimeError("S3 bucket is required")
+            output = reset(args.profile, args.region, args.bucket)
         else:
+            if not args.bucket:
+                raise RuntimeError("S3 bucket is required")
             for bucket in [args.bucket, *args.extra_bucket]:
                 aws(args.profile, args.region, "s3api", "delete-bucket", "--bucket", bucket)
             output = {"status": "DELETED", "reason_code": "SECCOP_S3_CLEANUP_VERIFIED"}

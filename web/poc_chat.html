@@ -259,6 +259,7 @@
     let demoBackend = 'LOCAL';
     let s3Review = false;
     let ecrReview = false;
+    let ec2Review = false;
     let unifiedReview = false;
     let selectedSource = 'ecr';
 
@@ -274,14 +275,21 @@
       return { label: fallback, className: '' };
     }
 
+    function ec2Badge(reasonCode, fallback) {
+      if (reasonCode === 'SECCOP_EC2_IMDSV2_NON_COMPLIANT') return { label: 'X ACTION REQUIRED', className: 'action-required' };
+      if (reasonCode === 'SECCOP_EC2_IMDSV2_COMPLIANT' || reasonCode === 'SECCOP_EC2_IMDSV2_REMEDIATED') return { label: 'CHECK VERIFIED', className: 'protected' };
+      return { label: fallback, className: '' };
+    }
+
     function setS3FlowStep(stepNumber) {
-      if (!s3Review && !ecrReview) return;
+      if (!s3Review && !ecrReview && !ec2Review) return;
       document.querySelectorAll('.flow-step').forEach((step, index) => step.classList.toggle('active', index < stepNumber));
     }
 
     function configureS3Review() {
       s3Review = true;
       ecrReview = false;
+      ec2Review = false;
       selectedSource = 's3';
       document.title = 'Security Copilot - S3 Security Posture Review';
       reviewTitle.textContent = 'S3 Security Posture Review';
@@ -308,6 +316,7 @@
     function configureEcrReview() {
       ecrReview = true;
       s3Review = false;
+      ec2Review = false;
       selectedSource = 'ecr';
       document.title = 'Security Copilot - ECR Operator Review';
       reviewTitle.textContent = 'ECR Operator Review';
@@ -330,6 +339,33 @@
       toggleComposerButton.textContent = 'Show Ask SecCop';
       toggleComposerButton.setAttribute('aria-expanded', 'false');
       promptEl.placeholder = 'Ask about this ECR finding, for example: explain the risk and safe next step';
+    }
+
+    function configureEc2Review() {
+      ec2Review = true;
+      s3Review = false;
+      ecrReview = false;
+      unifiedReview = false;
+      selectedSource = 'ec2';
+      document.title = 'Security Copilot - EC2 IMDSv2 Compliance Review';
+      reviewTitle.textContent = 'EC2 IMDSv2 Compliance Review';
+      safetyBanner.innerHTML = '<strong>EC2 compliance boundary.</strong> AWS Config evidence is read-only until a human approves the exact AWS-managed remediation.';
+      welcomeTitle.textContent = 'Review EC2 IMDSv2 posture';
+      welcomeCopy.textContent = 'Review one exact EC2 target and one AWS Config IMDSv2 remediation proposal.';
+      scanNote.textContent = 'Check the EC2 target for IMDSv2 enforcement.';
+      scanButton.textContent = 'Scan EC2 compliance';
+      if (scanWelcomeButton) scanWelcomeButton.textContent = 'Scan EC2 compliance';
+      if (reopenS3FindingButton) reopenS3FindingButton.hidden = true;
+      if (codexPreflightButton) codexPreflightButton.classList.add('hidden');
+      if (cveWelcomeButton) cveWelcomeButton.classList.add('hidden');
+      composerWrap.classList.add('hidden');
+      toggleComposerButton.classList.add('hidden');
+      document.querySelectorAll('.source-tab').forEach((tab) => {
+        const source = tab.textContent.trim().toLowerCase();
+        tab.classList.toggle('active', source === 'ec2');
+        if (source === 'ec2') tab.removeAttribute('aria-disabled');
+        else tab.setAttribute('aria-disabled', 'true');
+      });
     }
 
     function configureUnifiedReview() {
@@ -484,7 +520,7 @@
       const card = node('div', 'result-card');
       const head = node('div', 'result-head');
       head.appendChild(node('div', 'result-title', 'Security scan summary'));
-      const scanBadge = s3Review ? s3Badge(result.reason_code, result.status || 'BLOCKED') : ecrReview ? ecrBadge(result.reason_code, result.status || 'BLOCKED') : { label: result.reason_code || result.status || 'BLOCKED', className: '' };
+      const scanBadge = s3Review ? s3Badge(result.reason_code, result.status || 'BLOCKED') : ecrReview ? ecrBadge(result.reason_code, result.status || 'BLOCKED') : ec2Review ? ec2Badge(result.reason_code, result.status || 'BLOCKED') : { label: result.reason_code || result.status || 'BLOCKED', className: '' };
       head.appendChild(node('span', 'badge ' + scanBadge.className, scanBadge.label));
       card.appendChild(head);
       const grid = node('div', 'evidence-grid');
@@ -513,7 +549,7 @@
         const item = node('section', 'scan-finding');
         const findingHead = node('div', 'scan-finding-head');
         findingHead.appendChild(node('div', 'scan-finding-title', finding.title));
-        const findingBadge = s3Review ? s3Badge(finding.reason_code, finding.severity) : ecrReview ? ecrBadge(result.reason_code, finding.severity) : { label: finding.severity, className: '' };
+        const findingBadge = s3Review ? s3Badge(finding.reason_code, finding.severity) : ecrReview ? ecrBadge(result.reason_code, finding.severity) : ec2Review ? ec2Badge(finding.reason_code, finding.severity) : { label: finding.severity, className: '' };
         findingHead.appendChild(node('span', 'badge ' + findingBadge.className, findingBadge.label));
         item.appendChild(findingHead);
         item.appendChild(node('div', 'scan-finding-meta', `${finding.source_type} · ${finding.resource_alias} · ${finding.reference}`));
@@ -629,19 +665,21 @@
         if (finding.source_type !== 'EC2_PACKAGE') {
           const isS3Risk = finding.source_type === 'S3_BUCKET';
           const isEcrRisk = ecrReview && finding.source_type === 'ECR_IMAGE';
-          if (isS3Risk || isEcrRisk) setS3FlowStep(3);
-          const body = addMessage('assistant', isS3Risk ? 'Security misconfiguration confirmed. Remediate to enable all four Block Public Access controls, or Reject this proposal.' : isEcrRisk ? 'Amazon Inspector confirmed the ECR finding. Approve Once to promote the clean digest.' : 'The clean replacement is ready for review. Approve it to replace only this DEMO artifact.');
+          const isEc2Risk = ec2Review && finding.source_type === 'EC2_CONFIG';
+          if (isS3Risk || isEcrRisk || isEc2Risk) setS3FlowStep(3);
+          const body = addMessage('assistant', isS3Risk ? 'Security misconfiguration confirmed. Remediate to enable all four Block Public Access controls, or Reject this proposal.' : isEcrRisk ? 'Amazon Inspector confirmed the ECR finding. Approve Once to promote the clean digest.' : isEc2Risk ? 'AWS Config confirmed that this EC2 target still accepts IMDSv1. Remediate with the exact AWS-managed IMDSv2 Automation, or Reject this proposal.' : 'The clean replacement is ready for review. Approve it to replace only this DEMO artifact.');
           const card = node('div', 'approval-card');
           const grid = node('div', 'evidence-grid');
           evidenceCell(grid, 'Source', finding.source_type);
           evidenceCell(grid, 'Change', finding.recommended_state);
           evidenceCell(grid, 'After', 'The clean item will be scanned again');
           card.appendChild(grid);
-          const approve = node('button', 'btn approve', isS3Risk ? 'Remediate' : isEcrRisk ? 'Approve Once' : 'Approve and fix');
+          const approveLabel = isS3Risk ? 'Remediate' : isEc2Risk ? 'Remediate' : isEcrRisk ? 'Approve Once' : 'Approve and fix';
+          const approve = node('button', 'btn approve', approveLabel);
           approve.type = 'button';
           approve.addEventListener('click', () => approveDemoFix(finding, approve));
           card.appendChild(approve);
-          if (isS3Risk) {
+          if (isS3Risk || isEc2Risk) {
             const reject = node('button', 'btn reject', 'Reject');
             reject.type = 'button';
             reject.addEventListener('click', () => rejectDemoFinding(finding, reject));
@@ -678,12 +716,14 @@
 
     async function approveDemoFix(finding, button) {
       button.disabled = true;
-      if (finding.source_type === 'S3_BUCKET' || (ecrReview && finding.source_type === 'ECR_IMAGE')) setS3FlowStep(4);
-      addMessage('user', (finding.source_type === 'S3_BUCKET' ? 'Remediate: ' : 'Approve Once: ') + finding.title);
-      const thinking = addMessage('assistant', finding.source_type === 'S3_BUCKET' ? 'Enabling Block Public Access and verifying the protected state...' : ecrReview ? 'Promoting the clean digest and verifying it with Amazon Inspector...' : 'Applying the approved replacement and checking it again...');
-      const source = finding.source_type === 'S3_BUCKET' || finding.source_type === 'S3_ARTIFACT' ? 's3' : 'ecr';
+      const isS3Risk = finding.source_type === 'S3_BUCKET' || finding.source_type === 'S3_ARTIFACT';
+      const isEc2Risk = finding.source_type === 'EC2_CONFIG';
+      if (isS3Risk || isEc2Risk || (ecrReview && finding.source_type === 'ECR_IMAGE')) setS3FlowStep(4);
+      addMessage('user', (isS3Risk || isEc2Risk ? 'Remediate: ' : 'Approve Once: ') + finding.title);
+      const thinking = addMessage('assistant', isS3Risk ? 'Enabling Block Public Access and verifying the protected state...' : isEc2Risk ? 'Running AWSConfigRemediation-EnforceEC2InstanceIMDSv2 and verifying Config compliance...' : ecrReview ? 'Promoting the clean digest and verifying it with Amazon Inspector...' : 'Applying the approved replacement and checking it again...');
+      const source = isS3Risk ? 's3' : isEc2Risk ? 'ec2' : 'ecr';
       try {
-        const approval = source === 's3' ? { proposal_id: finding.proposal_id, proposal_hash: finding.proposal_hash } : {};
+        const approval = (source === 's3' || source === 'ec2') ? { proposal_id: finding.proposal_id, proposal_hash: finding.proposal_hash } : {};
         const payload = await post('/api/demo/fix', { source, confirm: true, ...approval });
         thinking.parentElement.remove();
         renderDemoFixResult(payload, finding.source_type);
@@ -699,17 +739,18 @@
       addMessage('user', 'Reject: ' + finding.title);
       const thinking = addMessage('assistant', 'Recording the rejection without changing AWS...');
       try {
-        const payload = await post('/api/demo/reject', { source: 's3', confirm: true, proposal_id: finding.proposal_id, proposal_hash: finding.proposal_hash });
+        const source = finding.source_type === 'EC2_CONFIG' ? 'ec2' : 's3';
+        const payload = await post('/api/demo/reject', { source, confirm: true, proposal_id: finding.proposal_id, proposal_hash: finding.proposal_hash });
         thinking.parentElement.remove();
         const result = payload.result || {};
         const body = addMessage('assistant', result.message || 'The proposal was rejected.');
         const card = node('div', 'result-card');
         const head = node('div', 'result-head');
-        head.appendChild(node('div', 'result-title', 'Exposure-risk remediation rejected'));
+        head.appendChild(node('div', 'result-title', source === 'ec2' ? 'EC2 IMDSv2 remediation rejected' : 'Exposure-risk remediation rejected'));
         head.appendChild(node('span', 'badge', result.reason_code || result.status || 'REJECTED'));
         card.appendChild(head);
         const grid = node('div', 'evidence-grid');
-        evidenceCell(grid, 'Source', 'S3_BUCKET');
+        evidenceCell(grid, 'Source', source === 'ec2' ? 'EC2_CONFIG' : 'S3_BUCKET');
         evidenceCell(grid, 'AWS mutation', result.mutation_performed === false ? 'None' : 'Blocked');
         evidenceCell(grid, 'State', result.state || 'NON_COMPLIANT');
         card.appendChild(grid);
@@ -728,8 +769,8 @@
       const card = node('div', 'result-card');
       const head = node('div', 'result-head');
       const verified = result.status === 'VERIFIED';
-      head.appendChild(node('div', 'result-title', sourceType === 'S3_BUCKET' ? (verified ? 'Exposure-risk remediation verified' : 'Exposure-risk remediation blocked') : ecrReview && sourceType === 'ECR_IMAGE' ? 'ECR promotion verified' : 'Approved DEMO fix'));
-      const remediationBadge = ((s3Review && sourceType === 'S3_BUCKET') || (ecrReview && sourceType === 'ECR_IMAGE')) && verified ? { label: 'CHECK VERIFIED', className: 'protected' } : { label: result.reason_code || result.status || 'BLOCKED', className: '' };
+      head.appendChild(node('div', 'result-title', sourceType === 'S3_BUCKET' ? (verified ? 'Exposure-risk remediation verified' : 'Exposure-risk remediation blocked') : ec2Review && sourceType === 'EC2_CONFIG' ? (verified ? 'EC2 IMDSv2 remediation verified' : 'EC2 IMDSv2 remediation blocked') : ecrReview && sourceType === 'ECR_IMAGE' ? 'ECR promotion verified' : 'Approved DEMO fix'));
+      const remediationBadge = ((s3Review && sourceType === 'S3_BUCKET') || (ec2Review && sourceType === 'EC2_CONFIG') || (ecrReview && sourceType === 'ECR_IMAGE')) && verified ? { label: 'CHECK VERIFIED', className: 'protected' } : { label: result.reason_code || result.status || 'BLOCKED', className: '' };
       head.appendChild(node('span', 'badge ' + remediationBadge.className, remediationBadge.label));
       card.appendChild(head);
       const grid = node('div', 'evidence-grid');
@@ -737,7 +778,7 @@
       evidenceCell(grid, 'Change', result.state || 'Recorded');
       evidenceCell(grid, 'Approval', verified ? 'Human approved' : 'Not executed');
       evidenceCell(grid, 'Next', 'Run the scan again');
-      if (s3Review && sourceType === 'S3_BUCKET') evidenceCell(grid, 'Technical evidence', result.reason_code);
+      if ((s3Review && sourceType === 'S3_BUCKET') || (ec2Review && sourceType === 'EC2_CONFIG')) evidenceCell(grid, 'Technical evidence', result.reason_code);
       card.appendChild(grid);
       const rescan = node('button', 'btn primary', 'Scan again');
       rescan.type = 'button';
@@ -750,7 +791,7 @@
         card.appendChild(reset);
       }
       body.appendChild(card);
-      if (sourceType === 'S3_BUCKET' || (ecrReview && sourceType === 'ECR_IMAGE')) setS3FlowStep(5);
+      if (sourceType === 'S3_BUCKET' || sourceType === 'EC2_CONFIG' || (ecrReview && sourceType === 'ECR_IMAGE')) setS3FlowStep(5);
     }
 
     async function resetS3Demo(button) {
@@ -985,12 +1026,12 @@
       if (scanButton) scanButton.disabled = true;
       if (scanWelcomeButton) scanWelcomeButton.disabled = true;
       const live = demoBackend === 'AWS';
-      setMode(s3Review ? 'S3 posture review' : ecrReview ? 'ECR operator review' : (live ? 'Live AWS scan' : 'Demo scan'), live);
+      setMode(s3Review ? 'S3 posture review' : ecrReview ? 'ECR operator review' : ec2Review ? 'EC2 IMDSv2 review' : (live ? 'Live AWS scan' : 'Demo scan'), live);
       const requestText = ecrReview ? (promptEl.value.trim() || 'Investigate the ECR finding and explain the safe next step.') : '';
-      addMessage('user', s3Review ? 'Scan S3 bucket' : ecrReview ? requestText : (live ? 'Scan live server' : 'Scan environment'));
-      const thinking = addMessage('assistant', s3Review ? 'Checking the bucket-level Block Public Access posture...' : ecrReview ? 'Scanning the retained ECR fixture with Amazon Inspector...' : 'Checking server packages, stored artifact, and container image...');
+      addMessage('user', s3Review ? 'Scan S3 bucket' : ecrReview ? requestText : ec2Review ? 'Scan EC2 compliance' : (live ? 'Scan live server' : 'Scan environment'));
+      const thinking = addMessage('assistant', s3Review ? 'Checking the bucket-level Block Public Access posture...' : ecrReview ? 'Scanning the retained ECR fixture with Amazon Inspector...' : ec2Review ? 'Checking the EC2 IMDSv2 Config control...' : 'Checking server packages, stored artifact, and container image...');
       try {
-        const source = unifiedReview ? selectedSource : null;
+        const source = (unifiedReview || ec2Review) ? selectedSource : null;
         const payload = await post('/api/scan', { mode:'DEMO', ...(source ? { source } : {}), ...(ecrReview ? { request_text: requestText } : {}) });
         thinking.parentElement.remove();
         renderScan(payload);
@@ -1158,6 +1199,7 @@
         const response = await fetch('/api/health', { cache: 'no-store' });
         const health = await response.json();
         demoBackend = health.demo_backend || 'LOCAL';
+        if (health.review_mode === 'EC2_IMDSV2') configureEc2Review();
         if (health.review_mode === 'ECR_S3_COMBINED') configureUnifiedReview();
         if (health.review_mode === 'S3_COMPLIANCE') configureS3Review();
         if (health.review_mode === 'ECR_OPERATOR') configureEcrReview();

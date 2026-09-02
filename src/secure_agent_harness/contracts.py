@@ -346,7 +346,7 @@ class SecCopScanRequest(Contract):
     """The primary demo scan has a fixed, server-owned source set."""
 
     mode: Literal["DEMO"] = "DEMO"
-    source: Literal["ecr", "s3"] | None = None
+    source: Literal["ec2", "ecr", "s3"] | None = None
     request_text: str = Field(
         default="Investigate the ECR finding and explain the safe next step.",
         min_length=1,
