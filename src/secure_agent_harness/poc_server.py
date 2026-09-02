@@ -151,6 +151,7 @@ class _CodexProcessTransport:
         stderr_fd = os.open(stderr_path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
         self.stderr_path = stderr_path
         self._stderr_handle = os.fdopen(stderr_fd, "w", encoding="utf-8")
+        self._stdout_buffer = b""
         self._closed = False
         try:
             self.process = subprocess.Popen(
@@ -158,8 +159,8 @@ class _CodexProcessTransport:
                 stdin=subprocess.PIPE,
                 stdout=subprocess.PIPE,
                 stderr=self._stderr_handle,
-                text=True,
-                bufsize=1,
+                text=False,
+                bufsize=0,
             )
         except BaseException:
             self._stderr_handle.close()
@@ -168,24 +169,36 @@ class _CodexProcessTransport:
     def send(self, message: dict[str, object]) -> None:
         if self.process.stdin is None:
             raise _CodexPreflightError("CODEX_APP_SERVER_UNAVAILABLE")
-        self.process.stdin.write(json.dumps(message, separators=(",", ":")) + "\n")
+        self.process.stdin.write((json.dumps(message, separators=(",", ":")) + "\n").encode())
         self.process.stdin.flush()
 
     def receive(self, timeout: float) -> dict[str, object]:
         if self.process.stdout is None:
             raise _CodexPreflightError("CODEX_APP_SERVER_UNAVAILABLE")
-        selector = selectors.DefaultSelector()
-        selector.register(self.process.stdout, selectors.EVENT_READ)
-        try:
-            if not selector.select(timeout):
+        deadline = time.monotonic() + timeout
+        line: bytes | None = None
+        while line is None:
+            newline = self._stdout_buffer.find(b"\n")
+            if newline >= 0:
+                line = self._stdout_buffer[:newline]
+                self._stdout_buffer = self._stdout_buffer[newline + 1:]
+                break
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
                 raise _CodexPreflightError("CODEX_APP_SERVER_UNAVAILABLE")
-            line = self.process.stdout.readline()
-        finally:
-            selector.close()
-        if not line:
-            raise _CodexPreflightError("CODEX_APP_SERVER_UNAVAILABLE")
+            selector = selectors.DefaultSelector()
+            selector.register(self.process.stdout, selectors.EVENT_READ)
+            try:
+                if not selector.select(remaining):
+                    raise _CodexPreflightError("CODEX_APP_SERVER_UNAVAILABLE")
+                chunk = os.read(self.process.stdout.fileno(), 65536)
+            finally:
+                selector.close()
+            if not chunk:
+                raise _CodexPreflightError("CODEX_APP_SERVER_UNAVAILABLE")
+            self._stdout_buffer += chunk
         try:
-            message = json.loads(line)
+            message = json.loads(line.decode())
         except json.JSONDecodeError as exc:
             raise _CodexPreflightError("CODEX_APP_SERVER_OUTPUT_REJECTED") from exc
         if not isinstance(message, dict):

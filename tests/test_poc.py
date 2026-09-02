@@ -1,6 +1,7 @@
 from pathlib import Path
 import gzip
 import json
+import os
 import sys
 from threading import Thread
 from types import SimpleNamespace
@@ -355,6 +356,27 @@ def test_codex_transport_close_reaps_exited_and_kills_stuck_process() -> None:
     assert stuck.process.terminated is True
     assert stuck.process.killed is True
     assert len(stuck.process.wait_calls) == 2
+
+
+def test_codex_transport_keeps_multiple_buffered_protocol_lines() -> None:
+    read_fd, write_fd = os.pipe()
+    stream = None
+    try:
+        os.write(write_fd, b'{"id":1,"result":{}}\n{"id":2,"result":{}}\n')
+        os.close(write_fd)
+        transport = poc_server._CodexProcessTransport.__new__(poc_server._CodexProcessTransport)
+        stream = os.fdopen(read_fd, "rb")
+        transport.process = SimpleNamespace(stdout=stream)
+        transport._stdout_buffer = b""
+        assert transport.receive(1.0)["id"] == 1
+        assert transport.receive(1.0)["id"] == 2
+    finally:
+        try:
+            os.close(write_fd)
+        except OSError:
+            pass
+        if stream is not None:
+            stream.close()
 
 
 def test_public_remediation_payload_excludes_private_evidence_path() -> None:
