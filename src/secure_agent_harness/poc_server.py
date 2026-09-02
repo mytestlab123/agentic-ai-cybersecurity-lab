@@ -59,7 +59,7 @@ _SERVER_SCAN_REQUEST: SecCopAdvisoryRequest | None = None
 _HYBRID_SESSION: "_HybridSession | None" = None
 _S3_APPROVAL_READY = False
 _ECR_APPROVAL_READY = False
-_ECR_TURN_TIMEOUT = 15.0
+_ECR_TURN_TIMEOUT = 60.0
 _CODEX_PREFLIGHT_TURN_TIMEOUT = 30.0
 _CODEX_STDERR_DIR = Path.home() / ".AGENTS-temp" / "agentic-ai-cybersecurity-lab" / "issue53-app-server-observability" / "app-server-stderr"
 
@@ -420,7 +420,7 @@ def _start_ecr_codex_explanation(request_text: str, scan: dict[str, object]) -> 
         prompt = (
             "User request: " + request + "\n\n"
             "Sanitized BEFORE facts:\n" + _ecr_codex_facts(scan) + "\n\n"
-            "Explain the finding and recommend the safe, approval-gated next step. Do not use tools."
+            "Explain the finding and recommend the safe, approval-gated next step in two short plain-language sentences. Do not use tools."
         )
         response = _collect_codex_turn(session, prompt, receive_timeout=_ECR_TURN_TIMEOUT)
         session.continuity_marker = "ECR_BEFORE_COMPLETE"
