@@ -59,6 +59,9 @@ _SERVER_SCAN_REQUEST: SecCopAdvisoryRequest | None = None
 _HYBRID_SESSION: "_HybridSession | None" = None
 _S3_APPROVAL_READY = False
 _ECR_APPROVAL_READY = False
+_ECR_TURN_TIMEOUT = 60.0
+_CODEX_PREFLIGHT_TURN_TIMEOUT = 30.0
+_CODEX_STDERR_DIR = Path.home() / ".AGENTS-temp" / "agentic-ai-cybersecurity-lab" / "issue53-app-server-observability" / "app-server-stderr"
 
 
 @dataclass(frozen=True)
@@ -123,7 +126,7 @@ class _CodexPreflightError(RuntimeError):
 
 
 class _CodexProcessTransport:
-    def __init__(self, *, knowledge_only: bool = False) -> None:
+    def __init__(self, *, knowledge_only: bool = False, stderr_dir: Path | None = None) -> None:
         command = ["codex", "app-server", "--stdio"]
         if knowledge_only:
             profile = os.environ.get("SECCOP_PROFILE", "")
@@ -142,36 +145,60 @@ class _CodexProcessTransport:
             )
             for override in overrides:
                 command.extend(("-c", override))
-        self.process = subprocess.Popen(
-            command,
-            stdin=subprocess.PIPE,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.DEVNULL,
-            text=True,
-            bufsize=1,
-        )
+        target_dir = stderr_dir or _CODEX_STDERR_DIR
+        target_dir.mkdir(parents=True, exist_ok=True, mode=0o700)
+        stderr_path = target_dir / f"codex-app-server-{time.time_ns()}.stderr"
+        stderr_fd = os.open(stderr_path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+        self.stderr_path = stderr_path
+        self._stderr_handle = os.fdopen(stderr_fd, "w", encoding="utf-8")
+        self._stdout_buffer = b""
+        self._closed = False
+        try:
+            self.process = subprocess.Popen(
+                command,
+                stdin=subprocess.PIPE,
+                stdout=subprocess.PIPE,
+                stderr=self._stderr_handle,
+                text=False,
+                bufsize=0,
+            )
+        except BaseException:
+            self._stderr_handle.close()
+            raise
 
     def send(self, message: dict[str, object]) -> None:
         if self.process.stdin is None:
             raise _CodexPreflightError("CODEX_APP_SERVER_UNAVAILABLE")
-        self.process.stdin.write(json.dumps(message, separators=(",", ":")) + "\n")
+        self.process.stdin.write((json.dumps(message, separators=(",", ":")) + "\n").encode())
         self.process.stdin.flush()
 
     def receive(self, timeout: float) -> dict[str, object]:
         if self.process.stdout is None:
             raise _CodexPreflightError("CODEX_APP_SERVER_UNAVAILABLE")
-        selector = selectors.DefaultSelector()
-        selector.register(self.process.stdout, selectors.EVENT_READ)
-        try:
-            if not selector.select(timeout):
+        deadline = time.monotonic() + timeout
+        line: bytes | None = None
+        while line is None:
+            newline = self._stdout_buffer.find(b"\n")
+            if newline >= 0:
+                line = self._stdout_buffer[:newline]
+                self._stdout_buffer = self._stdout_buffer[newline + 1:]
+                break
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
                 raise _CodexPreflightError("CODEX_APP_SERVER_UNAVAILABLE")
-            line = self.process.stdout.readline()
-        finally:
-            selector.close()
-        if not line:
-            raise _CodexPreflightError("CODEX_APP_SERVER_UNAVAILABLE")
+            selector = selectors.DefaultSelector()
+            selector.register(self.process.stdout, selectors.EVENT_READ)
+            try:
+                if not selector.select(remaining):
+                    raise _CodexPreflightError("CODEX_APP_SERVER_UNAVAILABLE")
+                chunk = os.read(self.process.stdout.fileno(), 65536)
+            finally:
+                selector.close()
+            if not chunk:
+                raise _CodexPreflightError("CODEX_APP_SERVER_UNAVAILABLE")
+            self._stdout_buffer += chunk
         try:
-            message = json.loads(line)
+            message = json.loads(line.decode())
         except json.JSONDecodeError as exc:
             raise _CodexPreflightError("CODEX_APP_SERVER_OUTPUT_REJECTED") from exc
         if not isinstance(message, dict):
@@ -179,13 +206,19 @@ class _CodexProcessTransport:
         return message
 
     def close(self) -> None:
-        if self.process.poll() is None:
-            self.process.terminate()
+        if self._closed:
+            return
+        self._closed = True
+        try:
+            if self.process.poll() is None:
+                self.process.terminate()
             try:
                 self.process.wait(timeout=2)
             except subprocess.TimeoutExpired:
                 self.process.kill()
                 self.process.wait(timeout=2)
+        finally:
+            self._stderr_handle.close()
 
 
 @dataclass
@@ -194,6 +227,9 @@ class _HybridSession:
     thread_id: str
     pending: list[dict[str, object]]
     next_id: int
+    context: dict[str, object] | None = None
+    continuity_marker: str = "THREAD_ACTIVE"
+    turns_completed: int = 0
 
 
 def _close_hybrid_session() -> None:
@@ -203,19 +239,39 @@ def _close_hybrid_session() -> None:
         _HYBRID_SESSION = None
 
 
-def _collect_codex_turn(session: _HybridSession, prompt: str) -> str:
+def _collect_codex_turn(session: _HybridSession, prompt: str, *, receive_timeout: float = 180.0) -> str:
+    deadline = time.monotonic() + receive_timeout
     request_id = session.next_id
     session.next_id += 1
     turn = _codex_request(
         session.transport, request_id, "turn/start",
         {"threadId": session.thread_id, "input": [{"type": "text", "text": prompt}]},
         session.pending,
+        deadline=deadline,
     ).get("turn")
     if not isinstance(turn, dict) or not isinstance(turn.get("id"), str):
         raise _CodexPreflightError("CODEX_APP_SERVER_OUTPUT_REJECTED")
+    turn_id = turn["id"]
     response_parts: list[str] = []
+    completed_agent_text: object = None
+    completed_agent_seen = False
+
+    def response_text() -> str:
+        delta_text = "".join(response_parts)
+        if delta_text.strip():
+            return _safe_codex_text(delta_text)
+        if not completed_agent_seen or not isinstance(completed_agent_text, str):
+            raise _CodexPreflightError("CODEX_APP_SERVER_OUTPUT_REJECTED")
+        return _safe_codex_text(completed_agent_text)
+
     for _ in range(500):
-        event = session.pending.pop(0) if session.pending else session.transport.receive(180)
+        if session.pending:
+            event = session.pending.pop(0)
+        else:
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                raise _CodexPreflightError("CODEX_APP_SERVER_UNAVAILABLE")
+            event = session.transport.receive(remaining)
         method = event.get("method")
         params = event.get("params")
         if not isinstance(method, str) or method not in _CODEX_SAFE_NOTIFICATIONS or "id" in event or not isinstance(params, dict):
@@ -224,15 +280,27 @@ def _collect_codex_turn(session: _HybridSession, prompt: str) -> str:
             item = params.get("item")
             if not isinstance(item, dict) or item.get("type") not in _CODEX_SAFE_ITEM_TYPES:
                 raise _CodexPreflightError("CODEX_EVENT_REJECTED")
+            if method == "item/completed" and item.get("type") == "agentMessage":
+                completed_agent_seen = True
+                completed_agent_text = item.get("text")
         elif method == "item/agentMessage/delta":
             if not isinstance(params.get("delta"), str):
                 raise _CodexPreflightError("CODEX_APP_SERVER_OUTPUT_REJECTED")
             response_parts.append(params["delta"])
         elif method == "turn/completed":
             completed = params.get("turn")
-            if not isinstance(completed, dict) or completed.get("status") != "completed":
+            if not isinstance(completed, dict) or completed.get("id") != turn_id:
+                continue
+            if completed.get("status") != "completed":
                 raise _CodexPreflightError("CODEX_APP_SERVER_UNAVAILABLE")
-            return _safe_codex_text("".join(response_parts))
+            session.turns_completed += 1
+            return response_text()
+        elif method == "thread/status/changed":
+            status = params.get("status")
+            if params.get("threadId") != session.thread_id or not isinstance(status, dict) or status.get("type") != "idle":
+                continue
+            session.turns_completed += 1
+            return response_text()
     raise _CodexPreflightError("CODEX_APP_SERVER_UNAVAILABLE")
 
 
@@ -338,6 +406,106 @@ def _start_hybrid_explanation(request: SecCopAdvisoryRequest, *, evidence_status
         return _hybrid_blocked(error.reason_code if isinstance(error, _CodexPreflightError) else "CODEX_APP_SERVER_UNAVAILABLE")
 
 
+def _ecr_codex_facts(scan: dict[str, object]) -> str:
+    """Project only server-owned ECR/Inspector facts into a Codex prompt."""
+
+    fields = (
+        ("resource alias", "ECR_IMAGE_01"),
+        ("storage provider", "AWS_ECR"),
+        ("scanner", scan.get("scanner_mode") or "ECR_ENHANCED_SCANNING"),
+        ("package ecosystem", scan.get("package_ecosystem") or "UNKNOWN"),
+        ("CVE", scan.get("cve_id") or "UNKNOWN"),
+        ("package", scan.get("package_name") or "none reported"),
+        ("installed version", scan.get("installed_version") or "none reported"),
+        ("severity", scan.get("severity") or "UNKNOWN"),
+        ("state", scan.get("state") or scan.get("status") or "UNKNOWN"),
+    )
+    safe = []
+    for label, value in fields:
+        text = " ".join(str(value).split())
+        if not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9 ./:+_()\-]{0,119}", text):
+            raise _CodexPreflightError("CODEX_APP_SERVER_OUTPUT_REJECTED")
+        safe.append(f"{label}: {text}")
+    return "\n".join(safe)
+
+
+def _start_ecr_codex_explanation(request_text: str, scan: dict[str, object]) -> dict[str, object]:
+    """Send the real ECR request and sanitized BEFORE facts through one thread."""
+
+    global _HYBRID_SESSION
+    _close_hybrid_session()
+    try:
+        request = " ".join(request_text.split())
+        if not request or len(request) > 300 or re.search(r"(?:arn:|sha256:|AKIA|aws\s+cli|(?:secret|credential|token)|/home/|\\Users\\)", request, re.IGNORECASE):
+            raise _CodexPreflightError("REQUEST_REJECTED")
+        transport = _CodexProcessTransport()
+        pending: list[dict[str, object]] = []
+        _codex_request(transport, 1, "initialize", {"clientInfo": {"name": "seccop_ecr", "version": "0.1.0"}}, pending)
+        transport.send({"method": "initialized", "params": {}})
+        account = _codex_request(transport, 2, "account/read", {"refreshToken": False}, pending)
+        if account.get("account") is None and account.get("requiresOpenaiAuth") is True:
+            raise _CodexPreflightError("CODEX_NOT_AUTHENTICATED")
+        thread = _codex_request(transport, 3, "thread/start", {
+            "ephemeral": True, "approvalPolicy": "never", "sandbox": "read-only", "model": "gpt-5.6-luna",
+        }, pending).get("thread")
+        if not isinstance(thread, dict) or not isinstance(thread.get("id"), str):
+            raise _CodexPreflightError("CODEX_APP_SERVER_OUTPUT_REJECTED")
+        session = _HybridSession(transport, thread["id"], pending, 4, dict(scan))
+        session.continuity_marker = "ECR_BEFORE_ACTIVE"
+        _HYBRID_SESSION = session
+        prompt = (
+            "User request: " + request + "\n\n"
+            "Sanitized BEFORE facts:\n" + _ecr_codex_facts(scan) + "\n\n"
+            "Explain the finding and recommend the safe, approval-gated next step in two short plain-language sentences. Do not use tools."
+        )
+        response = _collect_codex_turn(session, prompt, receive_timeout=_ECR_TURN_TIMEOUT)
+        session.continuity_marker = "ECR_BEFORE_COMPLETE"
+        return {
+            "status": "READY", "reason_code": "ECR_CODEX_BEFORE_READY",
+            "aws_evidence_status": "AMAZON_INSPECTOR", "aws_mcp_status": "NOT_USED",
+            "aws_mcp_mode": "READ_ONLY", "tool_activity": ["One read-only Codex thread"],
+            "response_text": response, "continuity_marker": session.continuity_marker,
+            "message": "Codex explained the real Inspector finding from sanitized BEFORE facts.",
+        }
+    except (OSError, _CodexPreflightError) as error:
+        return _hybrid_blocked(error.reason_code if isinstance(error, _CodexPreflightError) else "CODEX_APP_SERVER_UNAVAILABLE")
+
+
+def _finish_ecr_codex_explanation(after: dict[str, object]) -> dict[str, object]:
+    """Continue the exact ECR thread with sanitized AFTER facts."""
+
+    session = _HYBRID_SESSION
+    if session is None:
+        return _hybrid_blocked("CODEX_THREAD_UNAVAILABLE")
+    try:
+        if session.continuity_marker != "ECR_BEFORE_COMPLETE" or session.turns_completed < 1:
+            return _hybrid_blocked("CODEX_THREAD_CONTINUITY_LOST")
+        before = session.context or {}
+        after_facts = dict(after)
+        for field in ("scanner_mode", "package_ecosystem", "cve_id"):
+            if field not in after_facts and field in before:
+                after_facts[field] = before[field]
+        if not after_facts.get("state"):
+            after_facts["state"] = "COMPLIANT" if after_facts.get("status") == "VERIFIED" else after_facts.get("status", "UNKNOWN")
+        prompt = (
+            "Sanitized AFTER facts for the same ECR review:\n" + _ecr_codex_facts(after_facts) + "\n\n"
+            "Explain the verified final state in two short plain-language sentences. Do not use tools."
+        )
+        response = _collect_codex_turn(session, prompt, receive_timeout=_ECR_TURN_TIMEOUT)
+        session.continuity_marker = "ECR_AFTER_COMPLETE"
+        return {
+            "status": "READY", "reason_code": "ECR_CODEX_AFTER_EXPLAINED",
+            "aws_evidence_status": "AMAZON_INSPECTOR", "aws_mcp_status": "NOT_USED",
+            "aws_mcp_mode": "READ_ONLY", "tool_activity": ["Same read-only Codex thread continued"],
+            "response_text": response, "continuity_marker": session.continuity_marker,
+            "message": "Codex explained the verified ECR AFTER state on the same thread.",
+        }
+    except _CodexPreflightError as error:
+        return _hybrid_blocked(error.reason_code)
+    finally:
+        _close_hybrid_session()
+
+
 def _finish_hybrid_explanation(result: SecCopRemediationResult) -> dict[str, object]:
     session = _HYBRID_SESSION
     if session is None:
@@ -367,12 +535,18 @@ def _codex_request(
     params: dict[str, object],
     pending: list[dict[str, object]],
     timeout: float = 15,
+    *,
+    deadline: float | None = None,
 ) -> dict[str, object]:
     if method not in _CODEX_ALLOWED_METHODS:
         raise _CodexPreflightError("CODEX_RPC_REJECTED")
     transport.send({"method": method, "id": request_id, "params": params})
+    request_deadline = deadline if deadline is not None else time.monotonic() + timeout
     for _ in range(100):
-        message = transport.receive(timeout)
+        remaining = request_deadline - time.monotonic()
+        if remaining <= 0:
+            raise _CodexPreflightError("CODEX_APP_SERVER_UNAVAILABLE")
+        message = transport.receive(min(timeout, remaining))
         if message.get("id") != request_id:
             event_method = message.get("method")
             if "id" in message or event_method not in _CODEX_SAFE_NOTIFICATIONS:
@@ -439,9 +613,16 @@ def _run_codex_preflight(transport: Any | None = None) -> dict[str, object]:
         if not isinstance(turn, dict) or not isinstance(turn.get("id"), str):
             raise _CodexPreflightError("CODEX_APP_SERVER_OUTPUT_REJECTED")
         turn_id = turn["id"]
+        turn_deadline = time.monotonic() + _CODEX_PREFLIGHT_TURN_TIMEOUT
         response_parts: list[str] = []
         for _ in range(500):
-            event = pending.pop(0) if pending else transport.receive(90)
+            if pending:
+                event = pending.pop(0)
+            else:
+                remaining = turn_deadline - time.monotonic()
+                if remaining <= 0:
+                    raise _CodexPreflightError("CODEX_APP_SERVER_UNAVAILABLE")
+                event = transport.receive(remaining)
             method = event.get("method")
             if not isinstance(method, str) or method not in _CODEX_SAFE_NOTIFICATIONS or "id" in event:
                 raise _CodexPreflightError("CODEX_EVENT_REJECTED")
@@ -461,6 +642,20 @@ def _run_codex_preflight(transport: Any | None = None) -> dict[str, object]:
                 completed = params.get("turn")
                 if not isinstance(completed, dict) or completed.get("status") != "completed":
                     raise _CodexPreflightError("CODEX_APP_SERVER_UNAVAILABLE")
+                return {
+                    "status": "READY",
+                    "reason_code": "CODEX_CONNECTED",
+                    "codex_status": "CODEX_CONNECTED",
+                    "auth_status": auth_status,
+                    "thread_status": "THREAD_ACTIVE",
+                    "aws_mcp_status": "AWS_MCP_UNAVAILABLE",
+                    "response_text": _safe_codex_text("".join(response_parts)),
+                    "message": "Codex App Server completed one isolated no-tool preflight turn.",
+                }
+            elif method == "thread/status/changed":
+                status = params.get("status")
+                if params.get("threadId") != thread_id or not isinstance(status, dict) or status.get("type") != "idle":
+                    continue
                 return {
                     "status": "READY",
                     "reason_code": "CODEX_CONNECTED",
@@ -524,7 +719,7 @@ def _real_demo_enabled() -> bool:
     return os.environ.get("SECCOP_DEMO_BACKEND", "LOCAL").upper() == "AWS"
 
 
-def _run_real_demo(command: str, *, source: str | None = None) -> dict[str, object]:
+def _run_real_demo(command: str, *, source: str | None = None, request_text: str | None = None) -> dict[str, object]:
     """Run the repo-owned AWS DEMO command and return sanitized JSON only."""
 
     if not _real_demo_enabled():
@@ -538,7 +733,12 @@ def _run_real_demo(command: str, *, source: str | None = None) -> dict[str, obje
         mapped = {"start": "ecr-start", "scan": "ecr-scan", "fix": "ecr-fix", "reset": "ecr-reset"}.get(command)
         if mapped is None or (mapped == "ecr-fix" and (source != "ecr" or not _ECR_APPROVAL_READY)):
             return {"status": "BLOCKED", "reason_code": "APPROVAL_REQUIRED", "message": "Approve the exact ECR proposal before promotion."}
+        ecr_scanner = os.environ.get("SECCOP_ECR_SCANNER", "trivy").lower()
+        if ecr_scanner not in {"trivy", "inspector"}:
+            return {"status": "BLOCKED", "reason_code": "SECCOP_ECR_SCANNER_INVALID", "message": "The ECR scanner selection is invalid."}
         args = [sys.executable, str(_DEMO_SCRIPT), mapped, "--profile", os.environ["SECCOP_PROFILE"], "--region", os.environ["AWS_REGION"]]
+        args.extend(["--ecr-scanner", ecr_scanner])
+        args.extend(["--ecr-fixture", os.environ.get("SECCOP_ECR_FIXTURE", "current")])
         if mapped != "ecr-scan": args.append("--confirm")
         completed = subprocess.run(args, capture_output=True, text=True, check=False, timeout=300, env=os.environ.copy())
         try:
@@ -547,6 +747,12 @@ def _run_real_demo(command: str, *, source: str | None = None) -> dict[str, obje
             return {"status": "BLOCKED", "reason_code": "SECCOP_ECR_BACKEND_BLOCKED", "message": "The ECR operation was blocked."}
         if mapped == "ecr-scan" and payload.get("reason_code") == "SECCOP_ECR_NON_COMPLIANT": _ECR_APPROVAL_READY = True
         if mapped in {"ecr-fix", "ecr-reset"} and payload.get("status") in {"VERIFIED", "READY"}: _ECR_APPROVAL_READY = False
+        if os.environ.get("SECCOP_ECR_APP_SERVER") == "1" and mapped == "ecr-scan":
+            payload["agent"] = _start_ecr_codex_explanation(
+                request_text or "Investigate the ECR finding and explain the safe next step.", payload,
+            )
+        elif os.environ.get("SECCOP_ECR_APP_SERVER") == "1" and mapped == "ecr-fix" and payload.get("status") in {"VERIFIED", "READY"}:
+            payload["agent_after"] = _finish_ecr_codex_explanation(payload)
         return payload
     if os.environ.get("SECCOP_S3_COMPLIANCE_E2E") == "1":
         mapped = {"scan": "scan", "fix": "apply", "reset": "reset"}.get(command)
@@ -1126,12 +1332,17 @@ class _Handler(BaseHTTPRequestHandler):
 
         if self.path == "/api/scan":
             try:
-                SecCopScanRequest.model_validate(payload)
+                request = SecCopScanRequest.model_validate(payload)
             except ValidationError:
                 self._send_json(400, {"status": "BLOCKED", "reason_code": "REQUEST_REJECTED"})
                 return
             if os.environ.get("SECCOP_S3_COMPLIANCE_E2E") == "1" or os.environ.get("SECCOP_ECR_OPERATOR_MVP") == "1":
-                self._send_json(200, {"result": _run_real_demo("scan"), "events": []})
+                result = _run_real_demo("scan", request_text=request.request_text)
+                agent = result.pop("agent", None)
+                response: dict[str, object] = {"result": result, "events": []}
+                if agent is not None:
+                    response["agent"] = agent
+                self._send_json(200, response)
                 return
             fixture_hybrid = os.environ.get("SECCOP_HYBRID_FIXTURE") == "1"
             scan = _live_server_scan() if _real_demo_enabled() else _fixture_hybrid_scan() if fixture_hybrid else run_demo_scan()
@@ -1631,6 +1842,7 @@ def main() -> None:
     except KeyboardInterrupt:
         pass
     finally:
+        _close_hybrid_session()
         server.server_close()
 
 

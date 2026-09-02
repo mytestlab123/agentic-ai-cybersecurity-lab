@@ -1,7 +1,10 @@
 from pathlib import Path
+import gzip
 import json
+import os
 import sys
 from threading import Thread
+from types import SimpleNamespace
 from urllib.error import HTTPError
 from urllib.request import Request, urlopen
 
@@ -12,6 +15,7 @@ from secure_agent_harness.contracts import (
     AwsReadOnlyEvidence,
     AwsReadOnlyResult,
     PocRequest,
+    SecCopScanRequest,
     SecCopCsvRequest,
     SecCopRemediationResult,
 )
@@ -134,6 +138,9 @@ class _FakeCodexTransport:
             raise RuntimeError("fake App Server stream exhausted")
         return self.messages.pop(0)
 
+    def close(self) -> None:
+        return None
+
 
 def _codex_ready_messages() -> list[dict[str, object]]:
     return [
@@ -217,6 +224,200 @@ def test_hybrid_turn_rejects_command_event() -> None:
         _collect_codex_turn(_HybridSession(transport, "THREAD_ALIAS_01", [], 7), "Safe prompt")
 
 
+def test_hybrid_turn_accepts_idle_thread_status_as_completion() -> None:
+    transport = _FakeCodexTransport([
+        {"id": 7, "result": {"turn": {"id": "TURN_ALIAS_02"}}},
+        {"method": "item/agentMessage/delta", "params": {"delta": "Idle completion."}},
+        {"method": "thread/status/changed", "params": {"threadId": "THREAD_ALIAS_01", "status": {"type": "idle"}}},
+    ])
+    session = _HybridSession(transport, "THREAD_ALIAS_01", [], 7)
+
+    assert _collect_codex_turn(session, "Safe prompt") == "Idle completion."
+    assert session.turns_completed == 1
+
+
+def test_hybrid_turn_uses_completed_agent_message_text_when_delta_is_empty() -> None:
+    transport = _FakeCodexTransport([
+        {"id": 7, "result": {"turn": {"id": "TURN_ALIAS_02"}}},
+        {"method": "item/completed", "params": {"item": {
+            "id": "ITEM_ALIAS_02", "type": "agentMessage", "text": "Completed fallback.",
+        }}},
+        {"method": "turn/completed", "params": {"turn": {"id": "TURN_ALIAS_02", "status": "completed"}}},
+    ])
+
+    assert _collect_codex_turn(_HybridSession(transport, "THREAD_ALIAS_01", [], 7), "Safe prompt") == "Completed fallback."
+
+
+def test_hybrid_turn_ignores_buffered_completion_from_prior_turn() -> None:
+    transport = _FakeCodexTransport([
+        {"id": 7, "result": {"turn": {"id": "TURN_ALIAS_02"}}},
+        {"method": "turn/completed", "params": {"turn": {"id": "TURN_ALIAS_01", "status": "completed"}}},
+        {"method": "item/completed", "params": {"item": {
+            "id": "ITEM_ALIAS_02", "type": "agentMessage", "text": "Current completion.",
+        }}},
+        {"method": "turn/completed", "params": {"turn": {"id": "TURN_ALIAS_02", "status": "completed"}}},
+    ])
+
+    assert _collect_codex_turn(_HybridSession(transport, "THREAD_ALIAS_01", [], 7), "Safe prompt") == "Current completion."
+
+
+@pytest.mark.parametrize("completed_text", ["/home/private/path", 42, None])
+def test_hybrid_turn_rejects_unsafe_or_missing_completed_agent_message_text(completed_text: object) -> None:
+    transport = _FakeCodexTransport([
+        {"id": 7, "result": {"turn": {"id": "TURN_ALIAS_02"}}},
+        {"method": "item/completed", "params": {"item": {
+            "id": "ITEM_ALIAS_02", "type": "agentMessage", "text": completed_text,
+        }}},
+        {"method": "turn/completed", "params": {"turn": {"id": "TURN_ALIAS_02", "status": "completed"}}},
+    ])
+
+    with pytest.raises(_CodexPreflightError, match="CODEX_APP_SERVER_OUTPUT_REJECTED"):
+        _collect_codex_turn(_HybridSession(transport, "THREAD_ALIAS_01", [], 7), "Safe prompt")
+
+
+def test_ecr_scan_request_bounds_user_text_without_granting_authority() -> None:
+    request = SecCopScanRequest.model_validate({"mode": "DEMO", "request_text": "Explain the ECR finding and safe next step."})
+    assert request.request_text.startswith("Explain")
+    with pytest.raises(ValidationError):
+        SecCopScanRequest.model_validate({"mode": "DEMO", "request_text": "run aws cli with arn:example:ecr:private"})
+
+
+def test_ecr_codex_before_after_uses_one_sanitized_thread(monkeypatch: pytest.MonkeyPatch) -> None:
+    transport = _FakeCodexTransport([
+        {"id": 1, "result": {"userAgent": "codex"}},
+        {"id": 2, "result": {"account": {"type": "chatgpt"}}},
+        {"id": 3, "result": {"thread": {"id": "THREAD_ALIAS_01"}}},
+        {"id": 4, "result": {"turn": {"id": "TURN_ALIAS_01"}}},
+        {"method": "turn/started", "params": {"threadId": "THREAD_ALIAS_01", "turn": {"id": "TURN_ALIAS_01"}}},
+        {"method": "item/agentMessage/delta", "params": {"delta": "Before explanation from facts."}},
+        {"method": "turn/completed", "params": {"turn": {"id": "TURN_ALIAS_01", "status": "completed"}}},
+        {"id": 5, "result": {"turn": {"id": "TURN_ALIAS_02"}}},
+        {"method": "turn/started", "params": {"threadId": "THREAD_ALIAS_01", "turn": {"id": "TURN_ALIAS_02"}}},
+        {"method": "item/agentMessage/delta", "params": {"delta": "After explanation from verified facts."}},
+        {"method": "turn/completed", "params": {"turn": {"id": "TURN_ALIAS_02", "status": "completed"}}},
+    ])
+    monkeypatch.setattr(poc_server, "_CodexProcessTransport", lambda: transport)
+    before = poc_server._start_ecr_codex_explanation("Investigate and explain the safe next step.", {
+        "scanner_mode": "ECR_ENHANCED_SCANNING", "package_ecosystem": "JAVASCRIPT_NPM",
+        "cve_id": "CVE-2020-8203", "package_name": "lodash", "installed_version": "4.17.15",
+        "severity": "HIGH", "state": "NON_COMPLIANT",
+    })
+    after = poc_server._finish_ecr_codex_explanation({"scanner_mode": "ECR_ENHANCED_SCANNING", "package_ecosystem": "JAVASCRIPT_NPM", "cve_id": "CVE-2020-8203", "state": "COMPLIANT", "status": "VERIFIED"})
+    assert before["reason_code"] == "ECR_CODEX_BEFORE_READY"
+    assert after["reason_code"] == "ECR_CODEX_AFTER_EXPLAINED"
+    prompts = [item["params"]["input"][0]["text"] for item in transport.sent if item.get("method") == "turn/start"]
+    assert "Investigate and explain" in prompts[0]
+    assert "lodash" in prompts[0] and "CVE-2020-8203" in prompts[0]
+    assert "COMPLIANT" in prompts[1] and "CVE-2020-8203" in prompts[1]
+    assert all("sha256:" not in prompt and "arn:" not in prompt for prompt in prompts)
+    assert [item["params"]["threadId"] for item in transport.sent if item.get("method") == "turn/start"] == ["THREAD_ALIAS_01", "THREAD_ALIAS_01"]
+
+
+def test_ecr_codex_after_fails_closed_when_thread_is_lost() -> None:
+    poc_server._close_hybrid_session()
+    result = poc_server._finish_ecr_codex_explanation({"state": "COMPLIANT"})
+    assert result["status"] == "BLOCKED"
+    assert result["reason_code"] == "CODEX_THREAD_UNAVAILABLE"
+
+
+def test_ecr_codex_after_uses_bounded_timeout(monkeypatch: pytest.MonkeyPatch) -> None:
+    poc_server._HYBRID_SESSION = _HybridSession(
+        _FakeCodexTransport([]), "THREAD_ALIAS_01", [], 1, {}, "ECR_BEFORE_COMPLETE", 1,
+    )
+    observed: list[float] = []
+
+    def fake_collect(_session: object, _prompt: str, *, receive_timeout: float = 180.0) -> str:
+        observed.append(receive_timeout)
+        raise _CodexPreflightError("CODEX_APP_SERVER_UNAVAILABLE")
+
+    monkeypatch.setattr(poc_server, "_collect_codex_turn", fake_collect)
+    try:
+        result = poc_server._finish_ecr_codex_explanation({"state": "COMPLIANT", "status": "VERIFIED"})
+    finally:
+        poc_server._close_hybrid_session()
+    assert result["status"] == "BLOCKED"
+    assert result["reason_code"] == "CODEX_APP_SERVER_UNAVAILABLE"
+    assert observed == [poc_server._ECR_TURN_TIMEOUT]
+
+
+def test_ecr_codex_after_fails_closed_when_continuity_marker_is_missing() -> None:
+    poc_server._HYBRID_SESSION = _HybridSession(_FakeCodexTransport([]), "THREAD_ALIAS_01", [], 1, {})
+    try:
+        result = poc_server._finish_ecr_codex_explanation({"state": "COMPLIANT", "status": "VERIFIED"})
+    finally:
+        poc_server._close_hybrid_session()
+    assert result["status"] == "BLOCKED"
+    assert result["reason_code"] == "CODEX_THREAD_CONTINUITY_LOST"
+
+
+class _FakeProcess:
+    def __init__(self, *, running: bool, timeout_first_wait: bool = False) -> None:
+        self.running = running
+        self.timeout_first_wait = timeout_first_wait
+        self.terminated = False
+        self.killed = False
+        self.wait_calls: list[float] = []
+
+    def poll(self) -> int | None:
+        return None if self.running else 0
+
+    def terminate(self) -> None:
+        self.terminated = True
+        self.running = False
+
+    def kill(self) -> None:
+        self.killed = True
+        self.running = False
+
+    def wait(self, timeout: float) -> int:
+        self.wait_calls.append(timeout)
+        if self.timeout_first_wait and len(self.wait_calls) == 1:
+            raise poc_server.subprocess.TimeoutExpired("codex", timeout)
+        self.running = False
+        return 0
+
+
+def test_codex_transport_close_reaps_exited_and_kills_stuck_process() -> None:
+    closed: list[bool] = []
+    exited = poc_server._CodexProcessTransport.__new__(poc_server._CodexProcessTransport)
+    exited.process = _FakeProcess(running=False)
+    exited._stderr_handle = SimpleNamespace(close=lambda: closed.append(True))
+    exited._closed = False
+    exited.close()
+    assert len(exited.process.wait_calls) == 1
+    assert closed == [True]
+
+    stuck = poc_server._CodexProcessTransport.__new__(poc_server._CodexProcessTransport)
+    stuck.process = _FakeProcess(running=True, timeout_first_wait=True)
+    stuck._stderr_handle = SimpleNamespace(close=lambda: closed.append(True))
+    stuck._closed = False
+    stuck.close()
+    assert stuck.process.terminated is True
+    assert stuck.process.killed is True
+    assert len(stuck.process.wait_calls) == 2
+
+
+def test_codex_transport_keeps_multiple_buffered_protocol_lines() -> None:
+    read_fd, write_fd = os.pipe()
+    stream = None
+    try:
+        os.write(write_fd, b'{"id":1,"result":{}}\n{"id":2,"result":{}}\n')
+        os.close(write_fd)
+        transport = poc_server._CodexProcessTransport.__new__(poc_server._CodexProcessTransport)
+        stream = os.fdopen(read_fd, "rb")
+        transport.process = SimpleNamespace(stdout=stream)
+        transport._stdout_buffer = b""
+        assert transport.receive(1.0)["id"] == 1
+        assert transport.receive(1.0)["id"] == 2
+    finally:
+        try:
+            os.close(write_fd)
+        except OSError:
+            pass
+        if stream is not None:
+            stream.close()
+
+
 def test_public_remediation_payload_excludes_private_evidence_path() -> None:
     result = SecCopRemediationResult(
         status="COMPLETED", reason_code="SSM_REMEDIATION_VERIFIED", cve_id="CVE-2099-0001",
@@ -290,6 +491,271 @@ def test_ecr_scan_names_storage_and_scanner(monkeypatch: pytest.MonkeyPatch, tmp
 
     assert result["storage_provider"] == "AWS_ECR"
     assert result["scanner_provider"] == "LOCAL_TRIVY"
+
+
+def _inspector_fixture(*, tag: str = "demo-current", digest: str | None = None) -> tuple[dict[str, object], dict[str, object], dict[str, object], dict[str, object]]:
+    image_digest = digest or "sha256:" + "a" * 64
+    image = {"imageTags": [tag], "imageDigest": image_digest}
+    account = {"accounts": [{"resourceState": {"ecr": {"status": "ENABLED"}}}]}
+    coverage = {
+        "coveredResources": [
+            {
+                "resourceId": f"ECR_IMAGE_ALIAS/{image_digest}",
+                "scanType": "PACKAGE",
+                "scanStatus": {"statusCode": "INACTIVE", "reason": "SCAN_FREQUENCY_SCAN_ON_PUSH"},
+            }
+        ]
+    }
+    finding = {
+        "status": "ACTIVE",
+        "type": "PACKAGE_VULNERABILITY",
+        "severity": "HIGH",
+        "resources": [
+            {
+                "type": "AWS_ECR_CONTAINER_IMAGE",
+                "details": {"awsEcrContainerImage": {"repositoryName": seccop_demo.ECR_REPOSITORY, "imageHash": image_digest}},
+            }
+        ],
+        "packageVulnerabilityDetails": {
+            "vulnerabilityId": seccop_demo.BAD_CVE,
+            "vulnerablePackages": [{"name": "urllib3", "version": "1.24.1"}],
+        },
+    }
+    return {"imageDetails": [image]}, account, coverage, {"findings": [finding]}
+
+
+class _FakeInspectorAws:
+    def __init__(self, responses: tuple[dict[str, object], dict[str, object], dict[str, object], dict[str, object]]) -> None:
+        self.image, self.account, self.coverage, self.findings = responses
+        self.calls: list[tuple[str, ...]] = []
+
+    def json(self, *args: str) -> dict[str, object]:
+        self.calls.append(args)
+        if args[:2] == ("ecr", "describe-images"):
+            return self.image
+        if args[:2] == ("inspector2", "batch-get-account-status"):
+            return self.account
+        if args[:2] == ("inspector2", "list-coverage"):
+            return self.coverage
+        if args[:2] == ("inspector2", "list-findings"):
+            return self.findings
+        raise AssertionError(f"unexpected AWS read: {args[:2]}")
+
+
+def test_inspector_ecr_maps_exact_finding_without_digest_or_raw_payload() -> None:
+    aws = _FakeInspectorAws(_inspector_fixture())
+
+    result = seccop_demo._scan_ecr_inspector(aws)
+
+    assert result == {
+        "source": "ECR_IMAGE",
+        "alias": "ECR_IMAGE_01",
+        "state": "NON_COMPLIANT",
+        "reason_code": "SECCOP_ECR_INSPECTOR_FINDING",
+        "storage_provider": "AWS_ECR",
+        "scanner_provider": "AMAZON_INSPECTOR",
+        "scanner_mode": "ECR_ENHANCED_SCANNING",
+        "cve_id": "CVE-2019-11324",
+        "package_name": "urllib3",
+        "installed_version": "1.24.1",
+        "severity": "HIGH",
+    }
+    assert "sha256:" not in json.dumps(result)
+    assert any(call[:2] == ("inspector2", "list-findings") for call in aws.calls)
+
+
+def test_inspector_ecr_clean_absence_is_compliant() -> None:
+    image, account, coverage, _ = _inspector_fixture()
+    aws = _FakeInspectorAws((image, account, coverage, {"findings": []}))
+
+    result = seccop_demo._scan_ecr_inspector(aws)
+
+    assert result["state"] == "COMPLIANT"
+    assert result["reason_code"] == "SECCOP_ECR_INSPECTOR_CVE_ABSENT"
+
+
+def test_inspector_ecr_pending_readiness_is_not_claimed_clean() -> None:
+    image, account, coverage, findings = _inspector_fixture()
+    coverage["coveredResources"][0]["scanStatus"] = {"statusCode": "ACTIVE", "reason": "PENDING_INITIAL_SCAN"}
+    aws = _FakeInspectorAws((image, account, coverage, findings))
+
+    result = seccop_demo._scan_ecr_inspector(aws)
+
+    assert result["state"] == "PENDING_RESCAN"
+    assert result["reason_code"] == "SECCOP_ECR_SCAN_PENDING"
+
+
+def test_inspector_ecr_rejects_wrong_or_missing_coverage() -> None:
+    image, account, coverage, findings = _inspector_fixture()
+    coverage["coveredResources"][0]["resourceId"] = "ECR_IMAGE_ALIAS/sha256:" + "b" * 64
+    wrong = seccop_demo._scan_ecr_inspector(_FakeInspectorAws((image, account, coverage, findings)))
+    assert wrong["state"] == "BLOCKED"
+    assert wrong["reason_code"] == "SECCOP_ECR_COVERAGE_MISMATCH"
+
+    coverage["coveredResources"] = []
+    missing = seccop_demo._scan_ecr_inspector(_FakeInspectorAws((image, account, coverage, findings)))
+    assert missing["state"] == "BLOCKED"
+    assert missing["reason_code"] == "SECCOP_ECR_COVERAGE_MISMATCH"
+
+
+def test_inspector_ecr_rejects_ambiguous_tag() -> None:
+    image, account, coverage, findings = _inspector_fixture()
+    image["imageDetails"] = [image["imageDetails"][0], image["imageDetails"][0].copy()]
+
+    result = seccop_demo._scan_ecr_inspector(_FakeInspectorAws((image, account, coverage, findings)))
+
+    assert result["state"] == "BLOCKED"
+    assert result["reason_code"] == "SECCOP_ECR_TAG_AMBIGUOUS"
+
+
+def test_inspector_fixture_selector_uses_retained_public_aliases(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    source = {
+        "source": "ECR_IMAGE", "alias": "ECR_IMAGE_01", "state": "COMPLIANT",
+        "reason_code": "SECCOP_ECR_INSPECTOR_CVE_ABSENT", "scanner_provider": "AMAZON_INSPECTOR",
+        "scanner_mode": "ECR_ENHANCED_SCANNING", "cve_id": seccop_demo.BAD_CVE,
+    }
+    selected: list[str] = []
+
+    def fake_scan(*_: object, tag: str, **__: object) -> dict[str, object]:
+        selected.append(tag)
+        return source
+
+    monkeypatch.setattr(seccop_demo, "_scan_ecr_inspector", fake_scan)
+    monkeypatch.setattr(seccop_demo, "_scan_ecr", lambda *_: pytest.fail("Trivy path used for Inspector selection"))
+
+    vulnerable = seccop_demo._ecr_scan(object(), tmp_path, ecr_scanner="inspector", ecr_fixture="vulnerable")
+    clean = seccop_demo._ecr_scan(object(), tmp_path, ecr_scanner="inspector", ecr_fixture="clean")
+    invalid = seccop_demo._ecr_scan(object(), tmp_path, ecr_scanner="inspector", ecr_fixture="unknown")
+
+    assert selected == ["issue53-live-vulnerable", "issue53-live-clean"]
+    assert vulnerable["status"] == "NO_FINDINGS"
+    assert clean["reason_code"] == "SECCOP_ECR_COMPLIANT"
+    assert invalid["status"] == "BLOCKED"
+    assert invalid["reason_code"] == "SECCOP_ECR_EVIDENCE_BLOCKED"
+
+
+def test_multi_image_fixture_builder_has_distinct_python_and_npm_package_metadata(tmp_path: Path) -> None:
+    python_files = seccop_demo._image_files(tmp_path, seccop_demo.BAD_VERSION, "python", "python")
+    npm_files = seccop_demo._image_files(tmp_path, seccop_demo.NPM_BAD_VERSION, "npm", "npm")
+
+    python_layer = gzip.open(python_files[1], "rb").read()
+    npm_layer = gzip.open(npm_files[1], "rb").read()
+    assert b"urllib3==1.24.1" in python_layer
+    assert b'"name": "lodash"' in npm_layer
+    assert python_files[2].read_bytes() != npm_files[2].read_bytes()
+    assert seccop_demo._ecr_fixture_spec("npm-vulnerable") == {
+        "tag": "issue53-npm-vulnerable", "cve_id": seccop_demo.NPM_CVE, "ecosystem": "JAVASCRIPT_NPM",
+    }
+
+
+def test_inspector_coverage_falls_back_to_repository_for_digest_correlation() -> None:
+    fixture = _inspector_fixture()
+
+    class FallbackAws(_FakeInspectorAws):
+        def __init__(self, responses: tuple[dict[str, object], dict[str, object], dict[str, object], dict[str, object]]) -> None:
+            super().__init__(responses)
+            self.coverage_reads = 0
+
+        def json(self, *args: str) -> dict[str, object]:
+            if args[:2] == ("inspector2", "list-coverage"):
+                self.coverage_reads += 1
+                if self.coverage_reads == 1:
+                    self.calls.append(args)
+                    return {"coveredResources": []}
+            return super().json(*args)
+
+    aws = FallbackAws(fixture)
+    result = seccop_demo._scan_ecr_inspector(aws)
+
+    assert result["state"] == "NON_COMPLIANT"
+    assert result["reason_code"] == "SECCOP_ECR_INSPECTOR_FINDING"
+    assert aws.coverage_reads == 2
+
+
+def test_inspector_finding_pagination_is_consumed_before_ambiguity_check() -> None:
+    fixture = _inspector_fixture()
+
+    class PagedAws(_FakeInspectorAws):
+        def __init__(self, responses: tuple[dict[str, object], dict[str, object], dict[str, object], dict[str, object]]) -> None:
+            super().__init__(responses)
+            self.finding_reads = 0
+
+        def json(self, *args: str) -> dict[str, object]:
+            if args[:2] == ("inspector2", "list-findings"):
+                self.finding_reads += 1
+                self.calls.append(args)
+                return {"findings": []} if self.finding_reads == 2 else {"findings": self.findings["findings"], "nextToken": "TOKEN_ALIAS_01"}
+            return super().json(*args)
+
+    aws = PagedAws(fixture)
+    result = seccop_demo._scan_ecr_inspector(aws)
+
+    assert result["state"] == "NON_COMPLIANT"
+    assert result["reason_code"] == "SECCOP_ECR_INSPECTOR_FINDING"
+    assert aws.finding_reads == 2
+
+
+def test_ecr_operator_maps_inspector_result_and_preserves_trivy_default(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    inspector_source = {
+        "source": "ECR_IMAGE", "alias": "ECR_IMAGE_01", "state": "NON_COMPLIANT",
+        "reason_code": "SECCOP_ECR_INSPECTOR_FINDING", "scanner_provider": "AMAZON_INSPECTOR",
+        "scanner_mode": "ECR_ENHANCED_SCANNING", "cve_id": seccop_demo.BAD_CVE,
+        "package_name": "urllib3", "installed_version": "1.24.1", "severity": "HIGH",
+    }
+    monkeypatch.setattr(seccop_demo, "_scan_ecr_inspector", lambda *_, **__: inspector_source)
+    monkeypatch.setattr(seccop_demo, "_scan_ecr", lambda *_: pytest.fail("Trivy path used for Inspector selection"))
+
+    inspector = seccop_demo._ecr_scan(object(), tmp_path, ecr_scanner="inspector")
+
+    assert inspector["status"] == "READY"
+    assert inspector["reason_code"] == "SECCOP_ECR_NON_COMPLIANT"
+    assert inspector["state"] == "NON_COMPLIANT"
+    assert inspector["scanner_provider"] == "AMAZON_INSPECTOR"
+    assert inspector["scanner_mode"] == "ECR_ENHANCED_SCANNING"
+    assert inspector["findings"][0]["package_name"] == "urllib3"
+
+    monkeypatch.setattr(seccop_demo, "_scan_ecr", lambda *_: {"state": "COMPLIANT", "vulnerabilities": 0})
+    monkeypatch.setattr(seccop_demo, "_repo_uri", lambda *_: "registry.invalid/demo")
+    trivy = seccop_demo._ecr_scan(object(), tmp_path)
+    assert trivy["reason_code"] == "SECCOP_ECR_COMPLIANT"
+
+
+def test_ecr_approve_uses_matching_clean_fixture_and_current_verification(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    promoted: list[str] = []
+    scanned: list[tuple[str, str | None]] = []
+
+    monkeypatch.setattr(seccop_demo, "_ecr_promote_fixture", lambda _aws, _directory, fixture: promoted.append(fixture))
+
+    def fake_scan(_aws: object, _directory: Path, _scanner: str, fixture: str, tag_override: str | None = None) -> dict[str, object]:
+        scanned.append((fixture, tag_override))
+        return {"reason_code": "SECCOP_ECR_COMPLIANT"}
+
+    monkeypatch.setattr(seccop_demo, "_ecr_scan_selected", fake_scan)
+
+    result = seccop_demo._ecr_fix(object(), tmp_path, ecr_scanner="inspector", ecr_fixture="npm-vulnerable")
+
+    assert result["status"] == "VERIFIED"
+    assert promoted == ["npm-clean"]
+    assert scanned == [("npm-clean", "demo-current")]
+
+
+def test_ecr_operator_api_passes_explicit_scanner_without_running_aws(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("SECCOP_DEMO_BACKEND", "AWS")
+    monkeypatch.setenv("SECCOP_ECR_OPERATOR_MVP", "1")
+    monkeypatch.setenv("SECCOP_ECR_SCANNER", "inspector")
+    monkeypatch.setenv("SECCOP_PROFILE", "amit")
+    monkeypatch.setenv("AWS_REGION", "ap-southeast-1")
+    captured: list[list[str]] = []
+
+    def fake_run(args: list[str], **_: object) -> SimpleNamespace:
+        captured.append(args)
+        return SimpleNamespace(stdout=json.dumps({"status": "READY", "reason_code": "SECCOP_ECR_NON_COMPLIANT"}))
+
+    monkeypatch.setattr(poc_server.subprocess, "run", fake_run)
+    result = poc_server._run_real_demo("scan")
+
+    assert result["reason_code"] == "SECCOP_ECR_NON_COMPLIANT"
+    assert captured[0][captured[0].index("--ecr-scanner") + 1] == "inspector"
 
 
 def test_ecr_reopen_is_idempotent_when_the_finding_is_already_open(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
