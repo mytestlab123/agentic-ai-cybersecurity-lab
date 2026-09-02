@@ -53,6 +53,27 @@ This is a public personal-learning repository.
 - Do not create or mutate AWS resources without explicit approval for the exact
   experiment and a same-day cleanup plan.
 
+### Issue #55 approved mutation envelope
+
+Amit approved this exact, later mutation envelope on 2026-09-02, using only
+`AWS_PROFILE=amit`/`AWS_DEFAULT_PROFILE=amit` in `ap-southeast-1`:
+
+- one AWS Config recorder and one delivery channel;
+- `s3-bucket-level-public-access-prohibited` and `ec2-imdsv2-check`, or a
+  published pack containing only those two controls;
+- manual remediation only;
+- `AWSConfigRemediation-ConfigureS3BucketPublicAccessBlock` and
+  `AWSConfigRemediation-EnforceEC2InstanceIMDSv2`;
+- one least-privilege Automation execution role;
+- one retained S3 drift alias; and
+- one disposable SSM-managed EC2 target only when separately prepared with
+  required tags and TTL.
+
+Reject generic IAM, automatic remediation, arbitrary SSM, new networking,
+unrelated resources, and ECR changes. This is an approved scope envelope, not
+evidence that any AWS resource has changed; each mutation phase must remain
+manual, exact-target, and separately validated.
+
 ## Validation
 
 - Run focused tests, Python compilation, and `git diff --check`.

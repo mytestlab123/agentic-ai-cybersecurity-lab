@@ -37,6 +37,27 @@ rehearsals and retries are pre-approved on profile `amit` in
 `ap-southeast-1`, which is the sole current SecCop AWS authority. There is no
 Project1 or `vagent` fallback; if `amit` is unavailable, stop.
 
+## Issue #55 approved mutation envelope
+
+Amit approved this bounded envelope on 2026-09-02 for a later, separate
+mutation phase using only `amit`/`ap-southeast-1`. The exact allowlist is:
+
+- one AWS Config recorder and one delivery channel;
+- the two named controls `s3-bucket-level-public-access-prohibited` and
+  `ec2-imdsv2-check`, or a published pack containing only those controls;
+- manual remediation only (no automatic remediation);
+- the AWS-managed Automation documents
+  `AWSConfigRemediation-ConfigureS3BucketPublicAccessBlock` and
+  `AWSConfigRemediation-EnforceEC2InstanceIMDSv2`;
+- one least-privilege Automation execution role scoped to this envelope;
+- one retained S3 drift alias; and
+- one disposable SSM-managed EC2 target only if separately prepared with the
+  required tags and TTL.
+
+This does not authorize generic IAM, arbitrary SSM, new networking, unrelated
+resources, or any ECR behavior change. This approval records scope only; no
+AWS resource has changed in the documentation phase.
+
 No repeated approval is required for one-at-a-time, repo-owned runs using:
 
 - one `t3.small`-or-smaller EC2 instance with an encrypted root volume;

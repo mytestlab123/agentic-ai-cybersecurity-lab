@@ -5,6 +5,21 @@ Current SecCop AWS execution profile: use only `AWS_PROFILE=amit` and
 variables). There is no `vagent`/Project1/default-profile fallback; stop if the
 explicit `amit` STS check fails.
 
+Issue #55 approved mutation envelope (Amit approval: 2026-09-02; pre-mutation
+state): a later phase may use only `amit`/`ap-southeast-1` for one Config
+recorder and delivery channel; the named S3 public-access and EC2 IMDSv2 rules
+or a pack containing only those controls; manual remediation; the two named
+AWS-managed Automation documents; one least-privilege execution role; one
+retained S3 drift alias; and one separately prepared, tagged/TTL'd disposable
+SSM-managed EC2 target. Generic IAM, auto remediation, arbitrary SSM, new
+networking, unrelated resources, and ECR changes remain outside scope.
+
+Pre-mutation truth remains unchanged: Config recorder/rules/packs are absent,
+the two Automation documents are active (default versions 8 and 4), three
+retained private S3 aliases exist with one missing bucket-level BPA, and no
+project-owned reusable EC2 target was found. No AWS resource has changed from
+this approval or documentation phase.
+
 Current objective: persistent Security Copilot (SecCop) live demo after the
 local visual POC and fake-tested read-only adapter.
 
