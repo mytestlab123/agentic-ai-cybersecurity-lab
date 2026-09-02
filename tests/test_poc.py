@@ -269,7 +269,9 @@ def test_ecr_codex_after_fails_closed_when_thread_is_lost() -> None:
 
 
 def test_ecr_codex_after_uses_bounded_timeout(monkeypatch: pytest.MonkeyPatch) -> None:
-    poc_server._HYBRID_SESSION = _HybridSession(_FakeCodexTransport([]), "THREAD_ALIAS_01", [], 1, {})
+    poc_server._HYBRID_SESSION = _HybridSession(
+        _FakeCodexTransport([]), "THREAD_ALIAS_01", [], 1, {}, "ECR_BEFORE_COMPLETE", 1,
+    )
     observed: list[float] = []
 
     def fake_collect(_session: object, _prompt: str, *, receive_timeout: float = 180.0) -> str:
@@ -284,6 +286,63 @@ def test_ecr_codex_after_uses_bounded_timeout(monkeypatch: pytest.MonkeyPatch) -
     assert result["status"] == "BLOCKED"
     assert result["reason_code"] == "CODEX_APP_SERVER_UNAVAILABLE"
     assert observed == [poc_server._ECR_TURN_TIMEOUT]
+
+
+def test_ecr_codex_after_fails_closed_when_continuity_marker_is_missing() -> None:
+    poc_server._HYBRID_SESSION = _HybridSession(_FakeCodexTransport([]), "THREAD_ALIAS_01", [], 1, {})
+    try:
+        result = poc_server._finish_ecr_codex_explanation({"state": "COMPLIANT", "status": "VERIFIED"})
+    finally:
+        poc_server._close_hybrid_session()
+    assert result["status"] == "BLOCKED"
+    assert result["reason_code"] == "CODEX_THREAD_CONTINUITY_LOST"
+
+
+class _FakeProcess:
+    def __init__(self, *, running: bool, timeout_first_wait: bool = False) -> None:
+        self.running = running
+        self.timeout_first_wait = timeout_first_wait
+        self.terminated = False
+        self.killed = False
+        self.wait_calls: list[float] = []
+
+    def poll(self) -> int | None:
+        return None if self.running else 0
+
+    def terminate(self) -> None:
+        self.terminated = True
+        self.running = False
+
+    def kill(self) -> None:
+        self.killed = True
+        self.running = False
+
+    def wait(self, timeout: float) -> int:
+        self.wait_calls.append(timeout)
+        if self.timeout_first_wait and len(self.wait_calls) == 1:
+            raise poc_server.subprocess.TimeoutExpired("codex", timeout)
+        self.running = False
+        return 0
+
+
+def test_codex_transport_close_reaps_exited_and_kills_stuck_process() -> None:
+    closed: list[bool] = []
+    exited = poc_server._CodexProcessTransport.__new__(poc_server._CodexProcessTransport)
+    exited.process = _FakeProcess(running=False)
+    exited._stderr_handle = SimpleNamespace(close=lambda: closed.append(True))
+    exited._closed = False
+    exited.close()
+    assert len(exited.process.wait_calls) == 1
+    assert closed == [True]
+
+    stuck = poc_server._CodexProcessTransport.__new__(poc_server._CodexProcessTransport)
+    stuck.process = _FakeProcess(running=True, timeout_first_wait=True)
+    stuck._stderr_handle = SimpleNamespace(close=lambda: closed.append(True))
+    stuck._closed = False
+    stuck.close()
+    assert stuck.process.terminated is True
+    assert stuck.process.killed is True
+    assert len(stuck.process.wait_calls) == 2
 
 
 def test_public_remediation_payload_excludes_private_evidence_path() -> None:

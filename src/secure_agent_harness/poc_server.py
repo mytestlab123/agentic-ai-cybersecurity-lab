@@ -60,6 +60,8 @@ _HYBRID_SESSION: "_HybridSession | None" = None
 _S3_APPROVAL_READY = False
 _ECR_APPROVAL_READY = False
 _ECR_TURN_TIMEOUT = 15.0
+_CODEX_PREFLIGHT_TURN_TIMEOUT = 30.0
+_CODEX_STDERR_DIR = Path.home() / ".AGENTS-temp" / "agentic-ai-cybersecurity-lab" / "issue53-app-server-observability" / "app-server-stderr"
 
 
 @dataclass(frozen=True)
@@ -124,7 +126,7 @@ class _CodexPreflightError(RuntimeError):
 
 
 class _CodexProcessTransport:
-    def __init__(self, *, knowledge_only: bool = False) -> None:
+    def __init__(self, *, knowledge_only: bool = False, stderr_dir: Path | None = None) -> None:
         command = ["codex", "app-server", "--stdio"]
         if knowledge_only:
             profile = os.environ.get("SECCOP_PROFILE", "")
@@ -143,14 +145,25 @@ class _CodexProcessTransport:
             )
             for override in overrides:
                 command.extend(("-c", override))
-        self.process = subprocess.Popen(
-            command,
-            stdin=subprocess.PIPE,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.DEVNULL,
-            text=True,
-            bufsize=1,
-        )
+        target_dir = stderr_dir or _CODEX_STDERR_DIR
+        target_dir.mkdir(parents=True, exist_ok=True, mode=0o700)
+        stderr_path = target_dir / f"codex-app-server-{time.time_ns()}.stderr"
+        stderr_fd = os.open(stderr_path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+        self.stderr_path = stderr_path
+        self._stderr_handle = os.fdopen(stderr_fd, "w", encoding="utf-8")
+        self._closed = False
+        try:
+            self.process = subprocess.Popen(
+                command,
+                stdin=subprocess.PIPE,
+                stdout=subprocess.PIPE,
+                stderr=self._stderr_handle,
+                text=True,
+                bufsize=1,
+            )
+        except BaseException:
+            self._stderr_handle.close()
+            raise
 
     def send(self, message: dict[str, object]) -> None:
         if self.process.stdin is None:
@@ -180,13 +193,19 @@ class _CodexProcessTransport:
         return message
 
     def close(self) -> None:
-        if self.process.poll() is None:
-            self.process.terminate()
+        if self._closed:
+            return
+        self._closed = True
+        try:
+            if self.process.poll() is None:
+                self.process.terminate()
             try:
                 self.process.wait(timeout=2)
             except subprocess.TimeoutExpired:
                 self.process.kill()
                 self.process.wait(timeout=2)
+        finally:
+            self._stderr_handle.close()
 
 
 @dataclass
@@ -196,6 +215,8 @@ class _HybridSession:
     pending: list[dict[str, object]]
     next_id: int
     context: dict[str, object] | None = None
+    continuity_marker: str = "THREAD_ACTIVE"
+    turns_completed: int = 0
 
 
 def _close_hybrid_session() -> None:
@@ -206,18 +227,26 @@ def _close_hybrid_session() -> None:
 
 
 def _collect_codex_turn(session: _HybridSession, prompt: str, *, receive_timeout: float = 180.0) -> str:
+    deadline = time.monotonic() + receive_timeout
     request_id = session.next_id
     session.next_id += 1
     turn = _codex_request(
         session.transport, request_id, "turn/start",
         {"threadId": session.thread_id, "input": [{"type": "text", "text": prompt}]},
         session.pending,
+        deadline=deadline,
     ).get("turn")
     if not isinstance(turn, dict) or not isinstance(turn.get("id"), str):
         raise _CodexPreflightError("CODEX_APP_SERVER_OUTPUT_REJECTED")
     response_parts: list[str] = []
     for _ in range(500):
-        event = session.pending.pop(0) if session.pending else session.transport.receive(receive_timeout)
+        if session.pending:
+            event = session.pending.pop(0)
+        else:
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                raise _CodexPreflightError("CODEX_APP_SERVER_UNAVAILABLE")
+            event = session.transport.receive(remaining)
         method = event.get("method")
         params = event.get("params")
         if not isinstance(method, str) or method not in _CODEX_SAFE_NOTIFICATIONS or "id" in event or not isinstance(params, dict):
@@ -234,6 +263,7 @@ def _collect_codex_turn(session: _HybridSession, prompt: str, *, receive_timeout
             completed = params.get("turn")
             if not isinstance(completed, dict) or completed.get("status") != "completed":
                 raise _CodexPreflightError("CODEX_APP_SERVER_UNAVAILABLE")
+            session.turns_completed += 1
             return _safe_codex_text("".join(response_parts))
     raise _CodexPreflightError("CODEX_APP_SERVER_UNAVAILABLE")
 
@@ -385,6 +415,7 @@ def _start_ecr_codex_explanation(request_text: str, scan: dict[str, object]) -> 
         if not isinstance(thread, dict) or not isinstance(thread.get("id"), str):
             raise _CodexPreflightError("CODEX_APP_SERVER_OUTPUT_REJECTED")
         session = _HybridSession(transport, thread["id"], pending, 4, dict(scan))
+        session.continuity_marker = "ECR_BEFORE_ACTIVE"
         _HYBRID_SESSION = session
         prompt = (
             "User request: " + request + "\n\n"
@@ -392,11 +423,13 @@ def _start_ecr_codex_explanation(request_text: str, scan: dict[str, object]) -> 
             "Explain the finding and recommend the safe, approval-gated next step. Do not use tools."
         )
         response = _collect_codex_turn(session, prompt, receive_timeout=_ECR_TURN_TIMEOUT)
+        session.continuity_marker = "ECR_BEFORE_COMPLETE"
         return {
             "status": "READY", "reason_code": "ECR_CODEX_BEFORE_READY",
             "aws_evidence_status": "AMAZON_INSPECTOR", "aws_mcp_status": "NOT_USED",
             "aws_mcp_mode": "READ_ONLY", "tool_activity": ["One read-only Codex thread"],
-            "response_text": response, "message": "Codex explained the real Inspector finding from sanitized BEFORE facts.",
+            "response_text": response, "continuity_marker": session.continuity_marker,
+            "message": "Codex explained the real Inspector finding from sanitized BEFORE facts.",
         }
     except (OSError, _CodexPreflightError) as error:
         return _hybrid_blocked(error.reason_code if isinstance(error, _CodexPreflightError) else "CODEX_APP_SERVER_UNAVAILABLE")
@@ -409,6 +442,8 @@ def _finish_ecr_codex_explanation(after: dict[str, object]) -> dict[str, object]
     if session is None:
         return _hybrid_blocked("CODEX_THREAD_UNAVAILABLE")
     try:
+        if session.continuity_marker != "ECR_BEFORE_COMPLETE" or session.turns_completed < 1:
+            return _hybrid_blocked("CODEX_THREAD_CONTINUITY_LOST")
         before = session.context or {}
         after_facts = dict(after)
         for field in ("scanner_mode", "package_ecosystem", "cve_id"):
@@ -421,11 +456,13 @@ def _finish_ecr_codex_explanation(after: dict[str, object]) -> dict[str, object]
             "Explain the verified final state in two short plain-language sentences. Do not use tools."
         )
         response = _collect_codex_turn(session, prompt, receive_timeout=_ECR_TURN_TIMEOUT)
+        session.continuity_marker = "ECR_AFTER_COMPLETE"
         return {
             "status": "READY", "reason_code": "ECR_CODEX_AFTER_EXPLAINED",
             "aws_evidence_status": "AMAZON_INSPECTOR", "aws_mcp_status": "NOT_USED",
             "aws_mcp_mode": "READ_ONLY", "tool_activity": ["Same read-only Codex thread continued"],
-            "response_text": response, "message": "Codex explained the verified ECR AFTER state on the same thread.",
+            "response_text": response, "continuity_marker": session.continuity_marker,
+            "message": "Codex explained the verified ECR AFTER state on the same thread.",
         }
     except _CodexPreflightError as error:
         return _hybrid_blocked(error.reason_code)
@@ -462,12 +499,18 @@ def _codex_request(
     params: dict[str, object],
     pending: list[dict[str, object]],
     timeout: float = 15,
+    *,
+    deadline: float | None = None,
 ) -> dict[str, object]:
     if method not in _CODEX_ALLOWED_METHODS:
         raise _CodexPreflightError("CODEX_RPC_REJECTED")
     transport.send({"method": method, "id": request_id, "params": params})
+    request_deadline = deadline if deadline is not None else time.monotonic() + timeout
     for _ in range(100):
-        message = transport.receive(timeout)
+        remaining = request_deadline - time.monotonic()
+        if remaining <= 0:
+            raise _CodexPreflightError("CODEX_APP_SERVER_UNAVAILABLE")
+        message = transport.receive(min(timeout, remaining))
         if message.get("id") != request_id:
             event_method = message.get("method")
             if "id" in message or event_method not in _CODEX_SAFE_NOTIFICATIONS:
@@ -534,9 +577,16 @@ def _run_codex_preflight(transport: Any | None = None) -> dict[str, object]:
         if not isinstance(turn, dict) or not isinstance(turn.get("id"), str):
             raise _CodexPreflightError("CODEX_APP_SERVER_OUTPUT_REJECTED")
         turn_id = turn["id"]
+        turn_deadline = time.monotonic() + _CODEX_PREFLIGHT_TURN_TIMEOUT
         response_parts: list[str] = []
         for _ in range(500):
-            event = pending.pop(0) if pending else transport.receive(90)
+            if pending:
+                event = pending.pop(0)
+            else:
+                remaining = turn_deadline - time.monotonic()
+                if remaining <= 0:
+                    raise _CodexPreflightError("CODEX_APP_SERVER_UNAVAILABLE")
+                event = transport.receive(remaining)
             method = event.get("method")
             if not isinstance(method, str) or method not in _CODEX_SAFE_NOTIFICATIONS or "id" in event:
                 raise _CodexPreflightError("CODEX_EVENT_REJECTED")
@@ -1742,6 +1792,7 @@ def main() -> None:
     except KeyboardInterrupt:
         pass
     finally:
+        _close_hybrid_session()
         server.server_close()
 
 
