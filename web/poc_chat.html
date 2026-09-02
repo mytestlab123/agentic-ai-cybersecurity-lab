@@ -521,7 +521,19 @@
       card.appendChild(findings);
       body.appendChild(card);
       setS3FlowStep(1);
-      if (payload.agent) renderHybridAgent(payload.agent, 'Security guidance ready');
+      const cleanEcrVerification = ecrReview && result.status === 'NO_FINDINGS' && result.state === 'COMPLIANT';
+      if (cleanEcrVerification) {
+        renderHybridAgent({
+          status: 'READY',
+          reason_code: 'SECCOP_ECR_COMPLIANT',
+          aws_evidence_status: 'AMAZON_INSPECTOR',
+          aws_mcp_status: 'NOT_USED',
+          aws_mcp_mode: 'READ_ONLY',
+          tool_activity: ['Read-only Inspector verification'],
+          message: 'Amazon Inspector verified the approved ECR digest is clean.',
+          response_text: 'No active package findings were returned for the approved ECR digest.',
+        }, 'Clean verification');
+      } else if (payload.agent) renderHybridAgent(payload.agent, 'Security guidance ready');
     }
 
     function renderHybridAgent(agent, title) {

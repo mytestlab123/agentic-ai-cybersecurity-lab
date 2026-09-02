@@ -824,6 +824,17 @@ def test_browser_has_persistent_ecr_reopen_control() -> None:
     assert "ECR_OPERATOR" in Path(__file__).parents[1].joinpath("src/secure_agent_harness/poc_server.py").read_text()
 
 
+def test_browser_uses_clean_verification_copy_for_compliant_ecr_rescan() -> None:
+    html = (Path(__file__).parents[1] / "web" / "poc_chat.html").read_text()
+
+    assert "result.status === 'NO_FINDINGS' && result.state === 'COMPLIANT'" in html
+    assert "Clean verification" in html
+    assert "Amazon Inspector verified the approved ECR digest is clean." in html
+    assert "No active package findings were returned for the approved ECR digest." in html
+    assert "ECR_CODEX_BEFORE_READY" not in html
+    assert "sanitized BEFORE facts" not in html
+
+
 def test_live_evidence_upload_validates_without_echoing_untrusted_payload() -> None:
     server = ThreadingHTTPServer(("127.0.0.1", 0), _Handler)
     thread = Thread(target=server.serve_forever, daemon=True)
