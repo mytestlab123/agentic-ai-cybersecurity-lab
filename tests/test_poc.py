@@ -850,6 +850,7 @@ def test_browser_sidebar_and_composer_management_view() -> None:
     assert "function configureS3Review()" in html
     for control_id in ("scan-environment", "reopen-s3-finding", "start-real-demo", "advisory-upload", "compare-live", "csv-upload", "compare-csv"):
         assert f'id="{control_id}"' in html
+    assert '<div class="live-panel hidden" aria-hidden="true" hidden>' in html
     assert '<div id="backend-note" class="side-footer hidden" aria-hidden="true" hidden></div>' in html
     assert 'id="mode-status" class="status-pill"' in html
 
