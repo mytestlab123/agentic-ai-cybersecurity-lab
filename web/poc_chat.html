@@ -18,8 +18,6 @@
     .brand-name { font-size:.94rem; font-weight:650; }
     .new-chat { display:flex; gap:10px; width:100%; padding:11px 12px; color:var(--text); background:transparent; border:1px solid #4b4b4b; border-radius:9px; text-align:left; }
     .new-chat:hover { background:#242424; }
-    .upload-button { display:flex; align-items:center; gap:9px; width:100%; padding:10px 11px; color:#cfcfcf; background:#242424; border:1px solid #414141; border-radius:8px; font-size:.8rem; }
-    .upload-button:hover { background:#2d2d2d; color:#fff; }
     .live-panel { display:grid; gap:8px; padding:11px; background:#202020; border:1px solid #3d3d3d; border-radius:9px; }
     .live-panel label { color:#aaa; font-size:.72rem; }
     .live-panel input,.live-panel select { width:100%; padding:7px 8px; color:#eee; background:#2b2b2b; border:1px solid #4b4b4b; border-radius:6px; font-size:.75rem; }
@@ -43,10 +41,7 @@
     .cve-source-summary { margin:7px 0 0; color:#cfcfcf; font-size:.78rem; line-height:1.45; }
     .cve-source-meta { margin-top:6px; color:#777; font-size:.68rem; }
     .cve-source-action { margin-top:10px; }
-    .usage-panel { padding:11px 12px; background:#202020; border:1px solid #3d3d3d; border-radius:9px; }
-    .usage-value { margin-top:7px; color:#d9f8e9; font-size:.78rem; }
     .usage-note { margin-top:4px; color:#777; font-size:.68rem; line-height:1.35; }
-    .upload-button input { display:none; }
     .side-label { padding:0 9px; color:#777; font-size:.7rem; font-weight:700; letter-spacing:.08em; }
     .chat-item { padding:10px 11px; border-radius:8px; color:#d1d1d1; font-size:.88rem; }
     .chat-item.active { background:#2c2c2c; color:#fff; }
@@ -159,9 +154,7 @@
         <button id="start-real-demo" type="button" hidden>Start AWS DEMO</button>
       </div>
       <div class="side-spacer"></div>
-      <details id="technical-evidence-fallback" class="technical-path">
-        <summary>Technical evidence fallback</summary>
-        <label class="upload-button" for="evidence-upload"><span>↑</span><span>Upload read-only evidence</span><input id="evidence-upload" type="file" accept="application/json,.json"></label>
+      <label hidden for="evidence-upload">Upload read-only evidence<input id="evidence-upload" type="file" accept="application/json,.json"></label>
       <div class="live-panel">
         <div class="side-label" style="padding:0">OPTIONAL LIVE AWS</div>
         <label for="advisory-upload">One advisory file (JSON)</label>
@@ -183,13 +176,7 @@
           <button id="compare-csv" type="button">Compare Inspector CSV</button>
         </details>
       </div>
-      </details>
-      <div id="ai-usage-panel" class="usage-panel" aria-label="AI usage">
-        <div class="side-label" style="padding:0">AI USAGE</div>
-        <div id="govtech-usage" class="usage-value">GovTech inference: not used</div>
-        <div class="usage-note">This deterministic path uses no model credits. Billing remains portal-authoritative.</div>
-      </div>
-      <div id="backend-note" class="side-footer"><span class="mode-dot"></span>Local synthetic mode<br>Technical uploads are sanitized and read-only</div>
+      <div id="backend-note" class="side-footer"><span class="mode-dot"></span>Local synthetic mode<br>Technical uploads are sanitized and read-only<span hidden>GovTech inference: not used</span></div>
     </aside>
 
     <main class="main">
@@ -216,8 +203,8 @@
         <div id="messages" class="messages"></div>
       </section>
 
-      <button id="toggle-composer" class="btn primary hidden" type="button">Ask SecCop (optional)</button>
-      <div id="composer-wrap" class="composer-wrap">
+      <button id="toggle-composer" class="btn primary" type="button" aria-controls="composer-wrap" aria-expanded="false">Show Ask SecCop</button>
+      <div id="composer-wrap" class="composer-wrap hidden">
         <form id="run-form" class="composer">
           <div class="composer-toolbar"><span>Ask SecCop</span><select id="input-mode" aria-label="What to check"><option value="CVE_REVIEW">Check a CVE</option><option value="SYNTHETIC_LAB">Run guided example</option></select></div>
           <div class="composer-row">
@@ -262,8 +249,6 @@
     const compareCsvButton = document.querySelector('#compare-csv');
     const modeStatus = document.querySelector('#mode-status');
     const backendNote = document.querySelector('#backend-note');
-    const technicalEvidenceFallback = document.querySelector('#technical-evidence-fallback');
-    const aiUsagePanel = document.querySelector('#ai-usage-panel');
     const welcome = document.querySelector('#welcome');
     const messages = document.querySelector('#messages');
     const newChat = document.querySelector('#new-chat');
@@ -307,10 +292,10 @@
       document.querySelectorAll('.source-tab').forEach((tab) => tab.classList.toggle('active', tab.textContent === 'S3'));
       if (codexPreflightButton) codexPreflightButton.classList.add('hidden');
       if (cveWelcomeButton) cveWelcomeButton.classList.add('hidden');
-      if (technicalEvidenceFallback) technicalEvidenceFallback.classList.add('hidden');
-      if (aiUsagePanel) aiUsagePanel.classList.add('hidden');
       composerWrap.classList.add('hidden');
       toggleComposerButton.classList.remove('hidden');
+      toggleComposerButton.textContent = 'Show Ask SecCop';
+      toggleComposerButton.setAttribute('aria-expanded', 'false');
     }
 
     function configureEcrReview() {
@@ -331,8 +316,10 @@
       });
       if (codexPreflightButton) codexPreflightButton.classList.add('hidden');
       if (cveWelcomeButton) cveWelcomeButton.classList.add('hidden');
-      composerWrap.classList.remove('hidden');
-      toggleComposerButton.classList.add('hidden');
+      composerWrap.classList.add('hidden');
+      toggleComposerButton.classList.remove('hidden');
+      toggleComposerButton.textContent = 'Show Ask SecCop';
+      toggleComposerButton.setAttribute('aria-expanded', 'false');
       promptEl.placeholder = 'Ask about this ECR finding, for example: explain the risk and safe next step';
     }
     const labels = {
@@ -1078,7 +1065,8 @@
 
     toggleComposerButton.addEventListener('click', () => {
       const collapsed = composerWrap.classList.toggle('hidden');
-      toggleComposerButton.textContent = collapsed ? 'Ask SecCop (optional)' : 'Hide Ask SecCop';
+      toggleComposerButton.textContent = collapsed ? 'Show Ask SecCop' : 'Hide Ask SecCop';
+      toggleComposerButton.setAttribute('aria-expanded', String(!collapsed));
       if (!collapsed) promptEl.focus();
     });
 

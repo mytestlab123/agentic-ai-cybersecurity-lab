@@ -835,6 +835,19 @@ def test_browser_uses_clean_verification_copy_for_compliant_ecr_rescan() -> None
     assert "sanitized BEFORE facts" not in html
 
 
+def test_browser_sidebar_and_composer_management_view() -> None:
+    html = (Path(__file__).parents[1] / "web" / "poc_chat.html").read_text()
+
+    assert "Technical evidence fallback" not in html
+    assert "AI USAGE" not in html
+    assert 'id="composer-wrap" class="composer-wrap hidden"' in html
+    assert 'id="toggle-composer" class="btn primary"' in html
+    assert "Show Ask SecCop" in html
+    assert "Hide Ask SecCop" in html
+    assert "aria-expanded" in html
+    assert "advisory-upload" in html and "scan-environment" in html
+
+
 def test_live_evidence_upload_validates_without_echoing_untrusted_payload() -> None:
     server = ThreadingHTTPServer(("127.0.0.1", 0), _Handler)
     thread = Thread(target=server.serve_forever, daemon=True)
