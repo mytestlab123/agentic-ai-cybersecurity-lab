@@ -254,7 +254,6 @@
     let s3Review = false;
     let ecrReview = false;
     let ec2Review = false;
-    let ec2ReopenReady = false;
     let unifiedReview = false;
     let selectedSource = 'ecr';
 
@@ -357,7 +356,7 @@
       scanButton.textContent = 'Scan EC2 compliance';
       if (scanWelcomeButton) scanWelcomeButton.textContent = 'Scan EC2 compliance';
       if (reopenS3FindingButton) {
-        reopenS3FindingButton.hidden = !ec2ReopenReady;
+        reopenS3FindingButton.hidden = false;
         reopenS3FindingButton.textContent = 'Reopen Finding';
       }
       if (codexPreflightButton) codexPreflightButton.classList.add('hidden');
@@ -570,10 +569,6 @@
       card.appendChild(findings);
       body.appendChild(card);
       setS3FlowStep(1);
-      if (ec2Review && reopenS3FindingButton) {
-        ec2ReopenReady = result.status === 'NO_FINDINGS' && result.state === 'COMPLIANT';
-        reopenS3FindingButton.hidden = !ec2ReopenReady;
-      }
       const cleanEcrVerification = ecrReview && result.status === 'NO_FINDINGS' && result.state === 'COMPLIANT';
       if (cleanEcrVerification) {
         renderHybridAgent({
@@ -799,8 +794,7 @@
     }
 
     async function resetS3Demo(button) {
-      const ec2Reopen = ec2Review && selectedSource === 'ec2' && ec2ReopenReady;
-      if (ec2Review && !ec2Reopen) return;
+      const ec2Reopen = ec2Review && selectedSource === 'ec2';
       const prompt = ec2Reopen ? 'Reopen fixed DEV_EC2_LAB_01? This intentionally permits IMDSv1 for the repeatable DEV R&D demo and waits for AWS Config NON_COMPLIANT.' : ecrReview ? 'Reopen this ECR finding? The known-vulnerable demo digest will be restored.' : 'Reopen this finding? Bucket-level protection will be temporarily removed from the private empty test bucket.';
       if (!window.confirm(prompt)) return;
       button.disabled = true;
@@ -811,8 +805,6 @@
         const request = source ? { confirm: true, source } : { confirm: true };
         const payload = await post('/api/demo/reset', request);
         if (ec2Reopen) {
-          ec2ReopenReady = false;
-          if (reopenS3FindingButton) reopenS3FindingButton.hidden = true;
           thinking.parentElement.remove();
           if (payload.result?.reason_code === 'FINDING_ALREADY_OPEN') {
             const body = addMessage('assistant', payload.result.message || 'The fixed LAB_01 finding is already open.');

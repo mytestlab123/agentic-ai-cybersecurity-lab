@@ -1012,8 +1012,9 @@ def test_browser_sidebar_and_composer_management_view() -> None:
     assert "id=\"reopen-s3-finding\"" in html
     assert "RND_REOPEN_REQUIRED" not in html
     ec2_view = html.split("function configureEc2Review", 1)[1].split("function configureUnifiedReview", 1)[0]
-    assert "reopenS3FindingButton.hidden = !ec2ReopenReady" in ec2_view
+    assert "reopenS3FindingButton.hidden = false" in ec2_view
     assert "reopenS3FindingButton.textContent = 'Reopen Finding'" in ec2_view
+    assert "ec2ReopenReady" not in html
     assert "The approved DEMO reset was blocked." not in html
     assert "Reopen fixed DEV_EC2_LAB_01?" in html
     assert "FINDING_ALREADY_OPEN" in html
