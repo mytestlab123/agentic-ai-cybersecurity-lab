@@ -18,6 +18,7 @@ if [[ ${SECCOP_EC2_IMDSV2_E2E:-0} == 1 ]]; then
   dev_existing_mode=${SECCOP_EC2_DEV_EXISTING_E2E:-0}
   target_id=${SECCOP_EC2_TARGET_ID:-}
   mkdir -p "$evidence_dir"; chmod 700 "$evidence_dir"
+  find "$evidence_dir" -maxdepth 1 -type f -exec chmod 600 {} +
   export AWS_PROFILE="$profile" AWS_DEFAULT_PROFILE="$profile" AWS_REGION="$region" AWS_DEFAULT_REGION="$region"
   export SECCOP_PROFILE="$profile" SECCOP_REGION="$region" SECCOP_EC2_EVIDENCE_DIR="$evidence_dir" SECCOP_EC2_STATE="$state"
   if [[ "$dev_existing_mode" == 1 ]]; then
