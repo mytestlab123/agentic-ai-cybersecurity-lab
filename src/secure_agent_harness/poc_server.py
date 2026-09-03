@@ -64,8 +64,8 @@ _ECR_APPROVAL_READY = False
 _ECR_SCAN_TAG_OVERRIDE: str | None = None
 _EC2_APPROVAL_READY = False
 _EC2_PROPOSALS: dict[str, dict[str, str | bool]] = {}
-_EC2_RND_ALIASES = {"DEV_EC2_LAB_01", "DEV_EC2_LAB_02"}
-_EC2_RND_ALIAS_LAB02 = "DEV_EC2_LAB_02"
+_EC2_RND_ALIASES = {"DEV_EC2_LAB_01"}
+_EC2_RND_ALIAS_LAB01 = "DEV_EC2_LAB_01"
 _ECR_TURN_TIMEOUT = 60.0
 _CODEX_PREFLIGHT_TURN_TIMEOUT = 30.0
 _CODEX_STDERR_DIR = Path.home() / ".AGENTS-temp" / "agentic-ai-cybersecurity-lab" / "issue53-app-server-observability" / "app-server-stderr"
@@ -748,20 +748,20 @@ def _run_real_demo(command: str, *, source: str | None = None, request_text: str
             return {"status": "BLOCKED", "reason_code": "SOURCE_UNAVAILABLE", "message": "The S3 source is unavailable."}
     global _S3_APPROVAL_READY, _ECR_APPROVAL_READY, _ECR_SCAN_TAG_OVERRIDE, _EC2_APPROVAL_READY
     if ec2_rnd_enabled and source == "ec2":
+        target_alias = target_alias or _EC2_RND_ALIAS_LAB01
         if target_alias not in _EC2_RND_ALIASES:
-            return {"status": "BLOCKED", "reason_code": "TARGET_REQUIRED", "message": "Select one of the fixed DEV R&D targets."}
+            return {"status": "BLOCKED", "reason_code": "TARGET_NOT_ALLOWED", "message": "Only the fixed DEV_EC2_LAB_01 target is available."}
         ec2_profile = os.environ.get("SECCOP_EC2_PROFILE", "")
         ec2_region = os.environ.get("SECCOP_EC2_REGION", "")
         if ec2_profile != "ihis_dev" or ec2_region != "ap-southeast-1":
             return {"status": "BLOCKED", "reason_code": "SOURCE_UNAVAILABLE", "message": "The DEV R&D source is unavailable."}
-        mapped = {"scan": "ec2-rnd-scan", "reset": "ec2-rnd-rearm"}.get(command)
-        if mapped is None or (mapped == "ec2-rnd-rearm" and target_alias != _EC2_RND_ALIAS_LAB02):
-            return {"status": "BLOCKED", "reason_code": "RND_REOPEN_REQUIRED", "message": "Only the confirmed LAB_02 DEV R&D rearm is allowed."}
+        mapped = {"scan": "ec2-rnd-scan", "reset": "ec2-rnd-reopen"}.get(command)
+        if mapped is None:
+            return {"status": "BLOCKED", "reason_code": "RND_REOPEN_REQUIRED", "message": "Only the fixed LAB_01 DEV R&D reopen is allowed."}
         ec2_env = os.environ.copy()
         ec2_env.update({"AWS_PROFILE": ec2_profile, "AWS_DEFAULT_PROFILE": ec2_profile, "AWS_REGION": ec2_region, "AWS_DEFAULT_REGION": ec2_region, "SECCOP_PROFILE": ec2_profile, "SECCOP_REGION": ec2_region})
         args = [sys.executable, str(_EC2_COMPLIANCE_SCRIPT), mapped, "--profile", ec2_profile, "--region", ec2_region, "--alias", target_alias]
-        if mapped == "ec2-rnd-rearm":
-            args.append("--confirm")
+        args.append("--confirm")
         completed = subprocess.run(args, capture_output=True, text=True, check=False, timeout=600, env=ec2_env)
         try:
             payload = json.loads(completed.stdout)
@@ -1493,8 +1493,8 @@ class _Handler(BaseHTTPRequestHandler):
             if request.source != "ec2" and target_alias is not None:
                 self._send_json(400, {"status": "BLOCKED", "reason_code": "TARGET_NOT_ALLOWED", "message": "A target alias is only valid for the EC2 source."})
                 return
-            if request.source == "ec2" and os.environ.get("SECCOP_EC2_RND_REARM") == "1" and target_alias is None:
-                self._send_json(400, {"status": "BLOCKED", "reason_code": "TARGET_REQUIRED", "message": "Select one of the fixed DEV R&D targets."})
+            if request.source == "ec2" and os.environ.get("SECCOP_EC2_RND_REARM") == "1" and target_alias not in {None, _EC2_RND_ALIAS_LAB01}:
+                self._send_json(400, {"status": "BLOCKED", "reason_code": "TARGET_NOT_ALLOWED", "message": "Only the fixed DEV_EC2_LAB_01 target is available."})
                 return
             if os.environ.get("SECCOP_S3_COMPLIANCE_E2E") == "1" or os.environ.get("SECCOP_ECR_OPERATOR_MVP") == "1" or os.environ.get("SECCOP_EC2_IMDSV2_E2E") == "1":
                 result = _run_real_demo("scan", source=request.source, request_text=request.request_text, target_alias=target_alias)
@@ -1560,10 +1560,10 @@ class _Handler(BaseHTTPRequestHandler):
         if self.path == "/api/demo/reset":
             if os.environ.get("SECCOP_ECR_S3_COMBINED") == "1":
                 if payload.get("source") == "ec2":
-                    if set(payload) != {"confirm", "source", "target_alias"} or payload.get("confirm") is not True or payload.get("target_alias") not in _EC2_RND_ALIASES or os.environ.get("SECCOP_EC2_RND_REARM") != "1":
+                    if set(payload) != {"confirm", "source"} or payload.get("confirm") is not True or os.environ.get("SECCOP_EC2_RND_REARM") != "1":
                         self._send_json(400, {"status": "BLOCKED", "reason_code": "REQUEST_REJECTED"})
                         return
-                    self._send_json(200, {"result": _run_real_demo("reset", source="ec2", target_alias=payload["target_alias"]), "events": []})
+                    self._send_json(200, {"result": _run_real_demo("reset", source="ec2"), "events": []})
                     return
                 if set(payload) != {"confirm", "source"} or payload.get("confirm") is not True or payload.get("source") not in {"ecr", "s3"}:
                     self._send_json(400, {"status": "BLOCKED", "reason_code": "REQUEST_REJECTED"})

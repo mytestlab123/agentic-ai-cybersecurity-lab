@@ -516,12 +516,13 @@ def _ec2_rnd_binding(profile: str, region: str, alias: str, *, allow_missing: bo
     return rules[0]
 
 
-def _ec2_rnd_compliance(profile: str, region: str, alias: str, instance_id: str, expected: str) -> str:
+def _ec2_rnd_compliance(profile: str, region: str, alias: str, instance_id: str, expected: str, *, trigger: bool = True) -> str:
     rule_name = _ec2_rnd_rule(alias)
-    try:
-        _ec2_call(profile, region, "configservice", "start-config-rules-evaluation", "--config-rule-names", rule_name)
-    except RuntimeError:
-        _ec2_evidence("rnd-config-evaluation-trigger", {"resource_alias": alias, "status": "RATE_LIMITED"})
+    if trigger:
+        try:
+            _ec2_call(profile, region, "configservice", "start-config-rules-evaluation", "--config-rule-names", rule_name)
+        except RuntimeError:
+            _ec2_evidence("rnd-config-evaluation-trigger", {"resource_alias": alias, "status": "RATE_LIMITED"})
     latest: dict[str, Any] = {}
     deadline = time.monotonic() + EC2_CONFIG_TIMEOUT_SECONDS
     while time.monotonic() < deadline:
@@ -537,6 +538,15 @@ def _ec2_rnd_compliance(profile: str, region: str, alias: str, instance_id: str,
         time.sleep(10)
     _ec2_evidence("rnd-config-compliance-timeout-" + alias.lower() + "-" + expected.lower(), latest)
     raise RuntimeError("DEV R&D Config compliance did not reach the expected state")
+
+
+def _ec2_rnd_current_compliance(profile: str, region: str, alias: str, instance_id: str) -> str:
+    rule_name = _ec2_rnd_rule(alias)
+    latest = _ec2_call(profile, region, "configservice", "get-compliance-details-by-resource", "--resource-type", "AWS::EC2::Instance", "--resource-id", instance_id)
+    results = [item for item in latest.get("EvaluationResults", []) if item.get("EvaluationResultIdentifier", {}).get("EvaluationResultQualifier", {}).get("ConfigRuleName") == rule_name]
+    state = str(results[0].get("ComplianceType")) if results else "UNKNOWN"
+    _ec2_evidence("rnd-current-compliance-" + alias.lower(), {"resource_alias": alias, "state": state})
+    return state
 
 
 def _ec2_rnd_preflight(profile: str, region: str) -> dict[str, Any]:
@@ -606,7 +616,7 @@ def _ec2_rnd_scan(profile: str, region: str, alias: str) -> dict[str, Any]:
     expected = "NON_COMPLIANT" if target["MetadataOptions"]["HttpTokens"] == "optional" else "COMPLIANT"
     state = _ec2_rnd_compliance(profile, region, alias, instance_id, expected)
     if state == "NON_COMPLIANT":
-        return {"status": "READY", "reason_code": "SECCOP_EC2_IMDSV2_NON_COMPLIANT", "state": state, "resource_alias": alias, "config_rule_name": _ec2_rnd_rule(alias), "findings": [{"finding_id": "FINDING_01", "source_type": "EC2_CONFIG", "resource_alias": alias, "reference": "EC2_IMDSV2_RULE_01", "severity": "MEDIUM", "title": "DEV R&D target accepts IMDSv1", "problem_summary": "AWS Config found a fixed DEV target that still accepts IMDSv1.", "observed_state": "HttpTokens=optional; Config NON_COMPLIANT", "recommended_state": "Use the explicit Reopen Finding action only for LAB_02.", "remediation_mode": "REAL_APPROVAL_REQUIRED", "reason_code": "SECCOP_EC2_IMDSV2_FINDING", "action_label": "Reopen Finding"}], "message": "DEV R&D rearm evidence shows the selected fixed target is intentionally NON_COMPLIANT."}
+        return {"status": "READY", "reason_code": "SECCOP_EC2_IMDSV2_NON_COMPLIANT", "state": state, "resource_alias": alias, "config_rule_name": _ec2_rnd_rule(alias), "findings": [{"finding_id": "FINDING_01", "source_type": "EC2_CONFIG", "resource_alias": alias, "reference": "EC2_IMDSV2_RULE_01", "severity": "MEDIUM", "title": "DEV R&D target accepts IMDSv1", "problem_summary": "AWS Config found a fixed DEV target that still accepts IMDSv1.", "observed_state": "HttpTokens=optional; Config NON_COMPLIANT", "recommended_state": "Use the explicit Reopen Finding action for fixed LAB_01 only.", "remediation_mode": "REAL_APPROVAL_REQUIRED", "reason_code": "SECCOP_EC2_IMDSV2_FINDING", "action_label": "Reopen Finding"}], "message": "DEV R&D evidence shows the fixed LAB_01 target is intentionally NON_COMPLIANT."}
     return {"status": "NO_FINDINGS", "reason_code": "SECCOP_EC2_IMDSV2_COMPLIANT", "state": state, "resource_alias": alias, "config_rule_name": _ec2_rnd_rule(alias), "findings": [], "message": "AWS Config verified the selected DEV R&D target is IMDSv2 compliant."}
 
 
@@ -627,6 +637,27 @@ def _ec2_rnd_rearm(profile: str, region: str, alias: str, confirm: bool) -> dict
     state = _ec2_rnd_compliance(profile, region, alias, instance_id, "NON_COMPLIANT")
     _ec2_evidence("rnd-rearm-lab02", {"resource_alias": alias, "metadata_tokens": "optional", "config": state, "mutation_performed": changed, "intentional": True})
     return {"status": "REARMED", "reason_code": "SECCOP_EC2_RND_REARMED", "state": state, "resource_alias": alias, "metadata_http_tokens": "optional", "mutation_performed": changed, "message": "The confirmed LAB_02 DEV R&D rearm is intentionally left IMDSv1-compatible for testing."}
+
+
+def _ec2_rnd_reopen(profile: str, region: str, alias: str, confirm: bool) -> dict[str, Any]:
+    if alias != EC2_RND_ALIAS_LAB01 or not confirm:
+        raise RuntimeError("Only confirmed LAB_01 DEV R&D reopen is allowed")
+    instance_id, target = _ec2_rnd_target(profile, region, alias)
+    rule = _ec2_rnd_binding(profile, region, alias)
+    if rule.get("Scope", {}).get("ComplianceResourceId") != instance_id or rule.get("Source", {}).get("SourceIdentifier") != EC2_CONFIG_SOURCE or rule.get("ConfigRuleState") != "ACTIVE":
+        raise RuntimeError("LAB_01 Config rule scope is not exact")
+    tokens = target["MetadataOptions"]["HttpTokens"]
+    if tokens == "optional" and _ec2_rnd_current_compliance(profile, region, alias, instance_id) == "NON_COMPLIANT":
+        return {"status": "NOOP", "reason_code": "FINDING_ALREADY_OPEN", "state": "NON_COMPLIANT", "resource_alias": alias, "metadata_http_tokens": "optional", "mutation_performed": False, "message": "The fixed LAB_01 finding is already open; no AWS mutation or Config wait was performed."}
+    if tokens != "required":
+        raise RuntimeError("LAB_01 metadata state is not a supported reset baseline")
+    _ec2_call(profile, region, "ec2", "modify-instance-metadata-options", "--instance-id", instance_id, "--http-tokens", "optional")
+    _, after = _ec2_rnd_target(profile, region, alias)
+    if after["MetadataOptions"]["HttpTokens"] != "optional":
+        raise RuntimeError("LAB_01 metadata did not reach optional")
+    state = _ec2_rnd_compliance(profile, region, alias, instance_id, "NON_COMPLIANT")
+    _ec2_evidence("rnd-reopen-lab01", {"resource_alias": alias, "metadata_tokens": "optional", "config": state, "mutation_performed": True, "intentional": True})
+    return {"status": "REOPENED", "reason_code": "SECCOP_EC2_RND_REOPENED", "state": state, "resource_alias": alias, "metadata_http_tokens": "optional", "mutation_performed": True, "message": "The confirmed LAB_01 DEV R&D finding was reopened for testing."}
 
 
 def _ec2_recorder_setup(profile: str, region: str) -> bool:
@@ -1051,7 +1082,7 @@ def reset(profile: str, region: str, bucket: str) -> dict[str, Any]:
 
 def main() -> int:
     parser = argparse.ArgumentParser()
-    parser.add_argument("command", choices=("setup", "create", "scan", "apply", "reset", "cleanup", "ec2-setup", "ec2-adopt", "ec2-scan", "ec2-reject", "ec2-apply", "ec2-cleanup", "ec2-rnd-preflight", "ec2-rnd-setup", "ec2-rnd-scan", "ec2-rnd-rearm"))
+    parser.add_argument("command", choices=("setup", "create", "scan", "apply", "reset", "cleanup", "ec2-setup", "ec2-adopt", "ec2-scan", "ec2-reject", "ec2-apply", "ec2-cleanup", "ec2-rnd-preflight", "ec2-rnd-setup", "ec2-rnd-scan", "ec2-rnd-rearm", "ec2-rnd-reopen"))
     parser.add_argument("--profile", required=True); parser.add_argument("--region", required=True); parser.add_argument("--bucket")
     parser.add_argument("--instance-id")
     parser.add_argument("--delivery-bucket")
@@ -1087,6 +1118,10 @@ def main() -> int:
             if args.alias not in {EC2_RND_ALIAS_LAB01, EC2_RND_ALIAS_LAB02}:
                 raise RuntimeError("DEV R&D target alias is required")
             output = _ec2_rnd_rearm(args.profile, args.region, args.alias, args.confirm)
+        elif args.command == "ec2-rnd-reopen":
+            if args.alias != EC2_RND_ALIAS_LAB01:
+                raise RuntimeError("Only DEV_EC2_LAB_01 may be reopened")
+            output = _ec2_rnd_reopen(args.profile, args.region, args.alias, args.confirm)
         elif args.command == "setup":
             if not args.delivery_bucket:
                 raise RuntimeError("Config delivery bucket is required")
