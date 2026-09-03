@@ -254,6 +254,7 @@
     let s3Review = false;
     let ecrReview = false;
     let ec2Review = false;
+    let ec2ReopenReady = false;
     let unifiedReview = false;
     let selectedSource = 'ecr';
 
@@ -356,7 +357,8 @@
       scanButton.textContent = 'Scan EC2 compliance';
       if (scanWelcomeButton) scanWelcomeButton.textContent = 'Scan EC2 compliance';
       if (reopenS3FindingButton) {
-        reopenS3FindingButton.hidden = true;
+        reopenS3FindingButton.hidden = !ec2ReopenReady;
+        reopenS3FindingButton.textContent = 'Reopen Finding';
       }
       if (codexPreflightButton) codexPreflightButton.classList.add('hidden');
       if (cveWelcomeButton) cveWelcomeButton.classList.add('hidden');
@@ -568,6 +570,10 @@
       card.appendChild(findings);
       body.appendChild(card);
       setS3FlowStep(1);
+      if (ec2Review && reopenS3FindingButton) {
+        ec2ReopenReady = result.status === 'NO_FINDINGS' && result.state === 'COMPLIANT';
+        reopenS3FindingButton.hidden = !ec2ReopenReady;
+      }
       const cleanEcrVerification = ecrReview && result.status === 'NO_FINDINGS' && result.state === 'COMPLIANT';
       if (cleanEcrVerification) {
         renderHybridAgent({
@@ -793,15 +799,36 @@
     }
 
     async function resetS3Demo(button) {
-      const prompt = ecrReview ? 'Reopen this ECR finding? The known-vulnerable demo digest will be restored.' : 'Reopen this finding? Bucket-level protection will be temporarily removed from the private empty test bucket.';
+      const ec2Reopen = ec2Review && selectedSource === 'ec2' && ec2ReopenReady;
+      if (ec2Review && !ec2Reopen) return;
+      const prompt = ec2Reopen ? 'Reopen fixed DEV_EC2_LAB_01? This intentionally permits IMDSv1 for the repeatable DEV R&D demo and waits for AWS Config NON_COMPLIANT.' : ecrReview ? 'Reopen this ECR finding? The known-vulnerable demo digest will be restored.' : 'Reopen this finding? Bucket-level protection will be temporarily removed from the private empty test bucket.';
       if (!window.confirm(prompt)) return;
       button.disabled = true;
       addMessage('user', 'Reopen Finding');
-      const thinking = addMessage('assistant', ecrReview ? 'Restoring the known-vulnerable ECR digest and rereading it with Amazon Inspector...' : 'Checking the approved empty private bucket before reopening the finding...');
+      const thinking = addMessage('assistant', ec2Reopen ? 'Reopening only fixed DEV_EC2_LAB_01 to IMDSv1 and waiting for AWS Config NON_COMPLIANT...' : ecrReview ? 'Restoring the known-vulnerable ECR digest and rereading it with Amazon Inspector...' : 'Checking the approved empty private bucket before reopening the finding...');
       try {
         const source = unifiedReview ? selectedSource : null;
         const request = source ? { confirm: true, source } : { confirm: true };
         const payload = await post('/api/demo/reset', request);
+        if (ec2Reopen) {
+          ec2ReopenReady = false;
+          if (reopenS3FindingButton) reopenS3FindingButton.hidden = true;
+          thinking.parentElement.remove();
+          if (payload.result?.reason_code === 'FINDING_ALREADY_OPEN') {
+            const body = addMessage('assistant', payload.result.message || 'The fixed LAB_01 finding is already open.');
+            const card = node('div', 'result-card');
+            const grid = node('div', 'evidence-grid');
+            evidenceCell(grid, 'Source', 'EC2_CONFIG');
+            evidenceCell(grid, 'AWS mutation', 'None');
+            evidenceCell(grid, 'State', 'NON_COMPLIANT');
+            card.appendChild(grid);
+            body.appendChild(card);
+          } else {
+            renderScan(payload);
+          }
+          button.disabled = false;
+          return;
+        }
         thinking.parentElement.remove();
         messages.replaceChildren();
         welcome.classList.remove('hidden');
@@ -809,7 +836,7 @@
         button.disabled = false;
         startScan(scanButton);
       } catch (error) {
-        thinking.textContent = `The approved ${ecrReview ? 'ECR' : 'S3'} reset was blocked.`;
+        thinking.textContent = ec2Reopen ? `LAB_01 Reopen Finding was blocked: ${error.message || 'REQUEST_REJECTED'}` : `The approved ${ecrReview ? 'ECR' : 'S3'} reset was blocked.`;
         thinking.classList.add('error-copy');
         button.disabled = false;
       }

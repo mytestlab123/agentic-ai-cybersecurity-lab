@@ -36,6 +36,7 @@ from http.server import ThreadingHTTPServer
 
 sys.path.insert(0, str(Path(__file__).parents[1] / "scripts"))
 import seccop_demo  # noqa: E402
+import issue47_s3_compliance as issue47  # noqa: E402
 
 
 def _request(cve_id: str = "CVE-2099-0001") -> PocRequest:
@@ -887,7 +888,7 @@ def test_ec2_rnd_route_is_fixed_lab01_with_reject_then_approved_remediation(monk
 
     def fake_run(args: list[str], **_: object) -> SimpleNamespace:
         captured.append(args)
-        command = next(item for item in ("ec2-rnd-scan", "ec2-rnd-reject", "ec2-rnd-apply") if item in args)
+        command = next(item for item in ("ec2-rnd-scan", "ec2-rnd-reject", "ec2-rnd-apply", "ec2-rnd-reopen") if item in args)
         payload = {
             "ec2-rnd-scan": {
                 "status": "READY",
@@ -912,6 +913,16 @@ def test_ec2_rnd_route_is_fixed_lab01_with_reject_then_approved_remediation(monk
                 "metadata_http_tokens": "required",
                 "automation_status": "Success",
             },
+            "ec2-rnd-reopen": {
+                "status": "READY",
+                "reason_code": "SECCOP_EC2_IMDSV2_NON_COMPLIANT",
+                "state": "NON_COMPLIANT",
+                "resource_alias": "DEV_EC2_LAB_01",
+                "config_rule_name": "ec2-imdsv2-check-rnd-lab01",
+                "findings": [],
+                "reopen_status": "REOPENED",
+                "mutation_performed": True,
+            },
         }[command]
         return SimpleNamespace(stdout=json.dumps(payload))
 
@@ -930,9 +941,26 @@ def test_ec2_rnd_route_is_fixed_lab01_with_reject_then_approved_remediation(monk
     assert verified["metadata_http_tokens"] == "required"
     assert captured[-1][captured[-1].index("--alias") + 1] == "DEV_EC2_LAB_01"
     assert captured[-1][-1] == "--confirm"
-    assert poc_server._run_real_demo("reset", source="ec2")["reason_code"] == "REQUEST_REJECTED"
+    reopened = poc_server._run_real_demo("reset", source="ec2")
+    assert reopened["reason_code"] == "SECCOP_EC2_IMDSV2_NON_COMPLIANT"
+    assert reopened["reopen_status"] == "REOPENED"
+    assert "proposal_id" in reopened
     blocked = poc_server._run_real_demo("scan", source="ec2", target_alias="DEV_EC2_LAB_02")
     assert blocked["reason_code"] == "TARGET_NOT_ALLOWED"
+
+
+def test_ec2_rnd_reopen_already_open_skips_config_wait(monkeypatch: pytest.MonkeyPatch) -> None:
+    target = {"MetadataOptions": {"HttpTokens": "optional"}}
+    rule = {"Scope": {"ComplianceResourceId": "EC2_RESOURCE_01"}, "Source": {"SourceIdentifier": issue47.EC2_CONFIG_SOURCE}, "ConfigRuleState": "ACTIVE"}
+    monkeypatch.setattr(issue47, "_ec2_rnd_target", lambda *_: ("EC2_RESOURCE_01", target))
+    monkeypatch.setattr(issue47, "_ec2_rnd_binding", lambda *_: rule)
+    monkeypatch.setattr(issue47, "_ec2_rnd_current_compliance", lambda *_: "NON_COMPLIANT")
+    monkeypatch.setattr(issue47, "_ec2_rnd_compliance", lambda *_: pytest.fail("Config evaluation must not run when the finding is open"))
+
+    result = issue47._ec2_rnd_reopen("ihis_dev", "ap-southeast-1", issue47.EC2_RND_ALIAS_LAB01, True)
+
+    assert result["reason_code"] == "FINDING_ALREADY_OPEN"
+    assert result["mutation_performed"] is False
 
 
 def test_ecr_reopen_is_idempotent_when_the_finding_is_already_open(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
@@ -984,9 +1012,11 @@ def test_browser_sidebar_and_composer_management_view() -> None:
     assert "id=\"reopen-s3-finding\"" in html
     assert "RND_REOPEN_REQUIRED" not in html
     ec2_view = html.split("function configureEc2Review", 1)[1].split("function configureUnifiedReview", 1)[0]
-    assert "reopenS3FindingButton.hidden = true" in ec2_view
-    assert "Reopen Finding" not in ec2_view
+    assert "reopenS3FindingButton.hidden = !ec2ReopenReady" in ec2_view
+    assert "reopenS3FindingButton.textContent = 'Reopen Finding'" in ec2_view
     assert "The approved DEMO reset was blocked." not in html
+    assert "Reopen fixed DEV_EC2_LAB_01?" in html
+    assert "FINDING_ALREADY_OPEN" in html
     for control_id in ("scan-environment", "reopen-s3-finding", "start-real-demo", "advisory-upload", "compare-live", "csv-upload", "compare-csv"):
         assert f'id="{control_id}"' in html
     assert '<div class="live-panel hidden" aria-hidden="true" hidden>' in html

@@ -755,7 +755,7 @@ def _run_real_demo(command: str, *, source: str | None = None, request_text: str
         ec2_region = os.environ.get("SECCOP_EC2_REGION", "")
         if ec2_profile != "ihis_dev" or ec2_region != "ap-southeast-1":
             return {"status": "BLOCKED", "reason_code": "SOURCE_UNAVAILABLE", "message": "The DEV R&D source is unavailable."}
-        mapped = {"scan": "ec2-rnd-scan", "reject": "ec2-rnd-reject", "fix": "ec2-rnd-apply"}.get(command)
+        mapped = {"scan": "ec2-rnd-scan", "reject": "ec2-rnd-reject", "fix": "ec2-rnd-apply", "reset": "ec2-rnd-reopen"}.get(command)
         if mapped is None:
             return {"status": "BLOCKED", "reason_code": "REQUEST_REJECTED", "message": "Only the fixed LAB_01 Scan, Remediate, and Reject journey is available."}
         if mapped in {"ec2-rnd-reject", "ec2-rnd-apply"}:
@@ -772,7 +772,7 @@ def _run_real_demo(command: str, *, source: str | None = None, request_text: str
             payload = json.loads(completed.stdout)
         except json.JSONDecodeError:
             return {"status": "BLOCKED", "reason_code": "SECCOP_EC2_BACKEND_BLOCKED", "message": "The DEV R&D operation was blocked."}
-        if mapped == "ec2-rnd-scan" and payload.get("reason_code") == "SECCOP_EC2_IMDSV2_NON_COMPLIANT":
+        if mapped in {"ec2-rnd-scan", "ec2-rnd-reopen"} and payload.get("reason_code") == "SECCOP_EC2_IMDSV2_NON_COMPLIANT":
             proposal_id = _next_proposal_id()
             basis = {"source": "ec2", "target_alias": target_alias, "rule": payload.get("config_rule_name"), "document": "AWSConfigRemediation-EnforceEC2InstanceIMDSv2", "state": payload.get("state")}
             proposal_hash = hashlib.sha256(json.dumps(basis, sort_keys=True).encode()).hexdigest()
@@ -1565,7 +1565,10 @@ class _Handler(BaseHTTPRequestHandler):
         if self.path == "/api/demo/reset":
             if os.environ.get("SECCOP_ECR_S3_COMBINED") == "1":
                 if payload.get("source") == "ec2":
-                    self._send_json(400, {"status": "BLOCKED", "reason_code": "REQUEST_REJECTED"})
+                    if set(payload) != {"confirm", "source"} or payload.get("confirm") is not True or os.environ.get("SECCOP_EC2_RND_REARM") != "1":
+                        self._send_json(400, {"status": "BLOCKED", "reason_code": "REQUEST_REJECTED"})
+                        return
+                    self._send_json(200, {"result": _run_real_demo("reset", source="ec2"), "events": []})
                     return
                 if set(payload) != {"confirm", "source"} or payload.get("confirm") is not True or payload.get("source") not in {"ecr", "s3"}:
                     self._send_json(400, {"status": "BLOCKED", "reason_code": "REQUEST_REJECTED"})

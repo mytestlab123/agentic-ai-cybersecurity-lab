@@ -107,5 +107,8 @@ COMPLIANT`. Review shows the exact AWS Config IMDSv2 proposal. Reject changes
 nothing; Remediate consumes that one proposal and invokes only the existing
 manual `AWSConfigRemediation-EnforceEC2InstanceIMDSv2` binding before checking
 terminal Automation success, `HttpTokens=required`, and fresh Config
-`COMPLIANT`. The CLI reopen command remains an optional R&D reset only; it is
-not an EC2 GUI action.
+`COMPLIANT`. Only after a fresh clean EC2 scan may the GUI reveal an optional
+fixed-LAB_01 **Reopen Finding** R&D loop. It explicitly confirms IMDSv1 and
+fresh Config `NON_COMPLIANT`, remains hidden while a finding is open, and is
+idempotent with `FINDING_ALREADY_OPEN` and no mutation/wait when already open.
+The CLI reopen command remains the operator fallback.

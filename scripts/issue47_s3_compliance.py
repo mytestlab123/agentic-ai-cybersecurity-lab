@@ -519,10 +519,16 @@ def _ec2_rnd_binding(profile: str, region: str, alias: str, *, allow_missing: bo
 def _ec2_rnd_compliance(profile: str, region: str, alias: str, instance_id: str, expected: str, *, trigger: bool = True) -> str:
     rule_name = _ec2_rnd_rule(alias)
     if trigger:
-        try:
-            _ec2_call(profile, region, "configservice", "start-config-rules-evaluation", "--config-rule-names", rule_name)
-        except RuntimeError:
-            _ec2_evidence("rnd-config-evaluation-trigger", {"resource_alias": alias, "status": "RATE_LIMITED"})
+        for attempt in range(3):
+            try:
+                _ec2_call(profile, region, "configservice", "start-config-rules-evaluation", "--config-rule-names", rule_name)
+                break
+            except RuntimeError:
+                if attempt == 2:
+                    _ec2_evidence("rnd-config-evaluation-trigger", {"resource_alias": alias, "status": "RATE_LIMITED_POLLING", "attempts": attempt + 1})
+                    break
+                _ec2_evidence("rnd-config-evaluation-trigger", {"resource_alias": alias, "status": "RATE_LIMITED_RETRY", "attempt": attempt + 1})
+                time.sleep(5 * (attempt + 1))
     latest: dict[str, Any] = {}
     deadline = time.monotonic() + EC2_CONFIG_TIMEOUT_SECONDS
     while time.monotonic() < deadline:
@@ -608,6 +614,10 @@ def _ec2_rnd_setup(profile: str, region: str) -> dict[str, Any]:
     return {"status": "READY", "reason_code": "SECCOP_EC2_RND_LAB01_READY", "resource_alias": EC2_RND_ALIAS_LAB01, "state": state, "message": "The fixed LAB_01 DEV R&D target is ready with the exact manual Config binding."}
 
 
+def _ec2_rnd_noncompliant_result(alias: str) -> dict[str, Any]:
+    return {"status": "READY", "reason_code": "SECCOP_EC2_IMDSV2_NON_COMPLIANT", "state": "NON_COMPLIANT", "resource_alias": alias, "config_rule_name": _ec2_rnd_rule(alias), "findings": [{"finding_id": "FINDING_01", "source_type": "EC2_CONFIG", "resource_alias": alias, "reference": "EC2_IMDSV2_RULE_01", "severity": "MEDIUM", "title": "EC2 IMDSv2 security misconfiguration", "problem_summary": "AWS Config found that fixed LAB_01 still accepts IMDSv1.", "observed_state": "HttpTokens=optional; Config NON_COMPLIANT", "recommended_state": "Run the exact manual AWS-managed IMDSv2 Automation and verify COMPLIANT.", "remediation_mode": "REAL_APPROVAL_REQUIRED", "reason_code": "SECCOP_EC2_IMDSV2_FINDING", "action_label": "Remediate"}], "message": "AWS Config found that fixed LAB_01 still accepts IMDSv1. Review the exact AWS-managed IMDSv2 remediation, then choose Remediate or Reject."}
+
+
 def _ec2_rnd_scan(profile: str, region: str, alias: str) -> dict[str, Any]:
     instance_id, target = _ec2_rnd_target(profile, region, alias)
     rule = _ec2_rnd_binding(profile, region, alias)
@@ -616,7 +626,7 @@ def _ec2_rnd_scan(profile: str, region: str, alias: str) -> dict[str, Any]:
     expected = "NON_COMPLIANT" if target["MetadataOptions"]["HttpTokens"] == "optional" else "COMPLIANT"
     state = _ec2_rnd_compliance(profile, region, alias, instance_id, expected)
     if state == "NON_COMPLIANT":
-        return {"status": "READY", "reason_code": "SECCOP_EC2_IMDSV2_NON_COMPLIANT", "state": state, "resource_alias": alias, "config_rule_name": _ec2_rnd_rule(alias), "findings": [{"finding_id": "FINDING_01", "source_type": "EC2_CONFIG", "resource_alias": alias, "reference": "EC2_IMDSV2_RULE_01", "severity": "MEDIUM", "title": "EC2 IMDSv2 security misconfiguration", "problem_summary": "AWS Config found that fixed LAB_01 still accepts IMDSv1.", "observed_state": "HttpTokens=optional; Config NON_COMPLIANT", "recommended_state": "Run the exact manual AWS-managed IMDSv2 Automation and verify COMPLIANT.", "remediation_mode": "REAL_APPROVAL_REQUIRED", "reason_code": "SECCOP_EC2_IMDSV2_FINDING", "action_label": "Remediate"}], "message": "AWS Config found that fixed LAB_01 still accepts IMDSv1. Review the exact AWS-managed IMDSv2 remediation, then choose Remediate or Reject."}
+        return _ec2_rnd_noncompliant_result(alias)
     return {"status": "NO_FINDINGS", "reason_code": "SECCOP_EC2_IMDSV2_COMPLIANT", "state": state, "resource_alias": alias, "config_rule_name": _ec2_rnd_rule(alias), "findings": [], "message": "AWS Config verified the selected DEV R&D target is IMDSv2 compliant."}
 
 
@@ -681,7 +691,9 @@ def _ec2_rnd_reopen(profile: str, region: str, alias: str, confirm: bool) -> dic
         raise RuntimeError("LAB_01 metadata did not reach optional")
     state = _ec2_rnd_compliance(profile, region, alias, instance_id, "NON_COMPLIANT")
     _ec2_evidence("rnd-reopen-lab01", {"resource_alias": alias, "metadata_tokens": "optional", "config": state, "mutation_performed": True, "intentional": True})
-    return {"status": "REOPENED", "reason_code": "SECCOP_EC2_RND_REOPENED", "state": state, "resource_alias": alias, "metadata_http_tokens": "optional", "mutation_performed": True, "message": "The confirmed LAB_01 DEV R&D finding was reopened for testing."}
+    result = _ec2_rnd_noncompliant_result(alias)
+    result.update({"reopen_status": "REOPENED", "metadata_http_tokens": "optional", "mutation_performed": True, "message": "The confirmed LAB_01 DEV R&D finding was reopened for testing and is ready for review."})
+    return result
 
 
 def _ec2_recorder_setup(profile: str, region: str) -> bool:

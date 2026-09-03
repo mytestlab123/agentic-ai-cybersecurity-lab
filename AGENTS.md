@@ -99,9 +99,12 @@ For fixed `DEV_EC2_LAB_01`, the EC2 GUI path is
 `NON_COMPLIANT -> Review -> Remediate/Reject -> StartRemediationExecution ->
 COMPLIANT`. Reject is non-mutating. Remediate must use the existing manual
 `AWSConfigRemediation-EnforceEC2InstanceIMDSv2` binding and verify terminal
-Automation success, `HttpTokens=required`, and fresh Config `COMPLIANT`. The
-CLI Reopen command is optional R&D reset only and is never an EC2 GUI approval
-action.
+Automation success, `HttpTokens=required`, and fresh Config `COMPLIANT`. After
+a fresh verified clean EC2 scan only, the GUI may reveal an optional fixed-LAB_01
+**Reopen Finding** R&D loop. Its confirmation intentionally permits IMDSv1 and
+waits for Config `NON_COMPLIANT`; it is hidden while a finding is open and
+returns `FINDING_ALREADY_OPEN` without mutation or a Config wait when already
+open. CLI Reopen remains the operator fallback.
 
 ## Validation
 
