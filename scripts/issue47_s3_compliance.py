@@ -6,6 +6,7 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import re
 import subprocess
 import sys
 import time
@@ -35,6 +36,9 @@ EC2_TARGET_NAME = "seccop-amit-inspector-host-r01"
 EC2_INSTANCE_PROFILE = "AmazonSSMRoleForInstancesQuickSetup"
 EC2_AMI_NAME = "al2023-ami-2023.12.20260831.0-kernel-6.18-x86_64"
 EC2_CONFIG_TIMEOUT_SECONDS = 360
+EC2_RETAIN_TTL = "01-10-26"
+EC2_RETAIN_PURPOSE = "SecCop Issue 55 retained EC2 IMDSv2 Config demo"
+EC2_DEV_REUSED_ROLE = "ami-factory-dev-demo-role"
 
 
 def call(args: list[str], *, allow_missing: bool = False) -> dict[str, Any]:
@@ -313,6 +317,43 @@ def _ec2_save_state(value: dict[str, Any]) -> None:
     path.chmod(0o600)
 
 
+def _ec2_role_name() -> str:
+    return os.environ.get("SECCOP_EC2_AUTOMATION_ROLE", EC2_AUTOMATION_ROLE)
+
+
+def _ec2_policy_name() -> str:
+    return os.environ.get("SECCOP_EC2_AUTOMATION_POLICY", EC2_AUTOMATION_POLICY)
+
+
+def _ec2_reuse_role() -> bool:
+    return os.environ.get("SECCOP_EC2_REUSE_ROLE") == "1"
+
+
+def _ec2_write_json(name: str, value: object) -> Path:
+    root = Path(os.environ.get("SECCOP_EC2_EVIDENCE_DIR", "/tmp"))
+    root.mkdir(parents=True, exist_ok=True, mode=0o700)
+    path = root / name
+    path.write_text(json.dumps(value), encoding="utf-8")
+    path.chmod(0o600)
+    return path
+
+
+def _ec2_retain_tags(profile: str, region: str, instance_id: str, group_id: str, volume_id: str | None) -> None:
+    resources = [instance_id, group_id] + ([volume_id] if volume_id else [])
+    tags = [
+        "Key=Cleanup,Value=keep",
+        "Key=cleanup,Value=keep",
+        f"Key=TTL,Value={EC2_RETAIN_TTL}",
+        f"Key=Purpose,Value={EC2_RETAIN_PURPOSE}",
+        f"Key=purpose,Value={EC2_RETAIN_PURPOSE}",
+        "Key=phase,Value=issue55-ec2-config-retained-arm",
+        "Key=Issue,Value=55",
+        "Key=ExpiresAt,Value=2026-10-01T23:59:00+08:00",
+    ]
+    _ec2_call(profile, region, "ec2", "create-tags", "--resources", *resources, "--tags", *tags)
+    _ec2_evidence("retention-tags", {"resource_aliases": ["EC2_RESOURCE_01", "SG_EC2_RESOURCE_01", "EBS_EC2_ROOT_01"], "cleanup": "keep", "TTL": EC2_RETAIN_TTL, "purpose": "REUSABLE_EC2_CONFIG_IMDSV2_DEMO"})
+
+
 def _ec2_account(profile: str, region: str) -> str:
     identity = _ec2_call(profile, region, "sts", "get-caller-identity")
     account = identity.get("Account")
@@ -348,6 +389,18 @@ def _ec2_budget_gate(profile: str, region: str, account: str) -> None:
 
 
 def _ec2_target(profile: str, region: str) -> dict[str, Any]:
+    target_id = os.environ.get("SECCOP_EC2_TARGET_ID")
+    if not target_id:
+        try:
+            target_id = str(_ec2_load_state().get("instance_id", ""))
+        except RuntimeError:
+            target_id = ""
+    if target_id:
+        response = _ec2_call(profile, region, "ec2", "describe-instances", "--instance-ids", target_id)
+        instances = [item for reservation in response.get("Reservations", []) if isinstance(reservation, dict) for item in reservation.get("Instances", []) if isinstance(item, dict)]
+        if len(instances) != 1:
+            raise RuntimeError("EC2 target ID is missing or ambiguous")
+        return instances[0]
     response = _ec2_call(
         profile, region, "ec2", "describe-instances", "--filters",
         f"Name=tag:Name,Values={EC2_TARGET_NAME}", "Name=tag:Repo,Values=agentic-ai-cybersecurity-lab",
@@ -409,10 +462,42 @@ def _ec2_recorder_setup(profile: str, region: str) -> bool:
 
 
 def _ec2_config_setup(profile: str, region: str, instance_id: str, account: str) -> None:
-    role = _ec2_call(profile, region, "iam", "get-role", "--role-name", EC2_AUTOMATION_ROLE)
+    role_name = _ec2_role_name()
+    policy_name = _ec2_policy_name()
+    role = _ec2_call(profile, region, "iam", "get-role", "--role-name", role_name, allow_missing=True)
     role_arn = role.get("Role", {}).get("Arn")
-    if not isinstance(role_arn, str):
-        raise RuntimeError("Existing Issue #55 Automation role is unavailable")
+    if _ec2_reuse_role():
+        if role_name != EC2_DEV_REUSED_ROLE:
+            raise RuntimeError("DEV reuse is pinned to the approved AMI-factory role")
+        if not isinstance(role_arn, str):
+            raise RuntimeError("Approved reusable Automation role is unavailable")
+        trust = role.get("Role", {}).get("AssumeRolePolicyDocument", {})
+        principals = [statement.get("Principal", {}).get("Service") for statement in trust.get("Statement", []) if isinstance(statement, dict)] if isinstance(trust, dict) else []
+        if not any(service == "ssm.amazonaws.com" or isinstance(service, list) and "ssm.amazonaws.com" in service for service in principals):
+            raise RuntimeError("Approved reusable Automation role does not trust SSM")
+        _ec2_evidence("automation-role-reused", {"role_alias": "AMI_FACTORY_DEV_DEMO_ROLE", "role_unchanged": True, "trust": "SSM"})
+    elif not isinstance(role_arn, str):
+        trust = {"Version": "2012-10-17", "Statement": [{"Effect": "Allow", "Principal": {"Service": "ssm.amazonaws.com"}, "Action": "sts:AssumeRole"}]}
+        trust_file = _ec2_write_json("ec2-automation-trust.json", trust)
+        created = _ec2_call(profile, region, "iam", "create-role", "--role-name", role_name, "--assume-role-policy-document", f"file://{trust_file}", "--description", "SecCop Issue 55 DEV EC2 IMDSv2 manual remediation")
+        role_arn = created.get("Role", {}).get("Arn")
+        if not isinstance(role_arn, str):
+            raise RuntimeError("DEV Automation role creation failed")
+        role_tags = [
+            "Key=Name,Value=seccop-issue55-dev-ec2-automation",
+            "Key=dev,Value=amit",
+            "Key=project,Value=agentic-ai-cybersecurity-lab",
+            "Key=created,Value=2026-09-03",
+            "Key=tools,Value=cdx",
+            "Key=environment,Value=dev",
+            "Key=owner,Value=amit",
+            "Key=version,Value=issue55",
+            f"Key=TTL,Value={EC2_RETAIN_TTL}",
+            f"Key=purpose,Value={EC2_RETAIN_PURPOSE}",
+            "Key=phase,Value=issue55-dev-nessus-imdsv2-e2e",
+            "Key=cleanup,Value=keep",
+        ]
+        _ec2_call(profile, region, "iam", "tag-role", "--role-name", role_name, "--tags", *role_tags)
     policy = {
         "Version": "2012-10-17",
         "Statement": [
@@ -422,17 +507,63 @@ def _ec2_config_setup(profile: str, region: str, instance_id: str, account: str)
     }
     policy_file = Path(os.environ.get("SECCOP_EC2_EVIDENCE_DIR", "/tmp")) / "ec2-automation-policy.json"
     policy_file.write_text(json.dumps(policy), encoding="utf-8"); policy_file.chmod(0o600)
-    _ec2_call(profile, region, "iam", "put-role-policy", "--role-name", EC2_AUTOMATION_ROLE, "--policy-name", EC2_AUTOMATION_POLICY, "--policy-document", f"file://{policy_file}")
+    if not _ec2_reuse_role():
+        _ec2_call(profile, region, "iam", "put-role-policy", "--role-name", role_name, "--policy-name", policy_name, "--policy-document", f"file://{policy_file}")
     rule_probe = _ec2_call(profile, region, "configservice", "describe-config-rules", "--config-rule-names", EC2_CONFIG_RULE, allow_missing=True)
-    if rule_probe.get("ConfigRules"):
-        raise RuntimeError("EC2 Config rule already exists unexpectedly")
-    rule = {"ConfigRuleName": EC2_CONFIG_RULE, "Description": "Issue #55 exact EC2 IMDSv2 control", "Scope": {"ComplianceResourceTypes": ["AWS::EC2::Instance"], "ComplianceResourceId": instance_id}, "Source": {"Owner": "AWS", "SourceIdentifier": EC2_CONFIG_SOURCE}}
-    rule_file = policy_file.with_name("ec2-config-rule.json"); rule_file.write_text(json.dumps(rule), encoding="utf-8"); rule_file.chmod(0o600)
-    _ec2_call(profile, region, "configservice", "put-config-rule", "--config-rule", f"file://{rule_file}")
+    existing_rules = rule_probe.get("ConfigRules", [])
+    if existing_rules:
+        existing = existing_rules[0] if len(existing_rules) == 1 else {}
+        if (existing.get("ConfigRuleName") != EC2_CONFIG_RULE or existing.get("Source", {}).get("Owner") != "AWS" or existing.get("Source", {}).get("SourceIdentifier") != EC2_CONFIG_SOURCE or existing.get("Scope", {}).get("ComplianceResourceTypes") != ["AWS::EC2::Instance"] or existing.get("Scope", {}).get("ComplianceResourceId") != instance_id):
+            raise RuntimeError("Existing EC2 Config rule is outside the exact approved target")
+    else:
+        rule = {"ConfigRuleName": EC2_CONFIG_RULE, "Description": "Issue #55 exact EC2 IMDSv2 control", "Scope": {"ComplianceResourceTypes": ["AWS::EC2::Instance"], "ComplianceResourceId": instance_id}, "Source": {"Owner": "AWS", "SourceIdentifier": EC2_CONFIG_SOURCE}}
+        rule_file = policy_file.with_name("ec2-config-rule.json"); rule_file.write_text(json.dumps(rule), encoding="utf-8"); rule_file.chmod(0o600)
+        _ec2_call(profile, region, "configservice", "put-config-rule", "--config-rule", f"file://{rule_file}")
+    rule_probe = _ec2_call(profile, region, "configservice", "describe-config-rules", "--config-rule-names", EC2_CONFIG_RULE)
+    config_rule_arn = rule_probe.get("ConfigRules", [{}])[0].get("ConfigRuleArn") if rule_probe.get("ConfigRules") else None
+    if not isinstance(config_rule_arn, str) or not config_rule_arn.startswith("arn:"):
+        raise RuntimeError("EC2 Config rule ARN was not returned")
+    _ec2_call(profile, region, "configservice", "tag-resource", "--resource-arn", config_rule_arn, "--tags", "Key=cleanup,Value=keep", f"Key=TTL,Value={EC2_RETAIN_TTL}", f"Key=Purpose,Value={EC2_RETAIN_PURPOSE}", "Key=phase,Value=issue55-ec2-config-retained-arm")
     remediation = {"ConfigRuleName": EC2_CONFIG_RULE, "TargetType": "SSM_DOCUMENT", "TargetId": EC2_SSM_DOCUMENT, "TargetVersion": EC2_SSM_DOCUMENT_VERSION, "Parameters": {"AutomationAssumeRole": {"StaticValue": {"Values": [role_arn]}}, "InstanceId": {"ResourceValue": {"Value": "RESOURCE_ID"}}}, "Automatic": False}
     remediation_file = policy_file.with_name("ec2-remediation.json"); remediation_file.write_text(json.dumps([remediation]), encoding="utf-8"); remediation_file.chmod(0o600)
     _ec2_call(profile, region, "configservice", "put-remediation-configurations", "--remediation-configurations", f"file://{remediation_file}")
-    _ec2_evidence("config-bindings", {"rule": EC2_CONFIG_RULE, "source": EC2_CONFIG_SOURCE, "document": EC2_SSM_DOCUMENT, "document_version": EC2_SSM_DOCUMENT_VERSION, "automatic": False, "role": "EXISTING_ISSUE55_ROLE", "resource_alias": "EC2_RESOURCE_01"})
+    _ec2_evidence("config-bindings", {"rule": EC2_CONFIG_RULE, "source": EC2_CONFIG_SOURCE, "document": EC2_SSM_DOCUMENT, "document_version": EC2_SSM_DOCUMENT_VERSION, "automatic": False, "role": "AMI_FACTORY_DEV_DEMO_ROLE" if _ec2_reuse_role() else "AUTOMATION_ROLE_ISSUE55_01", "resource_alias": "EC2_RESOURCE_01"})
+
+
+def ec2_adopt(profile: str, region: str, instance_id: str) -> dict[str, Any]:
+    if profile != "ihis_dev" or region != "ap-southeast-1" or not re.fullmatch(r"i-[0-9a-f]+", instance_id):
+        raise RuntimeError("DEV adoption requires the exact approved profile, region, and target")
+    if not _ec2_reuse_role() or _ec2_role_name() != EC2_DEV_REUSED_ROLE:
+        raise RuntimeError("DEV adoption requires the approved AMI-factory Automation role reuse")
+    account = _ec2_account(profile, region)
+    response = _ec2_call(profile, region, "ec2", "describe-instances", "--instance-ids", instance_id)
+    instances = [item for reservation in response.get("Reservations", []) if isinstance(reservation, dict) for item in reservation.get("Instances", []) if isinstance(item, dict)]
+    if len(instances) != 1:
+        raise RuntimeError("Approved DEV target is missing or ambiguous")
+    target = instances[0]
+    if target.get("State", {}).get("Name") != "running" or target.get("PublicIpAddress") is not None or target.get("MetadataOptions", {}).get("HttpTokens") != "optional":
+        raise RuntimeError("Approved DEV target is not running, private, and optional-token")
+    groups = target.get("SecurityGroups", [])
+    if len(groups) != 1 or not isinstance(groups[0], dict) or not isinstance(groups[0].get("GroupId"), str):
+        raise RuntimeError("Approved DEV target security-group shape is invalid")
+    group_id = str(groups[0]["GroupId"])
+    sg = _ec2_call(profile, region, "ec2", "describe-security-groups", "--group-ids", group_id)
+    if len(sg.get("SecurityGroups", [])) != 1 or sg["SecurityGroups"][0].get("IpPermissions") != []:
+        raise RuntimeError("Approved DEV target security group is not zero-ingress")
+    _ec2_wait_ssm(profile, region, instance_id)
+    recorders = _ec2_call(profile, region, "configservice", "describe-configuration-recorders").get("ConfigurationRecorders", [])
+    statuses = _ec2_call(profile, region, "configservice", "describe-configuration-recorder-status").get("ConfigurationRecordersStatus", [])
+    if len(recorders) != 1 or len(statuses) != 1 or statuses[0].get("recording") is not True:
+        raise RuntimeError("DEV Config recorder is not a single active recorder")
+    group = recorders[0].get("recordingGroup", {})
+    if not (group.get("allSupported") is True or "AWS::EC2::Instance" in group.get("resourceTypes", [])):
+        raise RuntimeError("DEV Config recorder does not record EC2 instances")
+    _ec2_save_state({"target_name": EC2_TARGET_NAME, "target_alias": "DEV_EC2_RESOURCE_01", "instance_id": instance_id, "security_group_id": group_id, "profile": profile, "region": region, "recorder": recorders[0].get("name")})
+    os.environ["SECCOP_EC2_TARGET_ID"] = instance_id
+    _ec2_config_setup(profile, region, instance_id, account)
+    _ec2_save_state({"target_name": EC2_TARGET_NAME, "target_alias": "DEV_EC2_RESOURCE_01", "instance_id": instance_id, "security_group_id": group_id, "profile": profile, "region": region, "recorder": recorders[0].get("name"), "role_name": _ec2_role_name(), "policy_name": _ec2_policy_name(), "config_rule": EC2_CONFIG_RULE})
+    _ec2_evidence("dev-target-ready", {"resource_alias": "DEV_EC2_RESOURCE_01", "target_state": "running", "metadata_tokens": "optional", "ssm": "Online", "public_ipv4": False, "zero_ingress": True, "recorder": "EXISTING_ACTIVE_EC2_RECORDING"})
+    return {"status": "READY", "reason_code": "SECCOP_EC2_DEV_TARGET_READY", "resource_alias": "DEV_EC2_RESOURCE_01", "state": "NON_COMPLIANT_BASELINE_READY"}
 
 
 def ec2_setup(profile: str, region: str) -> dict[str, Any]:
@@ -446,7 +577,7 @@ def ec2_setup(profile: str, region: str) -> dict[str, Any]:
         raise RuntimeError("EC2 target name is already in use")
     repo_dir = Path(__file__).resolve().parents[1]
     env = os.environ.copy()
-    env.update({"SECCOP_PROFILE": profile, "SECCOP_REGION": region, "SECCOP_AMI_NAME_PATTERN": os.environ.get("SECCOP_EC2_AMI_NAME_PATTERN", EC2_AMI_NAME)})
+    env.update({"SECCOP_PROFILE": profile, "SECCOP_REGION": region, "SECCOP_AMI_NAME_PATTERN": os.environ.get("SECCOP_EC2_AMI_NAME_PATTERN", EC2_AMI_NAME), "TF_VAR_instance_type": "t3.micro"})
     start = subprocess.run([
         str(repo_dir / "scripts" / "start-demo.sh"), "--ec2-only", "--profile", profile, "--region", region,
         "--expected-principal", "amit", "--instance-profile", EC2_INSTANCE_PROFILE, "--subnet-id", subnet_id,
@@ -471,6 +602,7 @@ def ec2_setup(profile: str, region: str) -> dict[str, Any]:
     # failure in recorder/rule wiring still leaves the repo-owned cleanup path
     # able to remove only this disposable instance and its dedicated SG.
     _ec2_save_state({"target_name": EC2_TARGET_NAME, "instance_id": instance_id, "security_group_id": group_id, "volume_id": volume_id, "subnet_id": subnet_id, "profile": profile, "region": region})
+    _ec2_retain_tags(profile, region, instance_id, group_id, volume_id)
     _ec2_call(profile, region, "ec2", "modify-instance-metadata-options", "--instance-id", instance_id, "--http-tokens", "optional")
     _ec2_wait_ssm(profile, region, instance_id)
     recorder_changed = _ec2_recorder_setup(profile, region)
@@ -720,8 +852,9 @@ def reset(profile: str, region: str, bucket: str) -> dict[str, Any]:
 
 def main() -> int:
     parser = argparse.ArgumentParser()
-    parser.add_argument("command", choices=("setup", "create", "scan", "apply", "reset", "cleanup", "ec2-setup", "ec2-scan", "ec2-reject", "ec2-apply", "ec2-cleanup"))
+    parser.add_argument("command", choices=("setup", "create", "scan", "apply", "reset", "cleanup", "ec2-setup", "ec2-adopt", "ec2-scan", "ec2-reject", "ec2-apply", "ec2-cleanup"))
     parser.add_argument("--profile", required=True); parser.add_argument("--region", required=True); parser.add_argument("--bucket")
+    parser.add_argument("--instance-id")
     parser.add_argument("--delivery-bucket")
     parser.add_argument("--extra-bucket", action="append", default=[])
     parser.add_argument("--protected", action="store_true")
@@ -729,6 +862,10 @@ def main() -> int:
     try:
         if args.command == "ec2-setup":
             output = ec2_setup(args.profile, args.region)
+        elif args.command == "ec2-adopt":
+            if not args.instance_id:
+                raise RuntimeError("DEV EC2 instance ID is required")
+            output = ec2_adopt(args.profile, args.region, args.instance_id)
         elif args.command == "ec2-scan":
             output = ec2_scan(args.profile, args.region)
         elif args.command == "ec2-reject":

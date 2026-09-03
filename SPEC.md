@@ -76,3 +76,19 @@ Standing authority excludes PROD, GCC, client, protected, and unrelated
 resources; broad IAM expansion; new VPC, NAT, ALB, RDS, EKS, or OpenSearch;
 arbitrary commands; SSH; reboot; multi-account mutation; ECR/S3 mutation; and
 unowned cleanup.
+
+## Issue #55 retained DEV IMDSv2 slice
+
+The approved DEV exception uses only `ihis_dev` in `ap-southeast-1` and the
+exact target alias `DEV_EC2_RESOURCE_01`. It reuses the existing
+`AMI_FACTORY_DEV_DEMO_ROLE` unchanged as `AutomationAssumeRole` and proves
+caller PassRole, SSM trust, and unchanged role trust/policy/attachment shape.
+The one direct `ec2-imdsv2-check` rule is scoped to that target and binds only
+manual AWS-managed `AWSConfigRemediation-EnforceEC2InstanceIMDSv2` version 4.
+The happy path is NON_COMPLIANT -> Reject/no mutation -> one approved
+StartRemediationExecution -> terminal Automation Success -> HttpTokens=required
+and fresh Config COMPLIANT. The target and Config resources remain retained;
+`cleanup=keep` is a retention marker, TTL is review-only, and deletion or
+termination requires a new explicit Amit approval. The prior partial role is
+not modified, and package/CVE, S3, ECR, networking, and automatic-remediation
+work remain outside this slice.

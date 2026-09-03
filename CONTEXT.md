@@ -89,3 +89,46 @@ network preflight, live target preflight, real Inspector export, and browser
 Next gate: run `start-demo.sh --confirm` only when a live DEMO is needed, then
 use the GUI scan/review path. Any EC2 package remediation remains a separate
 human approval-gated milestone; run `cleanup-demo.sh --confirm` after the DEMO.
+
+## Current Issue #55 DEV EC2 partial arm (2026-09-03)
+
+The superseding DEV run used only `ihis_dev`/`ap-southeast-1` and the
+explicitly approved Nessus target alias `DEV_EC2_RESOURCE_01`. The target
+remains running as a `t3.medium`, private (no public IPv4), SSM Online,
+zero-ingress, and `HttpTokens=optional`. No EC2 metadata or network mutation
+was performed. Its existing scanner ownership and unencrypted gp2 root are
+unchanged and must not be repurposed outside Amit's exact approval.
+
+The run created and retained the tagged role alias
+`AUTOMATION_ROLE_ISSUE55_DEV_01`, but the profile was denied the exact
+`iam:PutRolePolicy` call, so the narrow policy is not attached. No
+`ec2-imdsv2-check` rule or remediation binding was created; no Config proof
+ran. The role is retained for reconciliation, with `cleanup=keep` and
+`TTL=01-10-26`; TTL is review-only and cleanup requires new explicit Amit
+approval naming the resource class and scope. The old package/CVE path remains
+excluded.
+
+## Current Issue #55 DEV EC2 retained IMDSv2 proof (2026-09-03)
+
+The approved follow-up used only `ihis_dev`/`ap-southeast-1` and the exact
+target alias `DEV_EC2_RESOURCE_01`. The existing `AMI_FACTORY_DEV_DEMO_ROLE`
+was reused unchanged: caller PassRole for SSM was allowed, SSM trust was
+present, and before/after trust, inline-policy names, managed-policy
+attachments, and tags matched. The earlier partial role remains retained and
+untouched.
+
+The direct AWS-managed `ec2-imdsv2-check` rule is active and target-scoped,
+with manual `AWSConfigRemediation-EnforceEC2InstanceIMDSv2` version 4. The
+repo-owned API proof recorded proposal-less and wrong/cross-source blocks,
+Reject with no mutation, one approved remediation with terminal Automation
+Success, `HttpTokens=required`, replay protection, and fresh Config
+`COMPLIANT`. The existing all-supported Config recorder stayed active; no
+delivery or unrelated resource changed.
+
+The existing DEV EC2 target, its existing zero-ingress security group and SSM
+registration, the direct rule, remediation binding, reused role, and prior
+partial role are retained. No new compute was created; cost is the existing
+target's ongoing usage plus negligible Config/IAM overhead. Retention is
+`cleanup=keep` with `TTL=01-10-26` as review-only; deletion or termination
+requires new explicit Amit approval. Package/CVE, S3, ECR, networking, and
+automatic-remediation work remain excluded.

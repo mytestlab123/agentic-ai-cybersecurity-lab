@@ -74,6 +74,20 @@ unrelated resources, and ECR changes. This is an approved scope envelope, not
 evidence that any AWS resource has changed; each mutation phase must remain
 manual, exact-target, and separately validated.
 
+### Issue #55 retained DEV IMDSv2 exception
+
+For the approved retained DEV rehearsal only, use `ihis_dev` in
+`ap-southeast-1` and the exact target alias `DEV_EC2_RESOURCE_01`. Reuse the
+existing `AMI_FACTORY_DEV_DEMO_ROLE` unchanged as the AWS Config Automation
+role; do not alter its trust, policies, attachments, instance profile, or
+tags. The path is limited to the direct `ec2-imdsv2-check` rule, manual
+`AWSConfigRemediation-EnforceEC2InstanceIMDSv2` version 4, and one exact
+human-confirmed execution. Retain the target, Config rule, remediation, and
+existing role with `cleanup=keep`; TTL is review-only and cleanup needs new
+explicit Amit approval. The prior partial Issue #55 role remains untouched,
+and package/CVE, S3, ECR, networking, and automatic-remediation paths remain
+excluded.
+
 ## Validation
 
 - Run focused tests, Python compilation, and `git diff --check`.
