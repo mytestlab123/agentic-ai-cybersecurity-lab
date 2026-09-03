@@ -4,7 +4,6 @@
 from __future__ import annotations
 
 import argparse
-import hashlib
 import json
 import os
 import re
@@ -41,16 +40,11 @@ EC2_RETAIN_TTL = "01-10-26"
 EC2_RETAIN_PURPOSE = "SecCop Issue 55 retained EC2 IMDSv2 Config demo"
 EC2_DEV_REUSED_ROLE = "ami-factory-dev-demo-role"
 
-# Issue #55 DEV R&D rearm. IDs stay in a mode-600 runtime map; hashes pin the
-# map to the two approved targets without publishing identifiers in source.
+# Issue #55 DEV R&D rearm. The sole LAB_01 identity stays only in a mode-600
+# private runtime map and is never committed to public source.
 EC2_RND_ALIAS_LAB01 = "DEV_EC2_LAB_01"
-EC2_RND_ALIAS_LAB02 = "DEV_EC2_LAB_02"
 EC2_RND_RULE_LAB01 = "ec2-imdsv2-check-rnd-lab01"
 EC2_RND_TARGET_MAP = "SECCOP_EC2_RND_TARGET_MAP"
-EC2_RND_ID_HASHES = {
-    EC2_RND_ALIAS_LAB01: "0230ddaa9efd2c86f7b86e869df3a7c511a55174b782fd270f91aeca4c0afec2",
-    EC2_RND_ALIAS_LAB02: "2f134e50a001511ff0147258b80e4e381506ccf5c8950e5cb055454dc66862e3",
-}
 
 
 def call(args: list[str], *, allow_missing: bool = False) -> dict[str, Any]:
@@ -455,7 +449,7 @@ def _ec2_rnd_targets() -> dict[str, str]:
         raise RuntimeError("DEV R&D target map is unavailable") from exc
     if not isinstance(raw, dict) or raw.get("profile") != "ihis_dev" or raw.get("region") != "ap-southeast-1":
         raise RuntimeError("DEV R&D target map context is invalid")
-    expected = {EC2_RND_ALIAS_LAB01, EC2_RND_ALIAS_LAB02}
+    expected = {EC2_RND_ALIAS_LAB01}
     if set(raw) != {"profile", "region", *expected}:
         raise RuntimeError("DEV R&D target map aliases are invalid")
     targets: dict[str, str] = {}
@@ -463,9 +457,6 @@ def _ec2_rnd_targets() -> dict[str, str]:
         instance_id = raw.get(alias)
         if not isinstance(instance_id, str) or not re.fullmatch(r"i-[0-9a-f]+", instance_id):
             raise RuntimeError("DEV R&D target map contains an invalid target")
-        digest = hashlib.sha256(instance_id.encode()).hexdigest()
-        if digest != EC2_RND_ID_HASHES[alias]:
-            raise RuntimeError("DEV R&D target map target is outside the approved allowlist")
         targets[alias] = instance_id
     return targets
 
@@ -473,8 +464,6 @@ def _ec2_rnd_targets() -> dict[str, str]:
 def _ec2_rnd_rule(alias: str) -> str:
     if alias == EC2_RND_ALIAS_LAB01:
         return EC2_RND_RULE_LAB01
-    if alias == EC2_RND_ALIAS_LAB02:
-        return EC2_CONFIG_RULE
     raise RuntimeError("DEV R&D target alias is not approved")
 
 
@@ -560,18 +549,12 @@ def _ec2_rnd_preflight(profile: str, region: str) -> dict[str, Any]:
         raise RuntimeError("DEV R&D rearm requires ihis_dev/ap-southeast-1")
     targets = _ec2_rnd_targets()
     statuses: list[dict[str, Any]] = []
-    for alias in (EC2_RND_ALIAS_LAB01, EC2_RND_ALIAS_LAB02):
+    for alias in (EC2_RND_ALIAS_LAB01,):
         instance_id, target = _ec2_rnd_target(profile, region, alias)
         rule = _ec2_rnd_binding(profile, region, alias, allow_missing=(alias == EC2_RND_ALIAS_LAB01))
-        if alias == EC2_RND_ALIAS_LAB02 and (rule.get("Source", {}).get("Owner") != "AWS" or rule.get("Source", {}).get("SourceIdentifier") != EC2_CONFIG_SOURCE or rule.get("Scope", {}).get("ComplianceResourceTypes") != ["AWS::EC2::Instance"] or rule.get("Scope", {}).get("ComplianceResourceId") != instance_id or rule.get("ConfigRuleState") != "ACTIVE"):
-            raise RuntimeError("Existing LAB_02 Config rule is outside the exact approved target")
-        if alias == EC2_RND_ALIAS_LAB02:
-            binding = _ec2_call(profile, region, "configservice", "describe-remediation-configurations", "--config-rule-names", EC2_CONFIG_RULE).get("RemediationConfigurations", [])
-            if len(binding) != 1 or binding[0].get("TargetId") != EC2_SSM_DOCUMENT or str(binding[0].get("TargetVersion")) != EC2_SSM_DOCUMENT_VERSION or binding[0].get("Automatic") is not False:
-                raise RuntimeError("Existing LAB_02 remediation binding is outside the exact manual envelope")
         statuses.append({"resource_alias": alias, "state": target["MetadataOptions"]["HttpTokens"], "config_rule": "PRESENT" if rule else "MISSING", "rule_scope": "EXACT" if rule and rule.get("Scope", {}).get("ComplianceResourceId") == instance_id else "UNSET"})
     _ec2_evidence("rnd-preflight", {"profile": profile, "region": region, "targets": statuses, "aliases": list(targets)})
-    return {"status": "READY", "reason_code": "SECCOP_EC2_RND_PREFLIGHT_READY", "targets": statuses, "message": "Both fixed DEV R&D targets passed the running/private/SSM preflight."}
+    return {"status": "READY", "reason_code": "SECCOP_EC2_RND_PREFLIGHT_READY", "targets": statuses, "message": "The fixed LAB_01 DEV R&D target passed the running/private/SSM preflight."}
 
 
 def _ec2_rnd_setup(profile: str, region: str) -> dict[str, Any]:
@@ -652,25 +635,6 @@ def _ec2_rnd_apply(profile: str, region: str, alias: str, confirm: bool) -> dict
     if _ec2_rnd_compliance(profile, region, alias, instance_id, "COMPLIANT") != "COMPLIANT":
         raise RuntimeError("LAB_01 Config COMPLIANT verification failed")
     return {"status": "VERIFIED", "reason_code": "SECCOP_EC2_IMDSV2_REMEDIATED", "state": "COMPLIANT", "resource_alias": alias, "metadata_http_tokens": "required", "automation_status": automation["status"], "message": "AWS Config remediation verified: LAB_01 now requires IMDSv2 and is COMPLIANT."}
-
-
-def _ec2_rnd_rearm(profile: str, region: str, alias: str, confirm: bool) -> dict[str, Any]:
-    if alias != EC2_RND_ALIAS_LAB02 or not confirm:
-        raise RuntimeError("Only confirmed LAB_02 DEV R&D rearm is allowed")
-    instance_id, target = _ec2_rnd_target(profile, region, alias)
-    rule = _ec2_rnd_binding(profile, region, alias)
-    binding = _ec2_call(profile, region, "configservice", "describe-remediation-configurations", "--config-rule-names", EC2_CONFIG_RULE).get("RemediationConfigurations", [])
-    if rule.get("Scope", {}).get("ComplianceResourceId") != instance_id or len(binding) != 1 or binding[0].get("TargetId") != EC2_SSM_DOCUMENT or str(binding[0].get("TargetVersion")) != EC2_SSM_DOCUMENT_VERSION or binding[0].get("Automatic") is not False:
-        raise RuntimeError("LAB_02 Config binding is not exact")
-    changed = target["MetadataOptions"]["HttpTokens"] != "optional"
-    if changed:
-        _ec2_call(profile, region, "ec2", "modify-instance-metadata-options", "--instance-id", instance_id, "--http-tokens", "optional")
-    _, after = _ec2_rnd_target(profile, region, alias)
-    if after["MetadataOptions"]["HttpTokens"] != "optional":
-        raise RuntimeError("LAB_02 metadata did not reach optional")
-    state = _ec2_rnd_compliance(profile, region, alias, instance_id, "NON_COMPLIANT")
-    _ec2_evidence("rnd-rearm-lab02", {"resource_alias": alias, "metadata_tokens": "optional", "config": state, "mutation_performed": changed, "intentional": True})
-    return {"status": "REARMED", "reason_code": "SECCOP_EC2_RND_REARMED", "state": state, "resource_alias": alias, "metadata_http_tokens": "optional", "mutation_performed": changed, "message": "The confirmed LAB_02 DEV R&D rearm is intentionally left IMDSv1-compatible for testing."}
 
 
 def _ec2_rnd_reopen(profile: str, region: str, alias: str, confirm: bool) -> dict[str, Any]:
@@ -1122,7 +1086,7 @@ def reset(profile: str, region: str, bucket: str) -> dict[str, Any]:
 
 def main() -> int:
     parser = argparse.ArgumentParser()
-    parser.add_argument("command", choices=("setup", "create", "scan", "apply", "reset", "cleanup", "ec2-setup", "ec2-adopt", "ec2-scan", "ec2-reject", "ec2-apply", "ec2-cleanup", "ec2-rnd-preflight", "ec2-rnd-setup", "ec2-rnd-scan", "ec2-rnd-reject", "ec2-rnd-apply", "ec2-rnd-rearm", "ec2-rnd-reopen"))
+    parser.add_argument("command", choices=("setup", "create", "scan", "apply", "reset", "cleanup", "ec2-setup", "ec2-adopt", "ec2-scan", "ec2-reject", "ec2-apply", "ec2-cleanup", "ec2-rnd-preflight", "ec2-rnd-setup", "ec2-rnd-scan", "ec2-rnd-reject", "ec2-rnd-apply", "ec2-rnd-reopen"))
     parser.add_argument("--profile", required=True); parser.add_argument("--region", required=True); parser.add_argument("--bucket")
     parser.add_argument("--instance-id")
     parser.add_argument("--delivery-bucket")
@@ -1151,17 +1115,13 @@ def main() -> int:
         elif args.command == "ec2-rnd-setup":
             output = _ec2_rnd_setup(args.profile, args.region)
         elif args.command == "ec2-rnd-scan":
-            if args.alias not in {EC2_RND_ALIAS_LAB01, EC2_RND_ALIAS_LAB02}:
+            if args.alias != EC2_RND_ALIAS_LAB01:
                 raise RuntimeError("DEV R&D target alias is required")
             output = _ec2_rnd_scan(args.profile, args.region, args.alias)
         elif args.command == "ec2-rnd-reject":
             output = _ec2_rnd_reject(args.profile, args.region, args.alias or "", args.confirm)
         elif args.command == "ec2-rnd-apply":
             output = _ec2_rnd_apply(args.profile, args.region, args.alias or "", args.confirm)
-        elif args.command == "ec2-rnd-rearm":
-            if args.alias not in {EC2_RND_ALIAS_LAB01, EC2_RND_ALIAS_LAB02}:
-                raise RuntimeError("DEV R&D target alias is required")
-            output = _ec2_rnd_rearm(args.profile, args.region, args.alias, args.confirm)
         elif args.command == "ec2-rnd-reopen":
             if args.alias != EC2_RND_ALIAS_LAB01:
                 raise RuntimeError("Only DEV_EC2_LAB_01 may be reopened")

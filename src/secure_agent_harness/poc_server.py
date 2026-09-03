@@ -848,7 +848,7 @@ def _run_real_demo(command: str, *, source: str | None = None, request_text: str
         if mapped == "ecr-reset" and payload.get("status") == "READY":
             _ECR_APPROVAL_READY = False
             _ECR_SCAN_TAG_OVERRIDE = "demo-current"
-        if os.environ.get("SECCOP_ECR_APP_SERVER") == "1" and mapped == "ecr-scan":
+        if os.environ.get("SECCOP_ECR_APP_SERVER") == "1" and mapped == "ecr-scan" and payload.get("reason_code") != "SECCOP_ECR_COMPLIANT":
             payload["agent"] = _start_ecr_codex_explanation(
                 request_text or "Investigate the ECR finding and explain the safe next step.", payload,
             )
@@ -902,12 +902,15 @@ def _run_real_demo(command: str, *, source: str | None = None, request_text: str
     allowed_commands = {"start", "scan", "rescan", "fix"}
     if command not in allowed_commands:
         return {"status": "BLOCKED", "reason_code": "REQUEST_REJECTED", "message": "The DEMO command was not allowed."}
+    profile = os.environ.get("AWS_PROFILE") or os.environ.get("SECCOP_PROFILE")
+    if not profile:
+        return {"status": "BLOCKED", "reason_code": "AWS_PROFILE_REQUIRED", "message": "An explicit approved AWS profile is required."}
     args = [
         sys.executable,
         str(_DEMO_SCRIPT),
         command,
         "--profile",
-        os.environ.get("AWS_PROFILE", os.environ.get("SECCOP_PROFILE", "vagent")),
+        profile,
         "--region",
         os.environ.get("AWS_REGION", os.environ.get("AWS_DEFAULT_REGION", "ap-southeast-1")),
     ]

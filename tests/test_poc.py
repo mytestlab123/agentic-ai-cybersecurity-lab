@@ -749,11 +749,11 @@ def test_ecr_approve_uses_matching_clean_fixture_and_current_verification(monkey
 
     monkeypatch.setattr(seccop_demo, "_ecr_scan_selected", fake_scan)
 
-    result = seccop_demo._ecr_fix(object(), tmp_path, ecr_scanner="inspector", ecr_fixture="npm-vulnerable")
+    result = seccop_demo._ecr_fix(object(), tmp_path, ecr_scanner="inspector", ecr_fixture="current")
 
     assert result["status"] == "VERIFIED"
-    assert promoted == ["npm-clean"]
-    assert scanned == [("npm-clean", "demo-current")]
+    assert promoted == ["current-clean"]
+    assert scanned == [("current", "demo-current")]
 
 
 def test_ecr_scan_tag_override_reads_mutable_current_target(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
@@ -761,15 +761,25 @@ def test_ecr_scan_tag_override_reads_mutable_current_target(monkeypatch: pytest.
 
     def fake_scan(_aws: object, *, tag: str, **_: object) -> dict[str, object]:
         selected.append(tag)
-        return {"source": "ECR_IMAGE", "alias": "ECR_IMAGE_01", "state": "COMPLIANT", "reason_code": "SECCOP_ECR_INSPECTOR_CVE_ABSENT", "scanner_provider": "AMAZON_INSPECTOR", "scanner_mode": "ECR_ENHANCED_SCANNING", "cve_id": seccop_demo.NPM_CVE}
+        return {"source": "ECR_IMAGE", "alias": "ECR_IMAGE_01", "state": "COMPLIANT", "reason_code": "SECCOP_ECR_INSPECTOR_CVE_ABSENT", "scanner_provider": "AMAZON_INSPECTOR", "scanner_mode": "ECR_ENHANCED_SCANNING", "cve_id": seccop_demo.BAD_CVE}
 
     monkeypatch.setattr(seccop_demo, "_scan_ecr_inspector", fake_scan)
     result = seccop_demo._ecr_scan(
-        object(), tmp_path, ecr_scanner="inspector", ecr_fixture="npm-vulnerable", tag_override="demo-current"
+        object(), tmp_path, ecr_scanner="inspector", ecr_fixture="current", tag_override="demo-current"
     )
 
     assert result["reason_code"] == "SECCOP_ECR_COMPLIANT"
     assert selected == ["demo-current"]
+
+
+def test_ecr_scan_rejects_unrelated_fixture_or_tag_override(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    monkeypatch.setattr(seccop_demo, "_scan_ecr_inspector", lambda *_args, **_kwargs: pytest.fail("mismatched override must fail closed"))
+
+    arbitrary = seccop_demo._ecr_scan(object(), tmp_path, ecr_scanner="inspector", ecr_fixture="current", tag_override="other-tag")
+    mismatched = seccop_demo._ecr_scan(object(), tmp_path, ecr_scanner="inspector", ecr_fixture="npm-vulnerable", tag_override="demo-current")
+
+    assert arbitrary["reason_code"] == "SECCOP_ECR_EVIDENCE_BLOCKED"
+    assert mismatched["reason_code"] == "SECCOP_ECR_EVIDENCE_BLOCKED"
 
 
 def test_ecr_operator_switches_scan_to_current_after_fix_and_reset(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -821,6 +831,33 @@ def test_ecr_operator_api_passes_explicit_scanner_without_running_aws(monkeypatc
 
     assert result["reason_code"] == "SECCOP_ECR_NON_COMPLIANT"
     assert captured[0][captured[0].index("--ecr-scanner") + 1] == "inspector"
+
+
+def test_legacy_live_entrypoint_requires_explicit_profile(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("SECCOP_DEMO_BACKEND", "AWS")
+    monkeypatch.delenv("AWS_PROFILE", raising=False)
+    monkeypatch.delenv("SECCOP_PROFILE", raising=False)
+    monkeypatch.setattr(poc_server.subprocess, "run", lambda *_args, **_kwargs: pytest.fail("profile gate must run before subprocess"))
+
+    result = poc_server._run_real_demo("scan")
+
+    assert result["reason_code"] == "AWS_PROFILE_REQUIRED"
+
+
+def test_ecr_compliant_rescan_skips_codex_before_turn(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("SECCOP_DEMO_BACKEND", "AWS")
+    monkeypatch.setenv("SECCOP_ECR_OPERATOR_MVP", "1")
+    monkeypatch.setenv("SECCOP_ECR_SCANNER", "inspector")
+    monkeypatch.setenv("SECCOP_PROFILE", "amit")
+    monkeypatch.setenv("AWS_REGION", "ap-southeast-1")
+    monkeypatch.setenv("SECCOP_ECR_APP_SERVER", "1")
+    monkeypatch.setattr(poc_server.subprocess, "run", lambda *_args, **_kwargs: SimpleNamespace(stdout=json.dumps({"status": "NO_FINDINGS", "reason_code": "SECCOP_ECR_COMPLIANT"})))
+    monkeypatch.setattr(poc_server, "_start_ecr_codex_explanation", lambda *_args: pytest.fail("compliant rescan must not start Codex BEFORE"))
+
+    result = poc_server._run_real_demo("scan", source="ecr")
+
+    assert result["reason_code"] == "SECCOP_ECR_COMPLIANT"
+    assert "agent" not in result
 
 
 def test_ec2_operator_uses_explicit_read_only_profile_in_combined_mode(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -945,7 +982,7 @@ def test_ec2_rnd_route_is_fixed_lab01_with_reject_then_approved_remediation(monk
     assert reopened["reason_code"] == "SECCOP_EC2_IMDSV2_NON_COMPLIANT"
     assert reopened["reopen_status"] == "REOPENED"
     assert "proposal_id" in reopened
-    blocked = poc_server._run_real_demo("scan", source="ec2", target_alias="DEV_EC2_LAB_02")
+    blocked = poc_server._run_real_demo("scan", source="ec2", target_alias="DEV_EC2_UNAPPROVED")
     assert blocked["reason_code"] == "TARGET_NOT_ALLOWED"
 
 
@@ -1007,7 +1044,6 @@ def test_browser_sidebar_and_composer_management_view() -> None:
     assert "function configureS3Review(" in html
     assert "ECR_S3_EC2_COMBINED" in html
     assert "DEV_EC2_LAB_01" in html
-    assert "DEV_EC2_LAB_02" not in html
     assert "fixed LAB_01 still accepts IMDSv1" in html
     assert "id=\"reopen-s3-finding\"" in html
     assert "RND_REOPEN_REQUIRED" not in html

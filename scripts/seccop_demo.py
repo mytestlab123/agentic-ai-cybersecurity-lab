@@ -877,6 +877,8 @@ def _fix(aws: AwsCli, source: str, directory: Path, *, ecr_fixture: str = "curre
 def _ecr_scan(aws: AwsCli, directory: Path, *, ecr_scanner: str = "trivy", ecr_fixture: str = "current", tag_override: str | None = None) -> dict[str, Any]:
     if ecr_scanner == "inspector":
         try:
+            if tag_override is not None and (tag_override != "demo-current" or ecr_fixture != "current"):
+                raise DemoError("The ECR current-tag override is not valid for this fixture.")
             fixture = _ecr_fixture_spec(ecr_fixture)
             source = _scan_ecr_inspector(aws, tag=tag_override or fixture["tag"], cve_id=fixture["cve_id"])
             source["package_ecosystem"] = fixture["ecosystem"]
@@ -948,16 +950,19 @@ def _ecr_start(aws: AwsCli, directory: Path, *, ecr_scanner: str = "trivy", ecr_
 
 
 def _ecr_fix(aws: AwsCli, directory: Path, *, ecr_scanner: str = "trivy", ecr_fixture: str = "current") -> dict[str, Any]:
+    if ecr_scanner == "inspector" and ecr_fixture != "current":
+        raise DemoError("Inspector promotion verification requires the current selector.")
     clean_fixture = _ecr_paired_fixture(ecr_fixture, ECR_MATCHING_CLEAN_FIXTURE)
     _fix(aws, "ecr", directory, ecr_fixture=ecr_fixture)
-    result = _ecr_scan_selected(aws, directory, ecr_scanner, clean_fixture, tag_override="demo-current")
+    verification_fixture = "current" if ecr_scanner == "inspector" else clean_fixture
+    result = _ecr_scan_selected(aws, directory, ecr_scanner, verification_fixture, tag_override="demo-current" if ecr_scanner == "inspector" else None)
     for _ in range(12):
         if result["reason_code"] == "SECCOP_ECR_COMPLIANT":
             break
         if result["reason_code"] not in {"SECCOP_ECR_SCAN_PENDING", "SECCOP_ECR_EVIDENCE_BLOCKED"}:
             break
         time.sleep(5)
-        result = _ecr_scan_selected(aws, directory, ecr_scanner, clean_fixture, tag_override="demo-current")
+        result = _ecr_scan_selected(aws, directory, ecr_scanner, verification_fixture, tag_override="demo-current" if ecr_scanner == "inspector" else None)
     if result["reason_code"] != "SECCOP_ECR_COMPLIANT":
         raise DemoError("The ECR clean digest verification failed.")
     provider = "Amazon Inspector" if ecr_scanner == "inspector" else "local Trivy"
@@ -965,6 +970,8 @@ def _ecr_fix(aws: AwsCli, directory: Path, *, ecr_scanner: str = "trivy", ecr_fi
 
 
 def _ecr_reset(aws: AwsCli, directory: Path, *, ecr_scanner: str = "trivy", ecr_fixture: str = "current") -> dict[str, Any]:
+    if ecr_scanner == "inspector" and ecr_fixture != "current":
+        raise DemoError("Inspector reopen verification requires the current selector.")
     tag_override = "demo-current" if ecr_scanner == "inspector" else None
     before = _ecr_scan_selected(aws, directory, ecr_scanner, ecr_fixture, tag_override=tag_override)
     if before["reason_code"] == "SECCOP_ECR_NON_COMPLIANT" and ecr_scanner != "inspector":
@@ -1140,7 +1147,7 @@ def main() -> int:
     parser = argparse.ArgumentParser(description="Prepare and verify the SecCop three-source DEMO.")
     parser.add_argument("command", choices=("start", "scan", "rescan", "fix", "status", "verify", "cleanup", "ecr-start", "ecr-scan", "ecr-fix", "ecr-reset", "ecr-fixtures"))
     parser.add_argument("--source", choices=("ec2", "s3", "ecr"))
-    parser.add_argument("--profile", default=os.environ.get("SECCOP_PROFILE", "vagent"))
+    parser.add_argument("--profile", required=True, help="explicit approved AWS profile")
     parser.add_argument("--region", default=os.environ.get("SECCOP_REGION", "ap-southeast-1"))
     parser.add_argument("--target-name", default=os.environ.get("SECCOP_TARGET_NAME", DEFAULT_TARGET_NAME))
     parser.add_argument(

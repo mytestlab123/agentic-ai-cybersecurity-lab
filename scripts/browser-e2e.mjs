@@ -82,9 +82,9 @@ try {
     await page.getByRole('button', { name: 'EC2', exact: true }).click();
     const selector = page.locator('#ec2-target-selector');
     await selector.waitFor({ state: 'visible', timeout: 10_000 });
-    assert(await selector.locator('option').count() === 2, 'The R&D selector did not expose exactly two aliases');
+    assert(await selector.locator('option').count() === 1, 'The R&D selector did not expose the fixed LAB_01 alias');
     const states = [];
-    for (const alias of ['DEV_EC2_LAB_01', 'DEV_EC2_LAB_02']) {
+    for (const alias of ['DEV_EC2_LAB_01']) {
       await page.getByRole('button', { name: 'EC2', exact: true }).click();
       await selector.selectOption(alias);
       const scanResponsePromise = page.waitForResponse(
@@ -471,7 +471,6 @@ try {
     screenshots: ec2Rnd ? [
       'SecCop-Scan-01.png',
       'SecCop-RND-DEV_EC2_LAB_01.png',
-      'SecCop-RND-DEV_EC2_LAB_02.png',
     ] : unifiedEc2 ? [
       'SecCop-Scan-01.png',
       'SecCop-Unified-EC2-Compliant.png',
