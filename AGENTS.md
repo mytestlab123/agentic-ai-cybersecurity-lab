@@ -91,8 +91,8 @@ excluded.
 ## Validation
 
 - Run focused tests, Python compilation, and `git diff --check`.
-- Before a final ChatGPT/Amit review of GUI-impacting work, run the existing
-  repo-owned Playwright browser check; keep browser evidence private and never
-  commit screenshots.
+- Browser/Playwright checks are optional and run only after an explicit Amit
+  request; retain the existing helpers for that future request and never treat
+  them as an automatic or mandatory final-review gate.
 - Preserve unsafe requests as regression tests.
 - A model proposal is never authorization.

@@ -13,7 +13,7 @@
     .app-shell { display:flex; min-height:100vh; }
     .sidebar { width:260px; background:var(--sidebar); border-right:1px solid #2d2d2d; padding:14px; display:flex; flex-direction:column; gap:18px; }
     .brand { display:flex; align-items:center; gap:10px; padding:6px 8px 16px; }
-    .brand-mark,.welcome-mark { display:grid; place-items:center; color:var(--green); border:1px solid #555; font-weight:800; }
+    .brand-mark { display:grid; place-items:center; color:var(--green); border:1px solid #555; font-weight:800; }
     .brand-mark { width:28px; height:28px; border-radius:8px; }
     .brand-name { font-size:.94rem; font-weight:650; }
     .new-chat { display:flex; gap:10px; width:100%; padding:11px 12px; color:var(--text); background:transparent; border:1px solid #4b4b4b; border-radius:9px; text-align:left; }
@@ -59,13 +59,10 @@
     .topbar { height:68px; display:flex; align-items:center; justify-content:space-between; padding:0 34px; border-bottom:1px solid #303030; }
     .eyebrow { color:#858585; font-size:.68rem; font-weight:700; letter-spacing:.1em; }
     h1 { margin:3px 0 0; font-size:1.05rem; font-weight:600; }
-    .status-pill { display:inline-flex; align-items:center; gap:7px; padding:6px 10px; color:#b8e8d2; background:#18352b; border:1px solid #285d49; border-radius:999px; font-size:.74rem; }
-    .status-pill .mode-dot { margin:0; }
     .safety-banner { max-width:850px; width:calc(100% - 48px); margin:18px auto 0; padding:10px 13px; color:#c8d5e9; background:#202d3d; border:1px solid #334861; border-radius:8px; font-size:.78rem; }
     .safety-banner strong { color:var(--blue); }
     .chat { flex:1; width:100%; max-width:850px; margin:0 auto; padding:30px 24px 170px; }
     .welcome { max-width:650px; margin:30px auto 40px; text-align:center; }
-    .welcome-mark { width:42px; height:42px; margin:0 auto 15px; border-radius:13px; font-size:1.25rem; }
     .welcome h2 { margin:0 0 8px; font-size:1.55rem; font-weight:600; }
     .welcome p { margin:0; color:var(--muted); line-height:1.55; font-size:.9rem; }
     .messages { display:grid; gap:24px; }
@@ -187,7 +184,6 @@
     <main class="main">
       <header class="topbar">
         <div><div class="eyebrow">SECCOP POC</div><h1 id="review-title">Vulnerability review</h1></div>
-        <div id="mode-status" class="status-pill"><span class="mode-dot"></span>Offline demo</div>
       </header>
       <div id="safety-banner" class="safety-banner"><strong>Safe demo boundary.</strong> Paste one CVE to check all demo sources. A server change always needs a separate review and approval.</div>
 
@@ -196,7 +192,6 @@
           <div class="flow-step active">1 Finding</div><div class="flow-step">2 Recommended fix</div><div class="flow-step">3 Approval required</div><div class="flow-step">4 Applying</div><div class="flow-step">5 Verify</div>
         </div>
         <div id="welcome" class="welcome">
-          <div class="welcome-mark">S</div>
           <h2 id="welcome-title">What would you like to check?</h2>
           <p id="welcome-copy">Paste one CVE to check the demo environment, or scan all three sources.</p>
           <div class="welcome-actions">
@@ -254,7 +249,6 @@
     const awsRegionEl = document.querySelector('#aws-region');
     const compareLiveButton = document.querySelector('#compare-live');
     const compareCsvButton = document.querySelector('#compare-csv');
-    const modeStatus = document.querySelector('#mode-status');
     const backendNote = document.querySelector('#backend-note');
     const welcome = document.querySelector('#welcome');
     const messages = document.querySelector('#messages');
@@ -338,8 +332,8 @@
       ec2Review = false;
       if (!preserveUnified) unifiedReview = false;
       selectedSource = 'ecr';
-      document.title = 'Security Copilot - ECR Operator Review';
-      reviewTitle.textContent = 'ECR Operator Review';
+      document.title = 'Security Copilot - ECR Vulnerability Scanning Review';
+      reviewTitle.textContent = 'ECR Vulnerability Scanning Review';
       safetyBanner.innerHTML = '<strong>ECR review boundary.</strong> Amazon Inspector supplies the finding; a human must approve any digest promotion.';
       welcomeTitle.textContent = 'Review ECR image posture';
       welcomeCopy.textContent = 'Scan the retained ECR demo image and review the exact clean-digest promotion.';
@@ -383,7 +377,9 @@
       if (codexPreflightButton) codexPreflightButton.classList.add('hidden');
       if (cveWelcomeButton) cveWelcomeButton.classList.add('hidden');
       composerWrap.classList.add('hidden');
-      toggleComposerButton.classList.add('hidden');
+      toggleComposerButton.classList.remove('hidden');
+      toggleComposerButton.textContent = 'Show Ask SecCop';
+      toggleComposerButton.setAttribute('aria-expanded', 'false');
       document.querySelectorAll('.source-tab').forEach((tab) => {
         const source = tab.textContent.trim().toLowerCase();
         tab.classList.toggle('active', source === 'ec2');
@@ -423,12 +419,7 @@
       return item;
     }
 
-    function setMode(label, live) {
-      modeStatus.replaceChildren();
-      modeStatus.appendChild(node('span', 'mode-dot'));
-      modeStatus.appendChild(document.createTextNode(label));
-      if (live) modeStatus.style.color = '#c9e3ff';
-    }
+    function setMode(_label, _live) {}
 
     function addMessage(role, text) {
       welcome.classList.add('hidden');

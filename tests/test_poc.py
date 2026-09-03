@@ -966,7 +966,11 @@ def test_browser_sidebar_and_composer_management_view() -> None:
         assert f'id="{control_id}"' in html
     assert '<div class="live-panel hidden" aria-hidden="true" hidden>' in html
     assert '<div id="backend-note" class="side-footer hidden" aria-hidden="true" hidden></div>' in html
-    assert 'id="mode-status" class="status-pill"' in html
+    assert 'id="mode-status" class="status-pill"' not in html
+    assert 'welcome-mark' not in html
+    assert "ECR Vulnerability Scanning Review" in html
+    assert "ECR Operator Review" not in html
+    assert "toggleComposerButton.classList.remove('hidden')" in html
 
 
 def test_live_evidence_upload_validates_without_echoing_untrusted_payload() -> None:
