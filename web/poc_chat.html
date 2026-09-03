@@ -149,6 +149,11 @@
       <div class="scan-panel">
         <div class="side-label" style="padding:0">DEMO</div>
         <div id="scan-note" class="usage-note">Check the server, stored file, and container image together.</div>
+        <label id="ec2-target-label" class="usage-note hidden" for="ec2-target-selector">DEV R&amp;D target</label>
+        <select id="ec2-target-selector" class="hidden" aria-label="DEV R&amp;D target">
+          <option value="DEV_EC2_LAB_01">DEV_EC2_LAB_01</option>
+          <option value="DEV_EC2_LAB_02">DEV_EC2_LAB_02</option>
+        </select>
         <button id="scan-environment" type="button">Scan environment</button>
         <button id="reopen-s3-finding" type="button" hidden>Reopen Finding</button>
         <button id="start-real-demo" type="button" hidden>Start AWS DEMO</button>
@@ -234,6 +239,8 @@
     const welcomeCopy = document.querySelector('#welcome-copy');
     const scanNote = document.querySelector('#scan-note');
     const scanButton = document.querySelector('#scan-environment');
+    const ec2TargetLabel = document.querySelector('#ec2-target-label');
+    const ec2TargetSelector = document.querySelector('#ec2-target-selector');
     const reopenS3FindingButton = document.querySelector('#reopen-s3-finding');
     const cveWelcomeButton = document.querySelector('#cve-welcome');
     const scanWelcomeButton = document.querySelector('#scan-welcome');
@@ -260,6 +267,7 @@
     let s3Review = false;
     let ecrReview = false;
     let ec2Review = false;
+    let ec2RndReview = false;
     let unifiedReview = false;
     let selectedSource = 'ecr';
 
@@ -286,6 +294,13 @@
       document.querySelectorAll('.flow-step').forEach((step, index) => step.classList.toggle('active', index < stepNumber));
     }
 
+    function setEc2RndSelector(visible) {
+      if (!ec2TargetLabel || !ec2TargetSelector) return;
+      ec2TargetLabel.classList.toggle('hidden', !visible);
+      ec2TargetSelector.classList.toggle('hidden', !visible);
+      ec2TargetSelector.hidden = !visible;
+    }
+
     function configureS3Review(preserveUnified = false) {
       s3Review = true;
       ecrReview = false;
@@ -298,6 +313,7 @@
       welcomeTitle.textContent = 'Review S3 security posture';
       welcomeCopy.textContent = 'Review three real empty private buckets and one exact Block Public Access recommendation.';
       scanNote.textContent = 'Check three private buckets for Block Public Access drift.';
+      setEc2RndSelector(false);
       backendNote.innerHTML = '<span class="mode-dot"></span>Live AWS S3 review - Human approval required';
       scanButton.textContent = 'Scan S3 bucket';
       if (scanWelcomeButton) scanWelcomeButton.textContent = 'Scan S3 bucket';
@@ -328,6 +344,7 @@
       welcomeTitle.textContent = 'Review ECR image posture';
       welcomeCopy.textContent = 'Scan the retained ECR demo image and review the exact clean-digest promotion.';
       scanNote.textContent = 'Check the retained ECR fixture with Amazon Inspector.';
+      setEc2RndSelector(false);
       backendNote.innerHTML = '<span class="mode-dot"></span>Live AWS ECR review - Human approval required';
       scanButton.textContent = 'Scan ECR image';
       if (scanWelcomeButton) scanWelcomeButton.textContent = 'Scan ECR image';
@@ -359,6 +376,7 @@
       welcomeTitle.textContent = 'Review EC2 IMDSv2 posture';
       welcomeCopy.textContent = 'Review one exact EC2 target and one AWS Config IMDSv2 remediation proposal.';
       scanNote.textContent = 'Check the EC2 target for IMDSv2 enforcement.';
+      setEc2RndSelector(ec2RndReview);
       scanButton.textContent = 'Scan EC2 compliance';
       if (scanWelcomeButton) scanWelcomeButton.textContent = 'Scan EC2 compliance';
       if (reopenS3FindingButton) reopenS3FindingButton.hidden = true;
@@ -672,20 +690,21 @@
           const isS3Risk = finding.source_type === 'S3_BUCKET';
           const isEcrRisk = ecrReview && finding.source_type === 'ECR_IMAGE';
           const isEc2Risk = ec2Review && finding.source_type === 'EC2_CONFIG';
+          const isEc2Rnd = ec2RndReview && isEc2Risk;
           if (isS3Risk || isEcrRisk || isEc2Risk) setS3FlowStep(3);
-          const body = addMessage('assistant', isS3Risk ? 'Security misconfiguration confirmed. Remediate to enable all four Block Public Access controls, or Reject this proposal.' : isEcrRisk ? 'Amazon Inspector confirmed the ECR finding. Approve Once to promote the clean digest.' : isEc2Risk ? 'AWS Config confirmed that this EC2 target still accepts IMDSv1. Remediate with the exact AWS-managed IMDSv2 Automation, or Reject this proposal.' : 'The clean replacement is ready for review. Approve it to replace only this DEMO artifact.');
+          const body = addMessage('assistant', isS3Risk ? 'Security misconfiguration confirmed. Remediate to enable all four Block Public Access controls, or Reject this proposal.' : isEcrRisk ? 'Amazon Inspector confirmed the ECR finding. Approve Once to promote the clean digest.' : isEc2Rnd ? 'DEV R&D rearm is intentional. Confirm Reopen Finding only for the fixed LAB_02 target; no remediation is offered.' : isEc2Risk ? 'AWS Config confirmed that this EC2 target still accepts IMDSv1. Remediate with the exact AWS-managed IMDSv2 Automation, or Reject this proposal.' : 'The clean replacement is ready for review. Approve it to replace only this DEMO artifact.');
           const card = node('div', 'approval-card');
           const grid = node('div', 'evidence-grid');
           evidenceCell(grid, 'Source', finding.source_type);
           evidenceCell(grid, 'Change', finding.recommended_state);
           evidenceCell(grid, 'After', 'The clean item will be scanned again');
           card.appendChild(grid);
-          const approveLabel = isS3Risk ? 'Remediate' : isEc2Risk ? 'Remediate' : isEcrRisk ? 'Approve Once' : 'Approve and fix';
+          const approveLabel = isEc2Rnd ? 'Reopen Finding' : isS3Risk ? 'Remediate' : isEc2Risk ? 'Remediate' : isEcrRisk ? 'Approve Once' : 'Approve and fix';
           const approve = node('button', 'btn approve', approveLabel);
           approve.type = 'button';
-          approve.addEventListener('click', () => approveDemoFix(finding, approve));
+          approve.addEventListener('click', () => isEc2Rnd ? resetS3Demo(approve, finding.resource_alias) : approveDemoFix(finding, approve));
           card.appendChild(approve);
-          if (isS3Risk || isEc2Risk) {
+          if ((isS3Risk || isEc2Risk) && !isEc2Rnd) {
             const reject = node('button', 'btn reject', 'Reject');
             reject.type = 'button';
             reject.addEventListener('click', () => rejectDemoFinding(finding, reject));
@@ -800,14 +819,17 @@
       if (sourceType === 'S3_BUCKET' || sourceType === 'EC2_CONFIG' || (ecrReview && sourceType === 'ECR_IMAGE')) setS3FlowStep(5);
     }
 
-    async function resetS3Demo(button) {
-      if (!window.confirm(ecrReview ? 'Reopen this ECR finding? The known-vulnerable demo digest will be restored.' : 'Reopen this finding? Bucket-level protection will be temporarily removed from the private empty test bucket.')) return;
+    async function resetS3Demo(button, targetAlias = null) {
+      const ec2Rnd = ec2RndReview && selectedSource === 'ec2';
+      const prompt = ec2Rnd ? 'Reopen this DEV R&D finding? Only LAB_02 may be rearmed to IMDSv1 for testing.' : ecrReview ? 'Reopen this ECR finding? The known-vulnerable demo digest will be restored.' : 'Reopen this finding? Bucket-level protection will be temporarily removed from the private empty test bucket.';
+      if (!window.confirm(prompt)) return;
       button.disabled = true;
       addMessage('user', 'Reopen Finding');
-      const thinking = addMessage('assistant', ecrReview ? 'Restoring the known-vulnerable ECR digest and rereading it with Amazon Inspector...' : 'Checking the approved empty private bucket before reopening the finding...');
+      const thinking = addMessage('assistant', ec2Rnd ? 'Rearming only the confirmed DEV R&D target and rereading AWS Config...' : ecrReview ? 'Restoring the known-vulnerable ECR digest and rereading it with Amazon Inspector...' : 'Checking the approved empty private bucket before reopening the finding...');
       try {
         const source = unifiedReview ? selectedSource : null;
-        await post('/api/demo/reset', source ? { confirm: true, source } : { confirm: true });
+        const request = ec2Rnd ? { confirm: true, source: 'ec2', target_alias: targetAlias || ec2TargetSelector.value } : source ? { confirm: true, source } : { confirm: true };
+        await post('/api/demo/reset', request);
         thinking.parentElement.remove();
         messages.replaceChildren();
         welcome.classList.remove('hidden');
@@ -1038,7 +1060,8 @@
       const thinking = addMessage('assistant', s3Review ? 'Checking the bucket-level Block Public Access posture...' : ecrReview ? 'Scanning the retained ECR fixture with Amazon Inspector...' : ec2Review ? 'Checking the EC2 IMDSv2 Config control...' : 'Checking server packages, stored artifact, and container image...');
       try {
         const source = (unifiedReview || ec2Review) ? selectedSource : null;
-        const payload = await post('/api/scan', { mode:'DEMO', ...(source ? { source } : {}), ...(ecrReview ? { request_text: requestText } : {}) });
+        const targetAlias = ec2RndReview && ec2Review ? ec2TargetSelector.value : null;
+        const payload = await post('/api/scan', { mode:'DEMO', ...(source ? { source } : {}), ...(targetAlias ? { target_alias: targetAlias } : {}), ...(ecrReview ? { request_text: requestText } : {}) });
         thinking.parentElement.remove();
         renderScan(payload);
       } catch (error) {
@@ -1205,6 +1228,7 @@
         const response = await fetch('/api/health', { cache: 'no-store' });
         const health = await response.json();
         demoBackend = health.demo_backend || 'LOCAL';
+        ec2RndReview = health.ec2_rnd_rearm === true;
         if (health.review_mode === 'EC2_IMDSV2') configureEc2Review();
         if (health.review_mode === 'ECR_S3_COMBINED' || health.review_mode === 'ECR_S3_EC2_COMBINED') configureUnifiedReview();
         if (health.review_mode === 'S3_COMPLIANCE') configureS3Review();

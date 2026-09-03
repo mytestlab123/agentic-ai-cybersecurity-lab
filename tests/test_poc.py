@@ -872,6 +872,51 @@ def test_combined_health_mode_advertises_all_three_sources(monkeypatch: pytest.M
         server.shutdown()
 
 
+def test_ec2_rnd_route_is_fixed_alias_and_rearm_is_lab02_only(monkeypatch: pytest.MonkeyPatch) -> None:
+    for name, value in {
+        "SECCOP_DEMO_BACKEND": "AWS",
+        "SECCOP_ECR_S3_COMBINED": "1",
+        "SECCOP_EC2_IMDSV2_E2E": "1",
+        "SECCOP_EC2_RND_REARM": "1",
+        "SECCOP_EC2_PROFILE": "ihis_dev",
+        "SECCOP_EC2_REGION": "ap-southeast-1",
+    }.items():
+        monkeypatch.setenv(name, value)
+    captured: list[list[str]] = []
+
+    def fake_run(args: list[str], **_: object) -> SimpleNamespace:
+        captured.append(args)
+        command = next(item for item in ("ec2-rnd-scan", "ec2-rnd-rearm") if item in args)
+        payload = {
+            "ec2-rnd-scan": {
+                "status": "READY",
+                "reason_code": "SECCOP_EC2_IMDSV2_NON_COMPLIANT",
+                "state": "NON_COMPLIANT",
+                "resource_alias": "DEV_EC2_LAB_01",
+                "config_rule_name": "ec2-imdsv2-check-rnd-lab01",
+                "findings": [],
+            },
+            "ec2-rnd-rearm": {
+                "status": "REARMED",
+                "reason_code": "SECCOP_EC2_RND_REARMED",
+                "state": "NON_COMPLIANT",
+                "resource_alias": "DEV_EC2_LAB_02",
+                "mutation_performed": True,
+            },
+        }[command]
+        return SimpleNamespace(stdout=json.dumps(payload))
+
+    monkeypatch.setattr(poc_server.subprocess, "run", fake_run)
+    scan = poc_server._run_real_demo("scan", source="ec2", target_alias="DEV_EC2_LAB_01")
+    assert scan["reason_code"] == "SECCOP_EC2_IMDSV2_NON_COMPLIANT"
+    assert captured[0][captured[0].index("--alias") + 1] == "DEV_EC2_LAB_01"
+    blocked = poc_server._run_real_demo("reset", source="ec2", target_alias="DEV_EC2_LAB_01")
+    assert blocked["reason_code"] == "RND_REOPEN_REQUIRED"
+    rearmed = poc_server._run_real_demo("reset", source="ec2", target_alias="DEV_EC2_LAB_02")
+    assert rearmed["reason_code"] == "SECCOP_EC2_RND_REARMED"
+    assert captured[-1][-1] == "--confirm"
+
+
 def test_ecr_reopen_is_idempotent_when_the_finding_is_already_open(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
     monkeypatch.setattr(seccop_demo, "_ecr_scan", lambda *_: {"reason_code": "SECCOP_ECR_NON_COMPLIANT"})
     monkeypatch.setattr(seccop_demo, "_push_image", lambda *_: pytest.fail("unexpected ECR mutation"))
@@ -915,6 +960,8 @@ def test_browser_sidebar_and_composer_management_view() -> None:
     assert "function configureEcrReview(" in html
     assert "function configureS3Review(" in html
     assert "ECR_S3_EC2_COMBINED" in html
+    assert "DEV_EC2_LAB_01" in html and "DEV_EC2_LAB_02" in html
+    assert "Only LAB_02 may be rearmed" in html
     for control_id in ("scan-environment", "reopen-s3-finding", "start-real-demo", "advisory-upload", "compare-live", "csv-upload", "compare-csv"):
         assert f'id="{control_id}"' in html
     assert '<div class="live-panel hidden" aria-hidden="true" hidden>' in html
