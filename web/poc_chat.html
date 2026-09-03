@@ -819,6 +819,12 @@
           button.disabled = false;
           return;
         }
+        if (ec2Rnd && payload.result?.status === 'BLOCKED') {
+          thinking.textContent = payload.result.message || `LAB_01 Reopen Finding blocked: ${payload.result.reason_code || 'REQUEST_REJECTED'}`;
+          thinking.classList.add('error-copy');
+          button.disabled = false;
+          return;
+        }
         thinking.parentElement.remove();
         messages.replaceChildren();
         welcome.classList.remove('hidden');
@@ -826,7 +832,7 @@
         button.disabled = false;
         startScan(scanButton);
       } catch (error) {
-        thinking.textContent = 'The approved DEMO reset was blocked.';
+        thinking.textContent = ec2Rnd ? `LAB_01 Reopen Finding unavailable: ${error.message || 'REQUEST_REJECTED'}` : 'The approved DEMO reset was blocked.';
         thinking.classList.add('error-copy');
         button.disabled = false;
       }
@@ -1034,7 +1040,7 @@
     async function post(path, body) {
       const response = await fetch(path, { method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify(body) });
       const payload = await response.json();
-      if (!response.ok) throw new Error(payload.reason_code || 'REQUEST_REJECTED');
+      if (!response.ok) throw new Error(payload.message || payload.reason_code || 'REQUEST_REJECTED');
       return payload;
     }
 
@@ -1053,7 +1059,7 @@
         thinking.parentElement.remove();
         renderScan(payload);
       } catch (error) {
-        thinking.textContent = 'The scan was blocked.';
+        thinking.textContent = ec2Review ? `LAB_01 scan unavailable: ${error.message || 'REQUEST_REJECTED'}` : 'The scan was blocked.';
         thinking.classList.add('error-copy');
       } finally {
         button.disabled = false;

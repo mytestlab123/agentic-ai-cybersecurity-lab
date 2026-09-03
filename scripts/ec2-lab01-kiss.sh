@@ -9,17 +9,49 @@ map_file="${SECCOP_EC2_LAB01_MAP:-$map_root/ec2-lab01-map.json}"
 
 fail() { printf 'BLOCKED: %s\n' "$1" >&2; exit 1; }
 usage() {
-  printf 'Usage: %s {status|reset --confirm|reopen --confirm}\n' "$0" >&2
+  printf 'Usage: %s {configure --instance-id <id>|status|reset --confirm|reopen --confirm}\n' "$0" >&2
   exit 2
 }
 
-[[ "$map_file" = /* && "$map_file" == "$map_root"/* ]] || fail 'mapping file must stay under the private SecCop temp directory'
-[[ -f "$map_file" ]] || fail 'private LAB_01 mapping file is missing'
-[[ "$(stat -c '%a' "$map_file")" == 600 ]] || fail 'mapping file must have mode 600'
-command -v jq >/dev/null 2>&1 || fail 'jq is required'
-profile=$(jq -er 'select(type == "object" and ([keys[]] | sort | join(",")) == "instance_id,profile,region") | .profile | select(. == "ihis_dev")' "$map_file") || fail 'mapping profile or keys are invalid'
-region=$(jq -er '.region | select(. == "ap-southeast-1")' "$map_file") || fail 'mapping region is invalid'
-instance_id=$(jq -er '.instance_id | select(type == "string" and test("^i-[0-9a-f]{8,17}$"))' "$map_file") || fail 'mapping instance is invalid'
+map_hint() { printf '%s configure --instance-id <private-lab01-instance-id>' "$0"; }
+
+validate_map_path() {
+  [[ "$map_file" = /* && "$map_file" == "$map_root"/* ]] || fail 'mapping file must stay under the private SecCop temp directory'
+}
+
+load_mapping() {
+  validate_map_path
+  [[ -f "$map_file" ]] || fail "LAB_01 mapping is missing; run: $(map_hint)"
+  [[ "$(stat -c '%a' "$map_file")" == 600 ]] || fail "LAB_01 mapping must have mode 600; run chmod 600 or: $(map_hint)"
+  command -v jq >/dev/null 2>&1 || fail 'jq is required'
+  local keyset candidate
+  keyset=$(jq -er 'if type == "object" then ([keys[]] | sort | join(",")) else empty end' "$map_file") || fail "LAB_01 mapping JSON is invalid; run: $(map_hint)"
+  [[ "$keyset" == 'instance_id,profile,region' ]] || fail "LAB_01 mapping must contain only instance_id, profile, and region; run: $(map_hint)"
+  profile=$(jq -er '.profile | strings' "$map_file") || fail "LAB_01 mapping has no profile; run: $(map_hint)"
+  [[ "$profile" == 'ihis_dev' ]] || fail "LAB_01 mapping profile must be ihis_dev; run: $(map_hint)"
+  region=$(jq -er '.region | strings' "$map_file") || fail "LAB_01 mapping has no region; run: $(map_hint)"
+  [[ "$region" == 'ap-southeast-1' ]] || fail "LAB_01 mapping region must be ap-southeast-1; run: $(map_hint)"
+  candidate=$(jq -er '.instance_id | strings' "$map_file") || fail "LAB_01 mapping has no instance_id; run: $(map_hint)"
+  [[ "$candidate" != 'REPLACE_WITH_PRIVATE_LAB_01_INSTANCE_ID' ]] || fail "LAB_01 mapping still contains the public example placeholder; run: $(map_hint)"
+  [[ "$candidate" =~ ^i-[0-9a-f]{8,17}$ ]] || fail "LAB_01 mapping instance_id is invalid; run: $(map_hint)"
+  instance_id=$candidate
+}
+
+configure() {
+  [[ "${2:-}" == '--instance-id' && -n "${3:-}" && -z "${4:-}" ]] || usage
+  validate_map_path
+  command -v jq >/dev/null 2>&1 || fail 'jq is required'
+  local requested_id=$3 parent tmp
+  [[ "$requested_id" =~ ^i-[0-9a-f]{8,17}$ ]] || fail 'configure requires a private EC2 instance ID in i-xxxxxxxx format; the ID is never printed'
+  parent=$(dirname -- "$map_file")
+  [[ -d "$map_root" ]] || install -d -m 700 "$map_root"
+  [[ -d "$parent" ]] || install -d -m 700 "$parent"
+  tmp=$(mktemp "$map_file.tmp.XXXXXX") || fail 'could not create the private LAB_01 mapping file'
+  jq -cn --arg instance_id "$requested_id" '{profile:"ihis_dev",region:"ap-southeast-1",instance_id:$instance_id}' > "$tmp"
+  chmod 600 "$tmp"
+  mv -- "$tmp" "$map_file"
+  printf 'LAB_01 mapping configured at %s (profile=ihis_dev region=ap-southeast-1; instance ID withheld)\n' "$map_file"
+}
 
 aws_json() {
   AWS_PROFILE="$profile" AWS_DEFAULT_PROFILE="$profile" AWS_REGION="$region" AWS_DEFAULT_REGION="$region" \
@@ -76,7 +108,8 @@ action() {
 }
 
 case "${1:-}" in
-  status) [[ -z "${2:-}" ]] || usage; status ;;
-  reset|reopen) action "$1" "${2:-}" "${3:-}" ;;
+  configure) configure "$@" ;;
+  status) [[ -z "${2:-}" ]] || usage; load_mapping; status ;;
+  reset|reopen) load_mapping; action "$1" "${2:-}" "${3:-}" ;;
   *) usage ;;
 esac

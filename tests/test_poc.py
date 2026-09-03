@@ -979,6 +979,15 @@ def test_browser_sidebar_and_composer_management_view() -> None:
     assert "toggleComposerButton.classList.remove('hidden')" in html
 
 
+def test_lab01_cli_has_private_self_service_mapping_diagnostic() -> None:
+    script = (Path(__file__).parents[1] / "scripts" / "ec2-lab01-kiss.sh").read_text()
+
+    assert "configure --instance-id <id>" in script
+    assert "public example placeholder" in script
+    assert "mapping instance is invalid" not in script
+    assert "status|reset --confirm|reopen --confirm" in script
+
+
 def test_live_evidence_upload_validates_without_echoing_untrusted_payload() -> None:
     server = ThreadingHTTPServer(("127.0.0.1", 0), _Handler)
     thread = Thread(target=server.serve_forever, daemon=True)
