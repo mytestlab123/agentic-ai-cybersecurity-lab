@@ -734,16 +734,29 @@ def _run_real_demo(command: str, *, source: str | None = None, request_text: str
             "message": "The local server is using synthetic mode. Enable the AWS DEMO backend explicitly.",
         }
     combined = os.environ.get("SECCOP_ECR_S3_COMBINED") == "1"
+    ec2_enabled = os.environ.get("SECCOP_EC2_IMDSV2_E2E") == "1"
     if combined:
-        if source not in {"ecr", "s3"}:
+        configured_sources = {"ecr", "s3"} | ({"ec2"} if ec2_enabled else set())
+        if source not in configured_sources:
             return {"status": "BLOCKED", "reason_code": "REQUEST_REJECTED", "message": "Select exactly one configured source."}
         if source == "ecr" and os.environ.get("SECCOP_ECR_OPERATOR_MVP") != "1":
             return {"status": "BLOCKED", "reason_code": "SOURCE_UNAVAILABLE", "message": "The ECR source is unavailable."}
         if source == "s3" and os.environ.get("SECCOP_S3_COMPLIANCE_E2E") != "1":
             return {"status": "BLOCKED", "reason_code": "SOURCE_UNAVAILABLE", "message": "The S3 source is unavailable."}
     global _S3_APPROVAL_READY, _ECR_APPROVAL_READY, _ECR_SCAN_TAG_OVERRIDE, _EC2_APPROVAL_READY
-    if os.environ.get("SECCOP_EC2_IMDSV2_E2E") == "1":
-        if source != "ec2":
+    if ec2_enabled and source == "ec2":
+        ec2_profile = os.environ.get("SECCOP_EC2_PROFILE", os.environ.get("SECCOP_PROFILE", ""))
+        ec2_region = os.environ.get("SECCOP_EC2_REGION", os.environ.get("AWS_REGION", "ap-southeast-1"))
+        ec2_env = os.environ.copy()
+        ec2_env.update({
+            "AWS_PROFILE": ec2_profile,
+            "AWS_DEFAULT_PROFILE": ec2_profile,
+            "AWS_REGION": ec2_region,
+            "AWS_DEFAULT_REGION": ec2_region,
+            "SECCOP_PROFILE": ec2_profile,
+            "SECCOP_REGION": ec2_region,
+        })
+        if ec2_profile != "ihis_dev" or ec2_region != "ap-southeast-1":
             return {"status": "BLOCKED", "reason_code": "SOURCE_UNAVAILABLE", "message": "The EC2 source is unavailable."}
         mapped = {"scan": "ec2-scan", "fix": "ec2-apply", "reject": "ec2-reject"}.get(command)
         if mapped is None:
@@ -753,8 +766,8 @@ def _run_real_demo(command: str, *, source: str | None = None, request_text: str
             if not _EC2_APPROVAL_READY or proposal is None or proposal_hash != proposal.get("proposal_hash") or proposal.get("consumed"):
                 return {"status": "BLOCKED", "reason_code": "APPROVAL_REQUIRED", "message": "Approve the exact EC2 IMDSv2 proposal before remediation."}
             proposal["consumed"] = True
-        args = [sys.executable, str(_EC2_COMPLIANCE_SCRIPT), mapped, "--profile", os.environ["SECCOP_PROFILE"], "--region", os.environ["AWS_REGION"]]
-        completed = subprocess.run(args, capture_output=True, text=True, check=False, timeout=600, env=os.environ.copy())
+        args = [sys.executable, str(_EC2_COMPLIANCE_SCRIPT), mapped, "--profile", ec2_profile, "--region", ec2_region]
+        completed = subprocess.run(args, capture_output=True, text=True, check=False, timeout=600, env=ec2_env)
         try:
             payload = json.loads(completed.stdout)
         except json.JSONDecodeError:
@@ -1376,13 +1389,14 @@ class _Handler(BaseHTTPRequestHandler):
             ecr_enabled = os.environ.get("SECCOP_ECR_OPERATOR_MVP") == "1"
             s3_enabled = os.environ.get("SECCOP_S3_COMPLIANCE_E2E") == "1"
             ec2_enabled = os.environ.get("SECCOP_EC2_IMDSV2_E2E") == "1"
+            all_three = combined and ecr_enabled and s3_enabled and ec2_enabled
             self._send_json(
                 200,
                 {
                     "status": "OK",
                     "mode": "AWS_DEMO" if _real_demo_enabled() else "LOCAL_SYNTHETIC",
                     "demo_backend": "AWS" if _real_demo_enabled() else "LOCAL",
-                    "review_mode": "EC2_IMDSV2" if ec2_enabled else "ECR_S3_COMBINED" if combined else "ECR_OPERATOR" if ecr_enabled else "S3_COMPLIANCE" if s3_enabled else "GENERAL",
+                    "review_mode": "ECR_S3_EC2_COMBINED" if all_three else "EC2_IMDSV2" if ec2_enabled else "ECR_S3_COMBINED" if combined else "ECR_OPERATOR" if ecr_enabled else "S3_COMPLIANCE" if s3_enabled else "GENERAL",
                     "enabled_sources": [source for source, enabled in (("ec2", ec2_enabled), ("ecr", ecr_enabled), ("s3", s3_enabled)) if enabled],
                 },
             )

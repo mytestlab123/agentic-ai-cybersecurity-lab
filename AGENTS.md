@@ -91,5 +91,8 @@ excluded.
 ## Validation
 
 - Run focused tests, Python compilation, and `git diff --check`.
+- Before a final ChatGPT/Amit review of GUI-impacting work, run the existing
+  repo-owned Playwright browser check; keep browser evidence private and never
+  commit screenshots.
 - Preserve unsafe requests as regression tests.
 - A model proposal is never authorization.

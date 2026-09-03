@@ -822,6 +822,56 @@ def test_ecr_operator_api_passes_explicit_scanner_without_running_aws(monkeypatc
     assert captured[0][captured[0].index("--ecr-scanner") + 1] == "inspector"
 
 
+def test_ec2_operator_uses_explicit_read_only_profile_in_combined_mode(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("SECCOP_DEMO_BACKEND", "AWS")
+    monkeypatch.setenv("SECCOP_ECR_S3_COMBINED", "1")
+    monkeypatch.setenv("SECCOP_ECR_OPERATOR_MVP", "1")
+    monkeypatch.setenv("SECCOP_S3_COMPLIANCE_E2E", "1")
+    monkeypatch.setenv("SECCOP_EC2_IMDSV2_E2E", "1")
+    monkeypatch.setenv("SECCOP_PROFILE", "amit")
+    monkeypatch.setenv("AWS_REGION", "ap-southeast-1")
+    monkeypatch.setenv("SECCOP_EC2_PROFILE", "ihis_dev")
+    monkeypatch.setenv("SECCOP_EC2_REGION", "ap-southeast-1")
+    captured: dict[str, object] = {}
+
+    def fake_run(args: list[str], **kwargs: object) -> SimpleNamespace:
+        captured["args"] = args
+        captured["env"] = kwargs["env"]
+        return SimpleNamespace(stdout=json.dumps({
+            "status": "COMPLIANT",
+            "reason_code": "SECCOP_EC2_IMDSV2_COMPLIANT",
+            "findings": [],
+        }))
+
+    monkeypatch.setattr(poc_server.subprocess, "run", fake_run)
+    result = poc_server._run_real_demo("scan", source="ec2")
+
+    assert result["reason_code"] == "SECCOP_EC2_IMDSV2_COMPLIANT"
+    args = captured["args"]
+    env = captured["env"]
+    assert isinstance(args, list)
+    assert args[args.index("--profile") + 1] == "ihis_dev"
+    assert args[args.index("--region") + 1] == "ap-southeast-1"
+    assert isinstance(env, dict)
+    assert env["AWS_PROFILE"] == "ihis_dev"
+    assert env["SECCOP_PROFILE"] == "ihis_dev"
+
+
+def test_combined_health_mode_advertises_all_three_sources(monkeypatch: pytest.MonkeyPatch) -> None:
+    for name in ("SECCOP_ECR_S3_COMBINED", "SECCOP_ECR_OPERATOR_MVP", "SECCOP_S3_COMPLIANCE_E2E", "SECCOP_EC2_IMDSV2_E2E"):
+        monkeypatch.setenv(name, "1")
+    monkeypatch.setenv("SECCOP_DEMO_BACKEND", "AWS")
+    server = ThreadingHTTPServer(("127.0.0.1", 0), _Handler)
+    thread = Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    try:
+        payload = json.loads(urlopen(f"http://127.0.0.1:{server.server_port}/api/health").read())
+        assert payload["review_mode"] == "ECR_S3_EC2_COMBINED"
+        assert payload["enabled_sources"] == ["ec2", "ecr", "s3"]
+    finally:
+        server.shutdown()
+
+
 def test_ecr_reopen_is_idempotent_when_the_finding_is_already_open(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
     monkeypatch.setattr(seccop_demo, "_ecr_scan", lambda *_: {"reason_code": "SECCOP_ECR_NON_COMPLIANT"})
     monkeypatch.setattr(seccop_demo, "_push_image", lambda *_: pytest.fail("unexpected ECR mutation"))
@@ -862,8 +912,9 @@ def test_browser_sidebar_and_composer_management_view() -> None:
     assert "Hide Ask SecCop" in html
     assert "aria-expanded" in html
     assert "advisory-upload" in html and "scan-environment" in html
-    assert "function configureEcrReview()" in html
-    assert "function configureS3Review()" in html
+    assert "function configureEcrReview(" in html
+    assert "function configureS3Review(" in html
+    assert "ECR_S3_EC2_COMBINED" in html
     for control_id in ("scan-environment", "reopen-s3-finding", "start-real-demo", "advisory-upload", "compare-live", "csv-upload", "compare-csv"):
         assert f'id="{control_id}"' in html
     assert '<div class="live-panel hidden" aria-hidden="true" hidden>' in html

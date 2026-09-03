@@ -286,10 +286,11 @@
       document.querySelectorAll('.flow-step').forEach((step, index) => step.classList.toggle('active', index < stepNumber));
     }
 
-    function configureS3Review() {
+    function configureS3Review(preserveUnified = false) {
       s3Review = true;
       ecrReview = false;
       ec2Review = false;
+      if (!preserveUnified) unifiedReview = false;
       selectedSource = 's3';
       document.title = 'Security Copilot - S3 Security Posture Review';
       reviewTitle.textContent = 'S3 Security Posture Review';
@@ -302,8 +303,10 @@
       if (scanWelcomeButton) scanWelcomeButton.textContent = 'Scan S3 bucket';
       if (reopenS3FindingButton) reopenS3FindingButton.hidden = false;
       document.querySelectorAll('.source-tab').forEach((tab) => {
-        tab.classList.toggle('active', tab.textContent === 'S3');
-        if (tab.textContent === 'S3') tab.removeAttribute('aria-disabled');
+        const source = tab.textContent.trim().toLowerCase();
+        tab.classList.toggle('active', source === 's3');
+        if (preserveUnified || source === 's3') tab.removeAttribute('aria-disabled');
+        else tab.setAttribute('aria-disabled', 'true');
       });
       if (codexPreflightButton) codexPreflightButton.classList.add('hidden');
       if (cveWelcomeButton) cveWelcomeButton.classList.add('hidden');
@@ -313,10 +316,11 @@
       toggleComposerButton.setAttribute('aria-expanded', 'false');
     }
 
-    function configureEcrReview() {
+    function configureEcrReview(preserveUnified = false) {
       ecrReview = true;
       s3Review = false;
       ec2Review = false;
+      if (!preserveUnified) unifiedReview = false;
       selectedSource = 'ecr';
       document.title = 'Security Copilot - ECR Operator Review';
       reviewTitle.textContent = 'ECR Operator Review';
@@ -329,8 +333,10 @@
       if (scanWelcomeButton) scanWelcomeButton.textContent = 'Scan ECR image';
       if (reopenS3FindingButton) reopenS3FindingButton.hidden = false;
       document.querySelectorAll('.source-tab').forEach((tab) => {
-        tab.classList.toggle('active', tab.textContent === 'ECR');
-        if (tab.textContent === 'ECR') tab.removeAttribute('aria-disabled');
+        const source = tab.textContent.trim().toLowerCase();
+        tab.classList.toggle('active', source === 'ecr');
+        if (preserveUnified || source === 'ecr') tab.removeAttribute('aria-disabled');
+        else tab.setAttribute('aria-disabled', 'true');
       });
       if (codexPreflightButton) codexPreflightButton.classList.add('hidden');
       if (cveWelcomeButton) cveWelcomeButton.classList.add('hidden');
@@ -341,11 +347,11 @@
       promptEl.placeholder = 'Ask about this ECR finding, for example: explain the risk and safe next step';
     }
 
-    function configureEc2Review() {
+    function configureEc2Review(preserveUnified = false) {
       ec2Review = true;
       s3Review = false;
       ecrReview = false;
-      unifiedReview = false;
+      if (!preserveUnified) unifiedReview = false;
       selectedSource = 'ec2';
       document.title = 'Security Copilot - EC2 IMDSv2 Compliance Review';
       reviewTitle.textContent = 'EC2 IMDSv2 Compliance Review';
@@ -363,25 +369,25 @@
       document.querySelectorAll('.source-tab').forEach((tab) => {
         const source = tab.textContent.trim().toLowerCase();
         tab.classList.toggle('active', source === 'ec2');
-        if (source === 'ec2') tab.removeAttribute('aria-disabled');
+        if (preserveUnified || source === 'ec2') tab.removeAttribute('aria-disabled');
         else tab.setAttribute('aria-disabled', 'true');
       });
     }
 
     function configureUnifiedReview() {
       unifiedReview = true;
-      configureEcrReview();
-      setMode('ECR + S3 review', true);
+      configureEcrReview(true);
+      setMode('ECR + S3 + EC2 review', true);
       document.querySelectorAll('.source-tab').forEach((tab) => {
         const source = tab.textContent.trim().toLowerCase();
-        if (source !== 'ecr' && source !== 's3') {
-          tab.setAttribute('aria-disabled', 'true');
-          return;
-        }
         tab.removeAttribute('aria-disabled');
         if (tab.dataset.seccopBound === 'true') return;
         tab.dataset.seccopBound = 'true';
-        tab.addEventListener('click', () => source === 'ecr' ? configureEcrReview() : configureS3Review());
+        tab.addEventListener('click', () => {
+          if (source === 'ecr') configureEcrReview(true);
+          else if (source === 's3') configureS3Review(true);
+          else if (source === 'ec2') configureEc2Review(true);
+        });
       });
     }
     const labels = {
@@ -1200,7 +1206,7 @@
         const health = await response.json();
         demoBackend = health.demo_backend || 'LOCAL';
         if (health.review_mode === 'EC2_IMDSV2') configureEc2Review();
-        if (health.review_mode === 'ECR_S3_COMBINED') configureUnifiedReview();
+        if (health.review_mode === 'ECR_S3_COMBINED' || health.review_mode === 'ECR_S3_EC2_COMBINED') configureUnifiedReview();
         if (health.review_mode === 'S3_COMPLIANCE') configureS3Review();
         if (health.review_mode === 'ECR_OPERATOR') configureEcrReview();
         if (demoBackend === 'AWS' && !s3Review && !ecrReview && startRealDemoButton) {
