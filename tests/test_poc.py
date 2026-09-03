@@ -970,6 +970,7 @@ def test_browser_sidebar_and_composer_management_view() -> None:
     assert 'welcome-mark' not in html
     assert "ECR Vulnerability Scanning Review" in html
     assert "ECR Operator Review" not in html
+    assert "ECR + S3 + EC2 review" not in html
     assert "toggleComposerButton.classList.remove('hidden')" in html
 
 

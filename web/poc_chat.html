@@ -391,7 +391,6 @@
     function configureUnifiedReview() {
       unifiedReview = true;
       configureEcrReview(true);
-      setMode('ECR + S3 + EC2 review', true);
       document.querySelectorAll('.source-tab').forEach((tab) => {
         const source = tab.textContent.trim().toLowerCase();
         tab.removeAttribute('aria-disabled');
