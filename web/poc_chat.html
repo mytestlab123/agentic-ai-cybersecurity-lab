@@ -356,8 +356,7 @@
       scanButton.textContent = 'Scan EC2 compliance';
       if (scanWelcomeButton) scanWelcomeButton.textContent = 'Scan EC2 compliance';
       if (reopenS3FindingButton) {
-        reopenS3FindingButton.hidden = false;
-        reopenS3FindingButton.textContent = 'Reopen Finding';
+        reopenS3FindingButton.hidden = true;
       }
       if (codexPreflightButton) codexPreflightButton.classList.add('hidden');
       if (cveWelcomeButton) cveWelcomeButton.classList.add('hidden');
@@ -810,7 +809,7 @@
         button.disabled = false;
         startScan(scanButton);
       } catch (error) {
-        thinking.textContent = 'The approved DEMO reset was blocked.';
+        thinking.textContent = `The approved ${ecrReview ? 'ECR' : 'S3'} reset was blocked.`;
         thinking.classList.add('error-copy');
         button.disabled = false;
       }

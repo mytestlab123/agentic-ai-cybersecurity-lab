@@ -983,6 +983,10 @@ def test_browser_sidebar_and_composer_management_view() -> None:
     assert "fixed LAB_01 still accepts IMDSv1" in html
     assert "id=\"reopen-s3-finding\"" in html
     assert "RND_REOPEN_REQUIRED" not in html
+    ec2_view = html.split("function configureEc2Review", 1)[1].split("function configureUnifiedReview", 1)[0]
+    assert "reopenS3FindingButton.hidden = true" in ec2_view
+    assert "Reopen Finding" not in ec2_view
+    assert "The approved DEMO reset was blocked." not in html
     for control_id in ("scan-environment", "reopen-s3-finding", "start-real-demo", "advisory-upload", "compare-live", "csv-upload", "compare-csv"):
         assert f'id="{control_id}"' in html
     assert '<div class="live-panel hidden" aria-hidden="true" hidden>' in html
