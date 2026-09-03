@@ -616,8 +616,32 @@ def _ec2_rnd_scan(profile: str, region: str, alias: str) -> dict[str, Any]:
     expected = "NON_COMPLIANT" if target["MetadataOptions"]["HttpTokens"] == "optional" else "COMPLIANT"
     state = _ec2_rnd_compliance(profile, region, alias, instance_id, expected)
     if state == "NON_COMPLIANT":
-        return {"status": "READY", "reason_code": "SECCOP_EC2_IMDSV2_NON_COMPLIANT", "state": state, "resource_alias": alias, "config_rule_name": _ec2_rnd_rule(alias), "findings": [{"finding_id": "FINDING_01", "source_type": "EC2_CONFIG", "resource_alias": alias, "reference": "EC2_IMDSV2_RULE_01", "severity": "MEDIUM", "title": "DEV R&D target accepts IMDSv1", "problem_summary": "AWS Config found a fixed DEV target that still accepts IMDSv1.", "observed_state": "HttpTokens=optional; Config NON_COMPLIANT", "recommended_state": "Use the explicit Reopen Finding action for fixed LAB_01 only.", "remediation_mode": "REAL_APPROVAL_REQUIRED", "reason_code": "SECCOP_EC2_IMDSV2_FINDING", "action_label": "Reopen Finding"}], "message": "DEV R&D evidence shows the fixed LAB_01 target is intentionally NON_COMPLIANT."}
+        return {"status": "READY", "reason_code": "SECCOP_EC2_IMDSV2_NON_COMPLIANT", "state": state, "resource_alias": alias, "config_rule_name": _ec2_rnd_rule(alias), "findings": [{"finding_id": "FINDING_01", "source_type": "EC2_CONFIG", "resource_alias": alias, "reference": "EC2_IMDSV2_RULE_01", "severity": "MEDIUM", "title": "EC2 IMDSv2 security misconfiguration", "problem_summary": "AWS Config found that fixed LAB_01 still accepts IMDSv1.", "observed_state": "HttpTokens=optional; Config NON_COMPLIANT", "recommended_state": "Run the exact manual AWS-managed IMDSv2 Automation and verify COMPLIANT.", "remediation_mode": "REAL_APPROVAL_REQUIRED", "reason_code": "SECCOP_EC2_IMDSV2_FINDING", "action_label": "Remediate"}], "message": "AWS Config found that fixed LAB_01 still accepts IMDSv1. Review the exact AWS-managed IMDSv2 remediation, then choose Remediate or Reject."}
     return {"status": "NO_FINDINGS", "reason_code": "SECCOP_EC2_IMDSV2_COMPLIANT", "state": state, "resource_alias": alias, "config_rule_name": _ec2_rnd_rule(alias), "findings": [], "message": "AWS Config verified the selected DEV R&D target is IMDSv2 compliant."}
+
+
+def _ec2_rnd_reject(profile: str, region: str, alias: str, confirm: bool) -> dict[str, Any]:
+    if alias != EC2_RND_ALIAS_LAB01 or not confirm:
+        raise RuntimeError("Only confirmed LAB_01 EC2 rejection is allowed")
+    before = _ec2_rnd_scan(profile, region, alias)
+    if before.get("reason_code") != "SECCOP_EC2_IMDSV2_NON_COMPLIANT":
+        raise RuntimeError("EC2 rejection requires a fresh NON_COMPLIANT finding")
+    return {"status": "REJECTED", "reason_code": "HUMAN_REJECTED", "state": "NON_COMPLIANT", "resource_alias": alias, "mutation_performed": False, "message": "The exact LAB_01 EC2 IMDSv2 remediation proposal was rejected; no AWS mutation was performed."}
+
+
+def _ec2_rnd_apply(profile: str, region: str, alias: str, confirm: bool) -> dict[str, Any]:
+    if alias != EC2_RND_ALIAS_LAB01 or not confirm:
+        raise RuntimeError("Only confirmed LAB_01 EC2 remediation is allowed")
+    instance_id, target = _ec2_rnd_target(profile, region, alias)
+    if target["MetadataOptions"]["HttpTokens"] != "optional" or _ec2_rnd_scan(profile, region, alias).get("reason_code") != "SECCOP_EC2_IMDSV2_NON_COMPLIANT":
+        raise RuntimeError("EC2 remediation requires a fresh LAB_01 NON_COMPLIANT finding")
+    automation = _ec2_start_manual_remediation(profile, region, _ec2_rnd_rule(alias), instance_id)
+    _, after = _ec2_rnd_target(profile, region, alias)
+    if after["MetadataOptions"]["HttpTokens"] != "required":
+        raise RuntimeError("LAB_01 IMDSv2 metadata verification failed")
+    if _ec2_rnd_compliance(profile, region, alias, instance_id, "COMPLIANT") != "COMPLIANT":
+        raise RuntimeError("LAB_01 Config COMPLIANT verification failed")
+    return {"status": "VERIFIED", "reason_code": "SECCOP_EC2_IMDSV2_REMEDIATED", "state": "COMPLIANT", "resource_alias": alias, "metadata_http_tokens": "required", "automation_status": automation["status"], "message": "AWS Config remediation verified: LAB_01 now requires IMDSv2 and is COMPLIANT."}
 
 
 def _ec2_rnd_rearm(profile: str, region: str, alias: str, confirm: bool) -> dict[str, Any]:
@@ -906,18 +930,22 @@ def _ec2_automation(profile: str, region: str, before_ids: set[str]) -> dict[str
     raise RuntimeError("IMDSv2 Automation did not reach a terminal state")
 
 
+def _ec2_start_manual_remediation(profile: str, region: str, rule_name: str, instance_id: str) -> dict[str, Any]:
+    configs = _ec2_call(profile, region, "configservice", "describe-remediation-configurations", "--config-rule-names", rule_name).get("RemediationConfigurations", [])
+    if len(configs) != 1 or configs[0].get("TargetId") != EC2_SSM_DOCUMENT or configs[0].get("Automatic") is not False or str(configs[0].get("TargetVersion")) != EC2_SSM_DOCUMENT_VERSION or configs[0].get("Parameters", {}).get("InstanceId", {}).get("ResourceValue", {}).get("Value") != "RESOURCE_ID" or len(configs[0].get("Parameters", {}).get("AutomationAssumeRole", {}).get("StaticValue", {}).get("Values", [])) != 1:
+        raise RuntimeError("EC2 remediation binding is not exact and manual")
+    existing = _ec2_call(profile, region, "ssm", "describe-automation-executions", "--filters", f"Key=DocumentNamePrefix,Values={EC2_SSM_DOCUMENT}", "--max-results", "50").get("AutomationExecutionMetadataList", [])
+    before_ids = {str(item.get("AutomationExecutionId")) for item in existing if isinstance(item, dict)}
+    started = _ec2_call(profile, region, "configservice", "start-remediation-execution", "--config-rule-name", rule_name, "--resource-keys", json.dumps([{"resourceType": "AWS::EC2::Instance", "resourceId": instance_id}]))
+    _ec2_evidence("remediation-start", started)
+    return _ec2_automation(profile, region, before_ids)
+
+
 def ec2_apply(profile: str, region: str) -> dict[str, Any]:
     state = _ec2_load_state(); before = ec2_scan(profile, region)
     if before.get("reason_code") != "SECCOP_EC2_IMDSV2_NON_COMPLIANT":
         raise RuntimeError("EC2 remediation requires a fresh NON_COMPLIANT finding")
-    configs = _ec2_call(profile, region, "configservice", "describe-remediation-configurations", "--config-rule-names", EC2_CONFIG_RULE).get("RemediationConfigurations", [])
-    if len(configs) != 1 or configs[0].get("TargetId") != EC2_SSM_DOCUMENT or configs[0].get("Automatic") is not False or str(configs[0].get("TargetVersion")) != EC2_SSM_DOCUMENT_VERSION:
-        raise RuntimeError("EC2 remediation binding is not exact and manual")
-    existing = _ec2_call(profile, region, "ssm", "describe-automation-executions", "--filters", f"Key=DocumentNamePrefix,Values={EC2_SSM_DOCUMENT}", "--max-results", "50").get("AutomationExecutionMetadataList", [])
-    before_ids = {str(item.get("AutomationExecutionId")) for item in existing if isinstance(item, dict)}
-    started = _ec2_call(profile, region, "configservice", "start-remediation-execution", "--config-rule-name", EC2_CONFIG_RULE, "--resource-keys", json.dumps([{"resourceType": "AWS::EC2::Instance", "resourceId": state["instance_id"]}]))
-    _ec2_evidence("remediation-start", started)
-    automation = _ec2_automation(profile, region, before_ids)
+    automation = _ec2_start_manual_remediation(profile, region, EC2_CONFIG_RULE, state["instance_id"])
     target = _ec2_target(profile, region)
     if target.get("MetadataOptions", {}).get("HttpTokens") != "required":
         raise RuntimeError("EC2 IMDSv2 metadata verification failed")
@@ -1082,7 +1110,7 @@ def reset(profile: str, region: str, bucket: str) -> dict[str, Any]:
 
 def main() -> int:
     parser = argparse.ArgumentParser()
-    parser.add_argument("command", choices=("setup", "create", "scan", "apply", "reset", "cleanup", "ec2-setup", "ec2-adopt", "ec2-scan", "ec2-reject", "ec2-apply", "ec2-cleanup", "ec2-rnd-preflight", "ec2-rnd-setup", "ec2-rnd-scan", "ec2-rnd-rearm", "ec2-rnd-reopen"))
+    parser.add_argument("command", choices=("setup", "create", "scan", "apply", "reset", "cleanup", "ec2-setup", "ec2-adopt", "ec2-scan", "ec2-reject", "ec2-apply", "ec2-cleanup", "ec2-rnd-preflight", "ec2-rnd-setup", "ec2-rnd-scan", "ec2-rnd-reject", "ec2-rnd-apply", "ec2-rnd-rearm", "ec2-rnd-reopen"))
     parser.add_argument("--profile", required=True); parser.add_argument("--region", required=True); parser.add_argument("--bucket")
     parser.add_argument("--instance-id")
     parser.add_argument("--delivery-bucket")
@@ -1114,6 +1142,10 @@ def main() -> int:
             if args.alias not in {EC2_RND_ALIAS_LAB01, EC2_RND_ALIAS_LAB02}:
                 raise RuntimeError("DEV R&D target alias is required")
             output = _ec2_rnd_scan(args.profile, args.region, args.alias)
+        elif args.command == "ec2-rnd-reject":
+            output = _ec2_rnd_reject(args.profile, args.region, args.alias or "", args.confirm)
+        elif args.command == "ec2-rnd-apply":
+            output = _ec2_rnd_apply(args.profile, args.region, args.alias or "", args.confirm)
         elif args.command == "ec2-rnd-rearm":
             if args.alias not in {EC2_RND_ALIAS_LAB01, EC2_RND_ALIAS_LAB02}:
                 raise RuntimeError("DEV R&D target alias is required")

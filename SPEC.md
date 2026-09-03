@@ -92,3 +92,20 @@ and fresh Config COMPLIANT. The target and Config resources remain retained;
 termination requires a new explicit Amit approval. The prior partial role is
 not modified, and package/CVE, S3, ECR, networking, and automatic-remediation
 work remain outside this slice.
+
+## Manual remediation UI contract
+
+The SecCop management UI uses one five-stage workflow for every configured
+source: **Scan**, **Review one exact proposal**, **human Remediate or Reject**
+(ECR may use the label **Approve Once**), **Verify provider truth**, then an
+optional reopen only after a verified outcome. The browser never authorizes a
+target, action, or provider result.
+
+For fixed `DEV_EC2_LAB_01`, the sole EC2 journey is
+`NON_COMPLIANT -> Review -> Remediate/Reject -> StartRemediationExecution ->
+COMPLIANT`. Review shows the exact AWS Config IMDSv2 proposal. Reject changes
+nothing; Remediate consumes that one proposal and invokes only the existing
+manual `AWSConfigRemediation-EnforceEC2InstanceIMDSv2` binding before checking
+terminal Automation success, `HttpTokens=required`, and fresh Config
+`COMPLIANT`. The CLI reopen command remains an optional R&D reset only; it is
+not an EC2 GUI action.

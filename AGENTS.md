@@ -88,6 +88,21 @@ explicit Amit approval. The prior partial Issue #55 role remains untouched,
 and package/CVE, S3, ECR, networking, and automatic-remediation paths remain
 excluded.
 
+### SecCop manual-remediation UI contract
+
+Use one five-stage journey for configured sources: **Scan**, **Review one
+exact proposal**, **human Remediate/Reject** (ECR may say **Approve Once**),
+**Verify provider truth**, then optional reopen only after a verified outcome.
+The UI cannot authorize an unbound target, proposal, or AWS action.
+
+For fixed `DEV_EC2_LAB_01`, the EC2 GUI path is
+`NON_COMPLIANT -> Review -> Remediate/Reject -> StartRemediationExecution ->
+COMPLIANT`. Reject is non-mutating. Remediate must use the existing manual
+`AWSConfigRemediation-EnforceEC2InstanceIMDSv2` binding and verify terminal
+Automation success, `HttpTokens=required`, and fresh Config `COMPLIANT`. The
+CLI Reopen command is optional R&D reset only and is never an EC2 GUI approval
+action.
+
 ## Validation
 
 - Run focused tests, Python compilation, and `git diff --check`.

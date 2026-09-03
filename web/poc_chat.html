@@ -254,7 +254,6 @@
     let s3Review = false;
     let ecrReview = false;
     let ec2Review = false;
-    let ec2RndReview = false;
     let unifiedReview = false;
     let selectedSource = 'ecr';
 
@@ -666,21 +665,20 @@
           const isS3Risk = finding.source_type === 'S3_BUCKET';
           const isEcrRisk = ecrReview && finding.source_type === 'ECR_IMAGE';
           const isEc2Risk = ec2Review && finding.source_type === 'EC2_CONFIG';
-          const isEc2Rnd = ec2RndReview && isEc2Risk;
           if (isS3Risk || isEcrRisk || isEc2Risk) setS3FlowStep(3);
-          const body = addMessage('assistant', isS3Risk ? 'Security misconfiguration confirmed. Remediate to enable all four Block Public Access controls, or Reject this proposal.' : isEcrRisk ? 'Amazon Inspector confirmed the ECR finding. Approve Once to promote the clean digest.' : isEc2Rnd ? 'DEV R&D rearm is intentional. Confirm Reopen Finding only for the fixed LAB_01 target; no remediation is offered.' : isEc2Risk ? 'AWS Config confirmed that this EC2 target still accepts IMDSv1. Remediate with the exact AWS-managed IMDSv2 Automation, or Reject this proposal.' : 'The clean replacement is ready for review. Approve it to replace only this DEMO artifact.');
+          const body = addMessage('assistant', isS3Risk ? 'Security misconfiguration confirmed. Remediate to enable all four Block Public Access controls, or Reject this proposal.' : isEcrRisk ? 'Amazon Inspector confirmed the ECR finding. Approve Once to promote the clean digest.' : isEc2Risk ? 'AWS Config found that fixed LAB_01 still accepts IMDSv1. Review the exact AWS-managed IMDSv2 remediation, then choose Remediate or Reject.' : 'The clean replacement is ready for review. Approve it to replace only this DEMO artifact.');
           const card = node('div', 'approval-card');
           const grid = node('div', 'evidence-grid');
           evidenceCell(grid, 'Source', finding.source_type);
           evidenceCell(grid, 'Change', finding.recommended_state);
           evidenceCell(grid, 'After', 'The clean item will be scanned again');
           card.appendChild(grid);
-          const approveLabel = isEc2Rnd ? 'Reopen Finding' : isS3Risk ? 'Remediate' : isEc2Risk ? 'Remediate' : isEcrRisk ? 'Approve Once' : 'Approve and fix';
+          const approveLabel = isS3Risk ? 'Remediate' : isEc2Risk ? 'Remediate' : isEcrRisk ? 'Approve Once' : 'Approve and fix';
           const approve = node('button', 'btn approve', approveLabel);
           approve.type = 'button';
-          approve.addEventListener('click', () => isEc2Rnd ? resetS3Demo(approve) : approveDemoFix(finding, approve));
+          approve.addEventListener('click', () => approveDemoFix(finding, approve));
           card.appendChild(approve);
-          if ((isS3Risk || isEc2Risk) && !isEc2Rnd) {
+          if (isS3Risk || isEc2Risk) {
             const reject = node('button', 'btn reject', 'Reject');
             reject.type = 'button';
             reject.addEventListener('click', () => rejectDemoFinding(finding, reject));
@@ -796,35 +794,15 @@
     }
 
     async function resetS3Demo(button) {
-      const ec2Rnd = ec2RndReview && selectedSource === 'ec2';
-      const prompt = ec2Rnd ? 'Reopen this DEV R&D finding? Only the fixed LAB_01 target may be rearmed to IMDSv1 for testing.' : ecrReview ? 'Reopen this ECR finding? The known-vulnerable demo digest will be restored.' : 'Reopen this finding? Bucket-level protection will be temporarily removed from the private empty test bucket.';
+      const prompt = ecrReview ? 'Reopen this ECR finding? The known-vulnerable demo digest will be restored.' : 'Reopen this finding? Bucket-level protection will be temporarily removed from the private empty test bucket.';
       if (!window.confirm(prompt)) return;
       button.disabled = true;
       addMessage('user', 'Reopen Finding');
-      const thinking = addMessage('assistant', ec2Rnd ? 'Reopening only the fixed LAB_01 DEV R&D target and rereading AWS Config...' : ecrReview ? 'Restoring the known-vulnerable ECR digest and rereading it with Amazon Inspector...' : 'Checking the approved empty private bucket before reopening the finding...');
+      const thinking = addMessage('assistant', ecrReview ? 'Restoring the known-vulnerable ECR digest and rereading it with Amazon Inspector...' : 'Checking the approved empty private bucket before reopening the finding...');
       try {
         const source = unifiedReview ? selectedSource : null;
-        const request = ec2Rnd ? { confirm: true, source: 'ec2' } : source ? { confirm: true, source } : { confirm: true };
+        const request = source ? { confirm: true, source } : { confirm: true };
         const payload = await post('/api/demo/reset', request);
-        if (ec2Rnd && payload.result?.reason_code === 'FINDING_ALREADY_OPEN') {
-          thinking.parentElement.remove();
-          const body = addMessage('assistant', payload.result.message || 'The fixed LAB_01 finding is already open.');
-          const card = node('div', 'result-card');
-          const grid = node('div', 'evidence-grid');
-          evidenceCell(grid, 'Source', 'EC2_CONFIG');
-          evidenceCell(grid, 'AWS mutation', 'None');
-          evidenceCell(grid, 'State', 'NON_COMPLIANT');
-          card.appendChild(grid);
-          body.appendChild(card);
-          button.disabled = false;
-          return;
-        }
-        if (ec2Rnd && payload.result?.status === 'BLOCKED') {
-          thinking.textContent = payload.result.message || `LAB_01 Reopen Finding blocked: ${payload.result.reason_code || 'REQUEST_REJECTED'}`;
-          thinking.classList.add('error-copy');
-          button.disabled = false;
-          return;
-        }
         thinking.parentElement.remove();
         messages.replaceChildren();
         welcome.classList.remove('hidden');
@@ -832,7 +810,7 @@
         button.disabled = false;
         startScan(scanButton);
       } catch (error) {
-        thinking.textContent = ec2Rnd ? `LAB_01 Reopen Finding unavailable: ${error.message || 'REQUEST_REJECTED'}` : 'The approved DEMO reset was blocked.';
+        thinking.textContent = 'The approved DEMO reset was blocked.';
         thinking.classList.add('error-copy');
         button.disabled = false;
       }
@@ -1222,7 +1200,6 @@
         const response = await fetch('/api/health', { cache: 'no-store' });
         const health = await response.json();
         demoBackend = health.demo_backend || 'LOCAL';
-        ec2RndReview = health.ec2_rnd_rearm === true;
         if (health.review_mode === 'EC2_IMDSV2') configureEc2Review();
         if (health.review_mode === 'ECR_S3_COMBINED' || health.review_mode === 'ECR_S3_EC2_COMBINED') configureUnifiedReview();
         if (health.review_mode === 'S3_COMPLIANCE') configureS3Review();

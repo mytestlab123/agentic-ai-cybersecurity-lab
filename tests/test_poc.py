@@ -872,7 +872,7 @@ def test_combined_health_mode_advertises_all_three_sources(monkeypatch: pytest.M
         server.shutdown()
 
 
-def test_ec2_rnd_route_is_fixed_lab01_and_reopen_is_idempotent(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_ec2_rnd_route_is_fixed_lab01_with_reject_then_approved_remediation(monkeypatch: pytest.MonkeyPatch) -> None:
     for name, value in {
         "SECCOP_DEMO_BACKEND": "AWS",
         "SECCOP_ECR_S3_COMBINED": "1",
@@ -882,11 +882,12 @@ def test_ec2_rnd_route_is_fixed_lab01_and_reopen_is_idempotent(monkeypatch: pyte
         "SECCOP_EC2_REGION": "ap-southeast-1",
     }.items():
         monkeypatch.setenv(name, value)
+    poc_server._EC2_PROPOSALS.clear()
     captured: list[list[str]] = []
 
     def fake_run(args: list[str], **_: object) -> SimpleNamespace:
         captured.append(args)
-        command = next(item for item in ("ec2-rnd-scan", "ec2-rnd-reopen") if item in args)
+        command = next(item for item in ("ec2-rnd-scan", "ec2-rnd-reject", "ec2-rnd-apply") if item in args)
         payload = {
             "ec2-rnd-scan": {
                 "status": "READY",
@@ -896,12 +897,20 @@ def test_ec2_rnd_route_is_fixed_lab01_and_reopen_is_idempotent(monkeypatch: pyte
                 "config_rule_name": "ec2-imdsv2-check-rnd-lab01",
                 "findings": [],
             },
-            "ec2-rnd-reopen": {
-                "status": "NOOP",
-                "reason_code": "FINDING_ALREADY_OPEN",
+            "ec2-rnd-reject": {
+                "status": "REJECTED",
+                "reason_code": "HUMAN_REJECTED",
                 "state": "NON_COMPLIANT",
                 "resource_alias": "DEV_EC2_LAB_01",
                 "mutation_performed": False,
+            },
+            "ec2-rnd-apply": {
+                "status": "VERIFIED",
+                "reason_code": "SECCOP_EC2_IMDSV2_REMEDIATED",
+                "state": "COMPLIANT",
+                "resource_alias": "DEV_EC2_LAB_01",
+                "metadata_http_tokens": "required",
+                "automation_status": "Success",
             },
         }[command]
         return SimpleNamespace(stdout=json.dumps(payload))
@@ -910,11 +919,18 @@ def test_ec2_rnd_route_is_fixed_lab01_and_reopen_is_idempotent(monkeypatch: pyte
     scan = poc_server._run_real_demo("scan", source="ec2")
     assert scan["reason_code"] == "SECCOP_EC2_IMDSV2_NON_COMPLIANT"
     assert captured[0][captured[0].index("--alias") + 1] == "DEV_EC2_LAB_01"
-    noop = poc_server._run_real_demo("reset", source="ec2")
-    assert noop["reason_code"] == "FINDING_ALREADY_OPEN"
-    assert noop["mutation_performed"] is False
+    rejected = poc_server._run_real_demo("reject", source="ec2", proposal_id=scan["proposal_id"], proposal_hash=scan["proposal_hash"])
+    assert rejected["reason_code"] == "HUMAN_REJECTED"
+    assert rejected["mutation_performed"] is False
+    replay = poc_server._run_real_demo("fix", source="ec2", proposal_id=scan["proposal_id"], proposal_hash=scan["proposal_hash"])
+    assert replay["reason_code"] == "APPROVAL_REQUIRED"
+    fresh = poc_server._run_real_demo("scan", source="ec2")
+    verified = poc_server._run_real_demo("fix", source="ec2", proposal_id=fresh["proposal_id"], proposal_hash=fresh["proposal_hash"])
+    assert verified["reason_code"] == "SECCOP_EC2_IMDSV2_REMEDIATED"
+    assert verified["metadata_http_tokens"] == "required"
     assert captured[-1][captured[-1].index("--alias") + 1] == "DEV_EC2_LAB_01"
     assert captured[-1][-1] == "--confirm"
+    assert poc_server._run_real_demo("reset", source="ec2")["reason_code"] == "REQUEST_REJECTED"
     blocked = poc_server._run_real_demo("scan", source="ec2", target_alias="DEV_EC2_LAB_02")
     assert blocked["reason_code"] == "TARGET_NOT_ALLOWED"
 
@@ -964,9 +980,9 @@ def test_browser_sidebar_and_composer_management_view() -> None:
     assert "ECR_S3_EC2_COMBINED" in html
     assert "DEV_EC2_LAB_01" in html
     assert "DEV_EC2_LAB_02" not in html
-    assert "Only the fixed LAB_01 target" in html
+    assert "fixed LAB_01 still accepts IMDSv1" in html
     assert "id=\"reopen-s3-finding\"" in html
-    assert "FINDING_ALREADY_OPEN" in html
+    assert "RND_REOPEN_REQUIRED" not in html
     for control_id in ("scan-environment", "reopen-s3-finding", "start-real-demo", "advisory-upload", "compare-live", "csv-upload", "compare-csv"):
         assert f'id="{control_id}"' in html
     assert '<div class="live-panel hidden" aria-hidden="true" hidden>' in html

@@ -755,9 +755,14 @@ def _run_real_demo(command: str, *, source: str | None = None, request_text: str
         ec2_region = os.environ.get("SECCOP_EC2_REGION", "")
         if ec2_profile != "ihis_dev" or ec2_region != "ap-southeast-1":
             return {"status": "BLOCKED", "reason_code": "SOURCE_UNAVAILABLE", "message": "The DEV R&D source is unavailable."}
-        mapped = {"scan": "ec2-rnd-scan", "reset": "ec2-rnd-reopen"}.get(command)
+        mapped = {"scan": "ec2-rnd-scan", "reject": "ec2-rnd-reject", "fix": "ec2-rnd-apply"}.get(command)
         if mapped is None:
-            return {"status": "BLOCKED", "reason_code": "RND_REOPEN_REQUIRED", "message": "Only the fixed LAB_01 DEV R&D reopen is allowed."}
+            return {"status": "BLOCKED", "reason_code": "REQUEST_REJECTED", "message": "Only the fixed LAB_01 Scan, Remediate, and Reject journey is available."}
+        if mapped in {"ec2-rnd-reject", "ec2-rnd-apply"}:
+            proposal = _EC2_PROPOSALS.get(proposal_id or "")
+            if proposal is None or proposal_hash != proposal.get("proposal_hash") or proposal.get("target_alias") != _EC2_RND_ALIAS_LAB01 or proposal.get("consumed"):
+                return {"status": "BLOCKED", "reason_code": "APPROVAL_REQUIRED", "message": "Approve the exact LAB_01 EC2 IMDSv2 proposal before this action."}
+            proposal["consumed"] = True
         ec2_env = os.environ.copy()
         ec2_env.update({"AWS_PROFILE": ec2_profile, "AWS_DEFAULT_PROFILE": ec2_profile, "AWS_REGION": ec2_region, "AWS_DEFAULT_REGION": ec2_region, "SECCOP_PROFILE": ec2_profile, "SECCOP_REGION": ec2_region})
         args = [sys.executable, str(_EC2_COMPLIANCE_SCRIPT), mapped, "--profile", ec2_profile, "--region", ec2_region, "--alias", target_alias]
@@ -769,7 +774,7 @@ def _run_real_demo(command: str, *, source: str | None = None, request_text: str
             return {"status": "BLOCKED", "reason_code": "SECCOP_EC2_BACKEND_BLOCKED", "message": "The DEV R&D operation was blocked."}
         if mapped == "ec2-rnd-scan" and payload.get("reason_code") == "SECCOP_EC2_IMDSV2_NON_COMPLIANT":
             proposal_id = _next_proposal_id()
-            basis = {"source": "ec2", "target_alias": target_alias, "rule": payload.get("config_rule_name"), "state": payload.get("state")}
+            basis = {"source": "ec2", "target_alias": target_alias, "rule": payload.get("config_rule_name"), "document": "AWSConfigRemediation-EnforceEC2InstanceIMDSv2", "state": payload.get("state")}
             proposal_hash = hashlib.sha256(json.dumps(basis, sort_keys=True).encode()).hexdigest()
             _EC2_PROPOSALS[proposal_id] = {"proposal_hash": proposal_hash, "target_alias": target_alias, "consumed": False}
             for finding in payload.get("findings", []):
@@ -1541,9 +1546,6 @@ class _Handler(BaseHTTPRequestHandler):
             if source not in {"s3", "ecr", "ec2"} or payload.get("confirm") is not True:
                 self._send_json(400, {"status": "BLOCKED", "reason_code": "REQUEST_REJECTED"})
                 return
-            if source == "ec2" and os.environ.get("SECCOP_EC2_RND_REARM") == "1":
-                self._send_json(200, {"result": {"status": "BLOCKED", "reason_code": "RND_REOPEN_REQUIRED", "message": "DEV R&D uses the explicit Reopen Finding action."}, "events": []})
-                return
             self._send_json(200, {"result": _run_real_demo("fix", source=source, proposal_id=payload.get("proposal_id"), proposal_hash=payload.get("proposal_hash")), "events": []})
             return
 
@@ -1552,6 +1554,9 @@ class _Handler(BaseHTTPRequestHandler):
                 self._send_json(400, {"status": "BLOCKED", "reason_code": "REQUEST_REJECTED"})
                 return
             if payload.get("source") == "ec2":
+                if os.environ.get("SECCOP_EC2_RND_REARM") == "1":
+                    self._send_json(200, {"result": _run_real_demo("reject", source="ec2", proposal_id=payload.get("proposal_id"), proposal_hash=payload.get("proposal_hash")), "events": []})
+                    return
                 self._send_json(200, {"result": _reject_ec2_proposal(payload.get("proposal_id"), payload.get("proposal_hash")), "events": []})
                 return
             self._send_json(200, {"result": _reject_s3_proposal(payload.get("proposal_id"), payload.get("proposal_hash")), "events": []})
@@ -1560,10 +1565,7 @@ class _Handler(BaseHTTPRequestHandler):
         if self.path == "/api/demo/reset":
             if os.environ.get("SECCOP_ECR_S3_COMBINED") == "1":
                 if payload.get("source") == "ec2":
-                    if set(payload) != {"confirm", "source"} or payload.get("confirm") is not True or os.environ.get("SECCOP_EC2_RND_REARM") != "1":
-                        self._send_json(400, {"status": "BLOCKED", "reason_code": "REQUEST_REJECTED"})
-                        return
-                    self._send_json(200, {"result": _run_real_demo("reset", source="ec2"), "events": []})
+                    self._send_json(400, {"status": "BLOCKED", "reason_code": "REQUEST_REJECTED"})
                     return
                 if set(payload) != {"confirm", "source"} or payload.get("confirm") is not True or payload.get("source") not in {"ecr", "s3"}:
                     self._send_json(400, {"status": "BLOCKED", "reason_code": "REQUEST_REJECTED"})
