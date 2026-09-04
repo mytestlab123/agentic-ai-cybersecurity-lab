@@ -4,7 +4,7 @@ umask 077
 
 repo_dir=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)
 tf_dir="$repo_dir/infra/project1-seccop-ec2"
-profile=${SECCOP_PROFILE:-vagent}
+profile=${SECCOP_PROFILE:-}
 region=${SECCOP_REGION:-ap-southeast-1}
 ami_name_pattern=${SECCOP_AMI_NAME_PATTERN:-amzn2-ami-hvm-2.0.20260608.0-x86_64-gp2}
 expected_principal=project1
@@ -42,6 +42,8 @@ while (($#)); do
       ;;
   esac
 done
+
+[[ -n "$profile" ]] || { printf '%s\n' 'explicit --profile or SECCOP_PROFILE is required' >&2; exit 2; }
 
 if ((confirm == 0)); then
   printf '%s\n' '{"status":"BLOCKED","reason_code":"CONFIRM_REQUIRED","message":"Use --confirm to clean the SecCop DEMO."}'

@@ -51,7 +51,9 @@ class LivePatchableFinding:
 class _AwsCli:
     def __init__(self, region: str, profile: str | None = None) -> None:
         self.region = region
-        self.profile = profile or os.environ.get("SECCOP_AWS_PROFILE", "vagent")
+        self.profile = profile or os.environ.get("SECCOP_AWS_PROFILE") or os.environ.get("SECCOP_PROFILE")
+        if not self.profile:
+            raise AwsLiveBackendError("An explicit approved AWS profile is required.")
 
     def call(self, service: str, operation: str, payload: dict[str, Any]) -> dict[str, Any]:
         with tempfile.NamedTemporaryFile("w", encoding="utf-8", suffix=".json") as handle:

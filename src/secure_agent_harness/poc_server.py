@@ -50,6 +50,7 @@ from .seccop_scan import review_demo_cve, run_demo_scan
 _HTML_PATH = Path(__file__).resolve().parents[2] / "web" / "poc_chat.html"
 _DEMO_SCRIPT = Path(__file__).resolve().parents[2] / "scripts" / "seccop_demo.py"
 _S3_COMPLIANCE_SCRIPT = Path(__file__).resolve().parents[2] / "scripts" / "issue47_s3_compliance.py"
+_EC2_COMPLIANCE_SCRIPT = _S3_COMPLIANCE_SCRIPT
 _ENGINE = PocEngine()
 _SECCOP_PROPOSALS: dict[str, SecCopRemediationProposal] = {}
 _SECCOP_REQUESTS: dict[str, SecCopCsvRequest] = {}
@@ -58,7 +59,13 @@ _SECCOP_TARGET_IDS: dict[str, str] = {}
 _SERVER_SCAN_REQUEST: SecCopAdvisoryRequest | None = None
 _HYBRID_SESSION: "_HybridSession | None" = None
 _S3_APPROVAL_READY = False
+_S3_PROPOSALS: dict[str, dict[str, str | bool]] = {}
 _ECR_APPROVAL_READY = False
+_ECR_SCAN_TAG_OVERRIDE: str | None = None
+_EC2_APPROVAL_READY = False
+_EC2_PROPOSALS: dict[str, dict[str, str | bool]] = {}
+_EC2_RND_ALIASES = {"DEV_EC2_LAB_01"}
+_EC2_RND_ALIAS_LAB01 = "DEV_EC2_LAB_01"
 _ECR_TURN_TIMEOUT = 60.0
 _CODEX_PREFLIGHT_TURN_TIMEOUT = 30.0
 _CODEX_STDERR_DIR = Path.home() / ".AGENTS-temp" / "agentic-ai-cybersecurity-lab" / "issue53-app-server-observability" / "app-server-stderr"
@@ -719,7 +726,7 @@ def _real_demo_enabled() -> bool:
     return os.environ.get("SECCOP_DEMO_BACKEND", "LOCAL").upper() == "AWS"
 
 
-def _run_real_demo(command: str, *, source: str | None = None, request_text: str | None = None) -> dict[str, object]:
+def _run_real_demo(command: str, *, source: str | None = None, request_text: str | None = None, proposal_id: str | None = None, proposal_hash: str | None = None, target_alias: str | None = None) -> dict[str, object]:
     """Run the repo-owned AWS DEMO command and return sanitized JSON only."""
 
     if not _real_demo_enabled():
@@ -728,8 +735,95 @@ def _run_real_demo(command: str, *, source: str | None = None, request_text: str
             "reason_code": "AWS_DEMO_DISABLED",
             "message": "The local server is using synthetic mode. Enable the AWS DEMO backend explicitly.",
         }
-    global _S3_APPROVAL_READY, _ECR_APPROVAL_READY
-    if os.environ.get("SECCOP_ECR_OPERATOR_MVP") == "1":
+    combined = os.environ.get("SECCOP_ECR_S3_COMBINED") == "1"
+    ec2_enabled = os.environ.get("SECCOP_EC2_IMDSV2_E2E") == "1"
+    ec2_rnd_enabled = os.environ.get("SECCOP_EC2_RND_REARM") == "1"
+    if combined:
+        configured_sources = {"ecr", "s3"} | ({"ec2"} if ec2_enabled else set())
+        if source not in configured_sources:
+            return {"status": "BLOCKED", "reason_code": "REQUEST_REJECTED", "message": "Select exactly one configured source."}
+        if source == "ecr" and os.environ.get("SECCOP_ECR_OPERATOR_MVP") != "1":
+            return {"status": "BLOCKED", "reason_code": "SOURCE_UNAVAILABLE", "message": "The ECR source is unavailable."}
+        if source == "s3" and os.environ.get("SECCOP_S3_COMPLIANCE_E2E") != "1":
+            return {"status": "BLOCKED", "reason_code": "SOURCE_UNAVAILABLE", "message": "The S3 source is unavailable."}
+    global _S3_APPROVAL_READY, _ECR_APPROVAL_READY, _ECR_SCAN_TAG_OVERRIDE, _EC2_APPROVAL_READY
+    if ec2_rnd_enabled and source == "ec2":
+        target_alias = target_alias or _EC2_RND_ALIAS_LAB01
+        if target_alias not in _EC2_RND_ALIASES:
+            return {"status": "BLOCKED", "reason_code": "TARGET_NOT_ALLOWED", "message": "Only the fixed DEV_EC2_LAB_01 target is available."}
+        ec2_profile = os.environ.get("SECCOP_EC2_PROFILE", "")
+        ec2_region = os.environ.get("SECCOP_EC2_REGION", "")
+        if ec2_profile != "ihis_dev" or ec2_region != "ap-southeast-1":
+            return {"status": "BLOCKED", "reason_code": "SOURCE_UNAVAILABLE", "message": "The DEV R&D source is unavailable."}
+        mapped = {"scan": "ec2-rnd-scan", "reject": "ec2-rnd-reject", "fix": "ec2-rnd-apply", "reset": "ec2-rnd-reopen"}.get(command)
+        if mapped is None:
+            return {"status": "BLOCKED", "reason_code": "REQUEST_REJECTED", "message": "Only the fixed LAB_01 Scan, Remediate, and Reject journey is available."}
+        if mapped in {"ec2-rnd-reject", "ec2-rnd-apply"}:
+            proposal = _EC2_PROPOSALS.get(proposal_id or "")
+            if proposal is None or proposal_hash != proposal.get("proposal_hash") or proposal.get("target_alias") != _EC2_RND_ALIAS_LAB01 or proposal.get("consumed"):
+                return {"status": "BLOCKED", "reason_code": "APPROVAL_REQUIRED", "message": "Approve the exact LAB_01 EC2 IMDSv2 proposal before this action."}
+            proposal["consumed"] = True
+        ec2_env = os.environ.copy()
+        ec2_env.update({"AWS_PROFILE": ec2_profile, "AWS_DEFAULT_PROFILE": ec2_profile, "AWS_REGION": ec2_region, "AWS_DEFAULT_REGION": ec2_region, "SECCOP_PROFILE": ec2_profile, "SECCOP_REGION": ec2_region})
+        args = [sys.executable, str(_EC2_COMPLIANCE_SCRIPT), mapped, "--profile", ec2_profile, "--region", ec2_region, "--alias", target_alias]
+        args.append("--confirm")
+        completed = subprocess.run(args, capture_output=True, text=True, check=False, timeout=600, env=ec2_env)
+        try:
+            payload = json.loads(completed.stdout)
+        except json.JSONDecodeError:
+            return {"status": "BLOCKED", "reason_code": "SECCOP_EC2_BACKEND_BLOCKED", "message": "The DEV R&D operation was blocked."}
+        if mapped in {"ec2-rnd-scan", "ec2-rnd-reopen"} and payload.get("reason_code") == "SECCOP_EC2_IMDSV2_NON_COMPLIANT":
+            proposal_id = _next_proposal_id()
+            basis = {"source": "ec2", "target_alias": target_alias, "rule": payload.get("config_rule_name"), "document": "AWSConfigRemediation-EnforceEC2InstanceIMDSv2", "state": payload.get("state")}
+            proposal_hash = hashlib.sha256(json.dumps(basis, sort_keys=True).encode()).hexdigest()
+            _EC2_PROPOSALS[proposal_id] = {"proposal_hash": proposal_hash, "target_alias": target_alias, "consumed": False}
+            for finding in payload.get("findings", []):
+                if isinstance(finding, dict):
+                    finding.update({"proposal_id": proposal_id, "proposal_hash": proposal_hash})
+            payload.update({"proposal_id": proposal_id, "proposal_hash": proposal_hash})
+        return payload
+    if ec2_enabled and source == "ec2":
+        ec2_profile = os.environ.get("SECCOP_EC2_PROFILE", os.environ.get("SECCOP_PROFILE", ""))
+        ec2_region = os.environ.get("SECCOP_EC2_REGION", os.environ.get("AWS_REGION", "ap-southeast-1"))
+        ec2_env = os.environ.copy()
+        ec2_env.update({
+            "AWS_PROFILE": ec2_profile,
+            "AWS_DEFAULT_PROFILE": ec2_profile,
+            "AWS_REGION": ec2_region,
+            "AWS_DEFAULT_REGION": ec2_region,
+            "SECCOP_PROFILE": ec2_profile,
+            "SECCOP_REGION": ec2_region,
+        })
+        if ec2_profile != "ihis_dev" or ec2_region != "ap-southeast-1":
+            return {"status": "BLOCKED", "reason_code": "SOURCE_UNAVAILABLE", "message": "The EC2 source is unavailable."}
+        mapped = {"scan": "ec2-scan", "fix": "ec2-apply", "reject": "ec2-reject"}.get(command)
+        if mapped is None:
+            return {"status": "BLOCKED", "reason_code": "REQUEST_REJECTED", "message": "The EC2 IMDSv2 operation was blocked."}
+        if mapped == "ec2-apply":
+            proposal = _EC2_PROPOSALS.get(proposal_id or "")
+            if not _EC2_APPROVAL_READY or proposal is None or proposal_hash != proposal.get("proposal_hash") or proposal.get("consumed"):
+                return {"status": "BLOCKED", "reason_code": "APPROVAL_REQUIRED", "message": "Approve the exact EC2 IMDSv2 proposal before remediation."}
+            proposal["consumed"] = True
+        args = [sys.executable, str(_EC2_COMPLIANCE_SCRIPT), mapped, "--profile", ec2_profile, "--region", ec2_region]
+        completed = subprocess.run(args, capture_output=True, text=True, check=False, timeout=600, env=ec2_env)
+        try:
+            payload = json.loads(completed.stdout)
+        except json.JSONDecodeError:
+            return {"status": "BLOCKED", "reason_code": "SECCOP_EC2_BACKEND_BLOCKED", "message": "The EC2 IMDSv2 operation was blocked."}
+        if mapped == "ec2-scan" and payload.get("reason_code") == "SECCOP_EC2_IMDSV2_NON_COMPLIANT":
+            proposal_id = _next_proposal_id()
+            basis = {"source": "ec2", "rule": "ec2-imdsv2-check", "document": "AWSConfigRemediation-EnforceEC2InstanceIMDSv2", "target": "EC2_RESOURCE_01", "state": payload.get("state")}
+            proposal_hash = hashlib.sha256(json.dumps(basis, sort_keys=True).encode()).hexdigest()
+            _EC2_PROPOSALS[proposal_id] = {"proposal_hash": proposal_hash, "consumed": False}
+            for finding in payload.get("findings", []):
+                if isinstance(finding, dict):
+                    finding.update({"proposal_id": proposal_id, "proposal_hash": proposal_hash})
+            payload.update({"proposal_id": proposal_id, "proposal_hash": proposal_hash})
+            _EC2_APPROVAL_READY = True
+        if mapped == "ec2-apply" and payload.get("status") == "VERIFIED":
+            _EC2_APPROVAL_READY = False
+        return payload
+    if os.environ.get("SECCOP_ECR_OPERATOR_MVP") == "1" and (not combined or source == "ecr"):
         mapped = {"start": "ecr-start", "scan": "ecr-scan", "fix": "ecr-fix", "reset": "ecr-reset"}.get(command)
         if mapped is None or (mapped == "ecr-fix" and (source != "ecr" or not _ECR_APPROVAL_READY)):
             return {"status": "BLOCKED", "reason_code": "APPROVAL_REQUIRED", "message": "Approve the exact ECR proposal before promotion."}
@@ -739,6 +833,8 @@ def _run_real_demo(command: str, *, source: str | None = None, request_text: str
         args = [sys.executable, str(_DEMO_SCRIPT), mapped, "--profile", os.environ["SECCOP_PROFILE"], "--region", os.environ["AWS_REGION"]]
         args.extend(["--ecr-scanner", ecr_scanner])
         args.extend(["--ecr-fixture", os.environ.get("SECCOP_ECR_FIXTURE", "current")])
+        if mapped == "ecr-scan" and _ECR_SCAN_TAG_OVERRIDE is not None:
+            args.extend(["--ecr-tag-override", _ECR_SCAN_TAG_OVERRIDE])
         if mapped != "ecr-scan": args.append("--confirm")
         completed = subprocess.run(args, capture_output=True, text=True, check=False, timeout=300, env=os.environ.copy())
         try:
@@ -746,20 +842,32 @@ def _run_real_demo(command: str, *, source: str | None = None, request_text: str
         except json.JSONDecodeError:
             return {"status": "BLOCKED", "reason_code": "SECCOP_ECR_BACKEND_BLOCKED", "message": "The ECR operation was blocked."}
         if mapped == "ecr-scan" and payload.get("reason_code") == "SECCOP_ECR_NON_COMPLIANT": _ECR_APPROVAL_READY = True
-        if mapped in {"ecr-fix", "ecr-reset"} and payload.get("status") in {"VERIFIED", "READY"}: _ECR_APPROVAL_READY = False
-        if os.environ.get("SECCOP_ECR_APP_SERVER") == "1" and mapped == "ecr-scan":
+        if mapped == "ecr-fix" and payload.get("status") == "VERIFIED":
+            _ECR_APPROVAL_READY = False
+            _ECR_SCAN_TAG_OVERRIDE = "demo-current"
+        if mapped == "ecr-reset" and payload.get("status") == "READY":
+            _ECR_APPROVAL_READY = False
+            _ECR_SCAN_TAG_OVERRIDE = "demo-current"
+        if os.environ.get("SECCOP_ECR_APP_SERVER") == "1" and mapped == "ecr-scan" and payload.get("reason_code") != "SECCOP_ECR_COMPLIANT":
             payload["agent"] = _start_ecr_codex_explanation(
                 request_text or "Investigate the ECR finding and explain the safe next step.", payload,
             )
         elif os.environ.get("SECCOP_ECR_APP_SERVER") == "1" and mapped == "ecr-fix" and payload.get("status") in {"VERIFIED", "READY"}:
             payload["agent_after"] = _finish_ecr_codex_explanation(payload)
         return payload
-    if os.environ.get("SECCOP_S3_COMPLIANCE_E2E") == "1":
+    if os.environ.get("SECCOP_S3_COMPLIANCE_E2E") == "1" and (not combined or source == "s3"):
         mapped = {"scan": "scan", "fix": "apply", "reset": "reset"}.get(command)
-        if mapped is None or (mapped == "apply" and (source != "s3" or not _S3_APPROVAL_READY)):
+        if mapped is None:
+            return {"status": "BLOCKED", "reason_code": "REQUEST_REJECTED", "message": "The S3 operation was blocked."}
+        if mapped == "apply":
+            proposal = _S3_PROPOSALS.get(proposal_id or "")
+            if source != "s3" or not _S3_APPROVAL_READY or proposal is None or proposal_hash != proposal.get("proposal_hash") or proposal.get("consumed"):
+                return {"status": "BLOCKED", "reason_code": "APPROVAL_REQUIRED", "message": "Approve the exact S3 proposal before remediation."}
+            proposal["consumed"] = True
+        if mapped == "reset" and source not in {None, "s3"}:
             return {"status": "BLOCKED", "reason_code": "APPROVAL_REQUIRED", "message": "Approve the exact S3 proposal before remediation."}
         args = [sys.executable, str(_S3_COMPLIANCE_SCRIPT), mapped, "--profile", os.environ["SECCOP_PROFILE"], "--region", os.environ["AWS_REGION"], "--bucket", os.environ["SECCOP_S3_BUCKET"]]
-        completed = subprocess.run(args, capture_output=True, text=True, check=False, timeout=120, env=os.environ.copy())
+        completed = subprocess.run(args, capture_output=True, text=True, check=False, timeout=480, env=os.environ.copy())
         try:
             payload = json.loads(completed.stdout)
         except json.JSONDecodeError:
@@ -778,19 +886,31 @@ def _run_real_demo(command: str, *, source: str | None = None, request_text: str
                     return {"status": "BLOCKED", "reason_code": "SECCOP_S3_BACKEND_BLOCKED", "message": "The S3 operation was blocked."}
                 states.append("PROTECTED")
             payload["bucket_status"] = [{"label": alias, "state": state} for alias, state in zip(aliases, states, strict=False)]
-            if payload.get("reason_code") == "SECCOP_S3_NON_COMPLIANT": _S3_APPROVAL_READY = True
+            if payload.get("reason_code") == "SECCOP_S3_NON_COMPLIANT":
+                proposal_id = _next_proposal_id()
+                basis = {"source": "s3", "rule": payload.get("config_rule_name") or "s3-bucket-level-public-access-prohibited", "document": payload.get("remediation_document") or "AWSConfigRemediation-ConfigureS3BucketPublicAccessBlock", "target": "S3_BUCKET_ALIAS_03", "pre_state": payload.get("reason_code"), "scan_id": payload.get("scan_id")}
+                proposal_hash = hashlib.sha256(json.dumps(basis, sort_keys=True).encode()).hexdigest()
+                _S3_PROPOSALS[proposal_id] = {"proposal_hash": proposal_hash, "consumed": False}
+                for finding in payload.get("findings", []):
+                    if isinstance(finding, dict):
+                        finding.update({"proposal_id": proposal_id, "proposal_hash": proposal_hash, "config_rule_name": payload.get("config_rule_name"), "remediation_document": payload.get("remediation_document")})
+                payload.update({"proposal_id": proposal_id, "proposal_hash": proposal_hash})
+                _S3_APPROVAL_READY = True
         if mapped == "apply" and payload.get("status") == "VERIFIED": _S3_APPROVAL_READY = False
         if mapped == "reset" and payload.get("reason_code") == "SECCOP_S3_RESET_READY": _S3_APPROVAL_READY = False
         return payload
     allowed_commands = {"start", "scan", "rescan", "fix"}
     if command not in allowed_commands:
         return {"status": "BLOCKED", "reason_code": "REQUEST_REJECTED", "message": "The DEMO command was not allowed."}
+    profile = os.environ.get("AWS_PROFILE") or os.environ.get("SECCOP_PROFILE")
+    if not profile:
+        return {"status": "BLOCKED", "reason_code": "AWS_PROFILE_REQUIRED", "message": "An explicit approved AWS profile is required."}
     args = [
         sys.executable,
         str(_DEMO_SCRIPT),
         command,
         "--profile",
-        os.environ.get("AWS_PROFILE", os.environ.get("SECCOP_PROFILE", "vagent")),
+        profile,
         "--region",
         os.environ.get("AWS_REGION", os.environ.get("AWS_DEFAULT_REGION", "ap-southeast-1")),
     ]
@@ -834,6 +954,30 @@ def _run_real_demo(command: str, *, source: str | None = None, request_text: str
             "message": "The AWS DEMO command did not complete.",
         }
     return payload
+
+
+def _reject_s3_proposal(proposal_id: str | None, proposal_hash: str | None) -> dict[str, object]:
+    if not proposal_id or not proposal_hash:
+        return {"status": "BLOCKED", "reason_code": "PROPOSAL_REQUIRED", "message": "The exact S3 proposal is required."}
+    proposal = _S3_PROPOSALS.get(proposal_id)
+    if proposal is None or proposal.get("proposal_hash") != proposal_hash or proposal.get("consumed"):
+        return {"status": "BLOCKED", "reason_code": "PROPOSAL_INVALID", "message": "The S3 proposal is stale or invalid."}
+    _S3_PROPOSALS.pop(proposal_id, None)
+    global _S3_APPROVAL_READY
+    _S3_APPROVAL_READY = False
+    return {"status": "REJECTED", "reason_code": "HUMAN_REJECTED", "state": "NON_COMPLIANT", "mutation_performed": False, "message": "The exact S3 exposure-risk proposal was rejected; no AWS mutation was performed."}
+
+
+def _reject_ec2_proposal(proposal_id: str | None, proposal_hash: str | None) -> dict[str, object]:
+    if not proposal_id or not proposal_hash:
+        return {"status": "BLOCKED", "reason_code": "PROPOSAL_REQUIRED", "message": "The exact EC2 proposal is required."}
+    proposal = _EC2_PROPOSALS.get(proposal_id)
+    if proposal is None or proposal.get("proposal_hash") != proposal_hash or proposal.get("consumed"):
+        return {"status": "BLOCKED", "reason_code": "PROPOSAL_INVALID", "message": "The EC2 proposal is stale or invalid."}
+    _EC2_PROPOSALS.pop(proposal_id, None)
+    global _EC2_APPROVAL_READY
+    _EC2_APPROVAL_READY = False
+    return {"status": "REJECTED", "reason_code": "HUMAN_REJECTED", "state": "NON_COMPLIANT", "mutation_performed": False, "message": "The EC2 IMDSv2 remediation proposal was rejected; no AWS mutation was performed."}
 
 
 def _live_server_scan() -> SecCopScanResult:
@@ -1282,13 +1426,21 @@ class _Handler(BaseHTTPRequestHandler):
 
     def do_GET(self) -> None:  # noqa: N802 - stdlib handler API
         if self.path == "/api/health":
+            combined = os.environ.get("SECCOP_ECR_S3_COMBINED") == "1"
+            ecr_enabled = os.environ.get("SECCOP_ECR_OPERATOR_MVP") == "1"
+            s3_enabled = os.environ.get("SECCOP_S3_COMPLIANCE_E2E") == "1"
+            ec2_enabled = os.environ.get("SECCOP_EC2_IMDSV2_E2E") == "1"
+            ec2_rnd_enabled = os.environ.get("SECCOP_EC2_RND_REARM") == "1"
+            all_three = combined and ecr_enabled and s3_enabled and ec2_enabled
             self._send_json(
                 200,
                 {
                     "status": "OK",
                     "mode": "AWS_DEMO" if _real_demo_enabled() else "LOCAL_SYNTHETIC",
                     "demo_backend": "AWS" if _real_demo_enabled() else "LOCAL",
-                    "review_mode": "ECR_OPERATOR" if os.environ.get("SECCOP_ECR_OPERATOR_MVP") == "1" else "S3_COMPLIANCE" if os.environ.get("SECCOP_S3_COMPLIANCE_E2E") == "1" else "GENERAL",
+                    "review_mode": "ECR_S3_EC2_COMBINED" if all_three else "EC2_IMDSV2" if ec2_enabled else "ECR_S3_COMBINED" if combined else "ECR_OPERATOR" if ecr_enabled else "S3_COMPLIANCE" if s3_enabled else "GENERAL",
+                    "enabled_sources": [source for source, enabled in (("ec2", ec2_enabled), ("ecr", ecr_enabled), ("s3", s3_enabled)) if enabled],
+                    "ec2_rnd_rearm": ec2_rnd_enabled,
                 },
             )
             return
@@ -1331,13 +1483,29 @@ class _Handler(BaseHTTPRequestHandler):
             return
 
         if self.path == "/api/scan":
+            target_alias = payload.get("target_alias")
+            request_payload = dict(payload)
+            request_payload.pop("target_alias", None)
             try:
-                request = SecCopScanRequest.model_validate(payload)
+                request = SecCopScanRequest.model_validate(request_payload)
             except ValidationError:
                 self._send_json(400, {"status": "BLOCKED", "reason_code": "REQUEST_REJECTED"})
                 return
-            if os.environ.get("SECCOP_S3_COMPLIANCE_E2E") == "1" or os.environ.get("SECCOP_ECR_OPERATOR_MVP") == "1":
-                result = _run_real_demo("scan", request_text=request.request_text)
+            if target_alias is not None and not isinstance(target_alias, str):
+                self._send_json(400, {"status": "BLOCKED", "reason_code": "TARGET_NOT_ALLOWED", "message": "A target alias is only valid for the EC2 source."})
+                return
+            combined = os.environ.get("SECCOP_ECR_S3_COMBINED") == "1"
+            if combined and request.source is None:
+                self._send_json(400, {"status": "BLOCKED", "reason_code": "SOURCE_REQUIRED", "message": "Select one configured source before scanning."})
+                return
+            if request.source != "ec2" and target_alias is not None:
+                self._send_json(400, {"status": "BLOCKED", "reason_code": "TARGET_NOT_ALLOWED", "message": "A target alias is only valid for the EC2 source."})
+                return
+            if request.source == "ec2" and os.environ.get("SECCOP_EC2_RND_REARM") == "1" and target_alias not in {None, _EC2_RND_ALIAS_LAB01}:
+                self._send_json(400, {"status": "BLOCKED", "reason_code": "TARGET_NOT_ALLOWED", "message": "Only the fixed DEV_EC2_LAB_01 target is available."})
+                return
+            if os.environ.get("SECCOP_S3_COMPLIANCE_E2E") == "1" or os.environ.get("SECCOP_ECR_OPERATOR_MVP") == "1" or os.environ.get("SECCOP_EC2_IMDSV2_E2E") == "1":
+                result = _run_real_demo("scan", source=request.source, request_text=request.request_text, target_alias=target_alias)
                 agent = result.pop("agent", None)
                 response: dict[str, object] = {"result": result, "events": []}
                 if agent is not None:
@@ -1378,13 +1546,38 @@ class _Handler(BaseHTTPRequestHandler):
 
         if self.path == "/api/demo/fix":
             source = payload.get("source")
-            if source not in {"s3", "ecr"} or payload.get("confirm") is not True:
+            if source not in {"s3", "ecr", "ec2"} or payload.get("confirm") is not True:
                 self._send_json(400, {"status": "BLOCKED", "reason_code": "REQUEST_REJECTED"})
                 return
-            self._send_json(200, {"result": _run_real_demo("fix", source=source), "events": []})
+            self._send_json(200, {"result": _run_real_demo("fix", source=source, proposal_id=payload.get("proposal_id"), proposal_hash=payload.get("proposal_hash")), "events": []})
+            return
+
+        if self.path == "/api/demo/reject":
+            if payload.get("source") not in {"s3", "ec2"} or payload.get("confirm") is not True:
+                self._send_json(400, {"status": "BLOCKED", "reason_code": "REQUEST_REJECTED"})
+                return
+            if payload.get("source") == "ec2":
+                if os.environ.get("SECCOP_EC2_RND_REARM") == "1":
+                    self._send_json(200, {"result": _run_real_demo("reject", source="ec2", proposal_id=payload.get("proposal_id"), proposal_hash=payload.get("proposal_hash")), "events": []})
+                    return
+                self._send_json(200, {"result": _reject_ec2_proposal(payload.get("proposal_id"), payload.get("proposal_hash")), "events": []})
+                return
+            self._send_json(200, {"result": _reject_s3_proposal(payload.get("proposal_id"), payload.get("proposal_hash")), "events": []})
             return
 
         if self.path == "/api/demo/reset":
+            if os.environ.get("SECCOP_ECR_S3_COMBINED") == "1":
+                if payload.get("source") == "ec2":
+                    if set(payload) != {"confirm", "source"} or payload.get("confirm") is not True or os.environ.get("SECCOP_EC2_RND_REARM") != "1":
+                        self._send_json(400, {"status": "BLOCKED", "reason_code": "REQUEST_REJECTED"})
+                        return
+                    self._send_json(200, {"result": _run_real_demo("reset", source="ec2"), "events": []})
+                    return
+                if set(payload) != {"confirm", "source"} or payload.get("confirm") is not True or payload.get("source") not in {"ecr", "s3"}:
+                    self._send_json(400, {"status": "BLOCKED", "reason_code": "REQUEST_REJECTED"})
+                    return
+                self._send_json(200, {"result": _run_real_demo("reset", source=payload["source"]), "events": []})
+                return
             if payload != {"confirm": True}:
                 self._send_json(400, {"status": "BLOCKED", "reason_code": "REQUEST_REJECTED"})
                 return
