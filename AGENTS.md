@@ -59,8 +59,11 @@ Amit approved this exact, later mutation envelope on 2026-09-02, using only
 `AWS_PROFILE=amit`/`AWS_DEFAULT_PROFILE=amit` in `ap-southeast-1`:
 
 - one AWS Config recorder and one delivery channel;
-- `s3-bucket-level-public-access-prohibited` and `ec2-imdsv2-check`, or a
-  published pack containing only those two controls;
+- the standalone AWS-managed rules `s3-bucket-level-public-access-prohibited`
+  and `ec2-imdsv2-check`, selected from the AWS Operational Best Practices
+  baselines. Each is an AWS Config AWS-managed rule selected from the AWS
+  Operational Best Practices baseline; no full Conformance Pack is deployed
+  for this KISS MVP;
 - manual remediation only;
 - `AWSConfigRemediation-ConfigureS3BucketPublicAccessBlock` and
   `AWSConfigRemediation-EnforceEC2InstanceIMDSv2`;

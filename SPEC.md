@@ -43,8 +43,11 @@ Amit approved this bounded envelope on 2026-09-02 for a later, separate
 mutation phase using only `amit`/`ap-southeast-1`. The exact allowlist is:
 
 - one AWS Config recorder and one delivery channel;
-- the two named controls `s3-bucket-level-public-access-prohibited` and
-  `ec2-imdsv2-check`, or a published pack containing only those controls;
+- the standalone AWS-managed rules
+  `s3-bucket-level-public-access-prohibited` and `ec2-imdsv2-check`, selected
+  from the AWS Operational Best Practices baselines; no full Conformance Pack
+  is deployed for this KISS MVP. Each is an AWS Config AWS-managed rule
+  selected from the AWS Operational Best Practices baseline;
 - manual remediation only (no automatic remediation);
 - the AWS-managed Automation documents
   `AWSConfigRemediation-ConfigureS3BucketPublicAccessBlock` and

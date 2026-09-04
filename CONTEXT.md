@@ -7,12 +7,16 @@ explicit `amit` STS check fails.
 
 Issue #55 approved mutation envelope (Amit approval: 2026-09-02; pre-mutation
 state): a later phase may use only `amit`/`ap-southeast-1` for one Config
-recorder and delivery channel; the named S3 public-access and EC2 IMDSv2 rules
-or a pack containing only those controls; manual remediation; the two named
-AWS-managed Automation documents; one least-privilege execution role; one
-retained S3 drift alias; and one separately prepared, tagged/TTL'd disposable
-SSM-managed EC2 target. Generic IAM, auto remediation, arbitrary SSM, new
-networking, unrelated resources, and ECR changes remain outside scope.
+recorder and delivery channel; the standalone AWS-managed S3 public-access and
+EC2 IMDSv2 rules selected from the AWS Operational Best Practices baselines;
+manual remediation; the two named AWS-managed Automation documents; one
+least-privilege execution role; one retained S3 drift alias; and one separately
+prepared, tagged/TTL'd disposable SSM-managed EC2 target. No full S3 or EC2
+Operational Best Practices Conformance Pack is deployed for this KISS MVP. Each
+control is an AWS Config AWS-managed rule selected from the AWS Operational
+Best Practices baseline.
+Generic IAM, auto remediation, arbitrary SSM, new networking, unrelated
+resources, and ECR changes remain outside scope.
 
 Pre-mutation truth remains unchanged: Config recorder/rules/packs are absent,
 the two Automation documents are active (default versions 8 and 4), three
