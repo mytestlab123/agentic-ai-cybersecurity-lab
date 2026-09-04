@@ -18,11 +18,13 @@ Best Practices baseline.
 Generic IAM, auto remediation, arbitrary SSM, new networking, unrelated
 resources, and ECR changes remain outside scope.
 
-Pre-mutation truth remains unchanged: Config recorder/rules/packs are absent,
-the two Automation documents are active (default versions 8 and 4), three
-retained private S3 aliases exist with one missing bucket-level BPA, and no
-project-owned reusable EC2 target was found. No AWS resource has changed from
-this approval or documentation phase.
+Historical pre-mutation snapshot (2026-09-02; preserved for approval context,
+not current truth): Config recorder/rules/packs were absent, the two
+Automation documents were active (default versions 8 and 4), three retained
+private S3 aliases existed with one missing bucket-level BPA, and no
+project-owned reusable EC2 target was found. The later **Current Issue #55 DEV
+EC2 retained IMDSv2 proof** section records the completed current manual
+remediation state and supersedes this snapshot.
 
 Current objective: persistent Security Copilot (SecCop) live demo after the
 local visual POC and fake-tested read-only adapter.
