@@ -2054,10 +2054,23 @@ def _private_runtime_json(name: str) -> dict[str, object]:
     return result
 
 
+def _private_runtime_directory(name: str) -> None:
+    value = os.environ.get(name)
+    if not value:
+        raise _runtime_config_error(name)
+    path = Path(value)
+    try:
+        if path.is_symlink() or not path.is_dir() or path.stat().st_mode & 0o077:
+            raise OSError
+    except OSError:
+        raise _runtime_config_error(name) from None
+
+
 def _validate_unified_runtime() -> None:
     for name, expected in {
         "SECCOP_DEMO_BACKEND": "AWS",
         "SECCOP_ECR_S3_COMBINED": "1",
+        "SECCOP_ECR_APP_SERVER": "1",
         "SECCOP_ECR_OPERATOR_MVP": "1",
         "SECCOP_ECR_SCANNER": "inspector",
         "SECCOP_S3_COMPLIANCE_E2E": "1",
@@ -2077,6 +2090,7 @@ def _validate_unified_runtime() -> None:
     protected = [item for item in os.environ.get("SECCOP_S3_PROTECTED_BUCKETS", "").split(",") if item]
     if len(protected) != 2:
         raise _runtime_config_error("SECCOP_S3_PROTECTED_BUCKETS")
+    _private_runtime_directory("SECCOP_S3_EVIDENCE_DIR")
     s3_state = _private_runtime_json("SECCOP_S3_STATE")
     if s3_state.get("bucket") != os.environ["SECCOP_S3_BUCKET"] or s3_state.get("automatic") is not False:
         raise _runtime_config_error("SECCOP_S3_STATE")

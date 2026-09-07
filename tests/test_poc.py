@@ -914,6 +914,8 @@ def test_combined_health_mode_advertises_all_three_sources(monkeypatch: pytest.M
 
 
 def _complete_unified_runtime(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> dict[str, str]:
+    evidence_dir = tmp_path / "s3-evidence"
+    evidence_dir.mkdir(mode=0o700)
     state_path = tmp_path / "s3-state.json"
     state_path.write_text(json.dumps({
         "bucket": "S3_DRIFT_ALIAS",
@@ -936,6 +938,7 @@ def _complete_unified_runtime(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -
         "SECCOP_DEMO_BACKEND": "AWS",
         "SECCOP_ECR_S3_COMBINED": "1",
         "SECCOP_ECR_OPERATOR_MVP": "1",
+        "SECCOP_ECR_APP_SERVER": "1",
         "SECCOP_ECR_SCANNER": "inspector",
         "SECCOP_S3_COMPLIANCE_E2E": "1",
         "SECCOP_EC2_IMDSV2_E2E": "1",
@@ -948,6 +951,7 @@ def _complete_unified_runtime(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -
         "SECCOP_EC2_PROFILE": "ihis_dev",
         "SECCOP_EC2_REGION": "ap-southeast-1",
         "SECCOP_S3_BUCKET": "S3_DRIFT_ALIAS",
+        "SECCOP_S3_EVIDENCE_DIR": str(evidence_dir),
         "SECCOP_S3_PROTECTED_BUCKETS": "S3_PROTECTED_01,S3_PROTECTED_02",
         "SECCOP_S3_STATE": str(state_path),
         "SECCOP_EC2_RND_TARGET_MAP": str(map_path),
@@ -972,6 +976,18 @@ def test_unified_runtime_preflight_requires_all_source_bindings(
     with pytest.raises(RuntimeError, match="RUNTIME_CONFIG_INVALID:SECCOP_ECR_SCANNER"):
         poc_server._validate_unified_runtime()
     monkeypatch.setenv("SECCOP_ECR_SCANNER", settings["SECCOP_ECR_SCANNER"])
+    monkeypatch.delenv("SECCOP_ECR_APP_SERVER")
+    with pytest.raises(RuntimeError, match="RUNTIME_CONFIG_INVALID:SECCOP_ECR_APP_SERVER"):
+        poc_server._validate_unified_runtime()
+    monkeypatch.setenv("SECCOP_ECR_APP_SERVER", settings["SECCOP_ECR_APP_SERVER"])
+    monkeypatch.delenv("SECCOP_S3_EVIDENCE_DIR")
+    with pytest.raises(RuntimeError, match="RUNTIME_CONFIG_INVALID:SECCOP_S3_EVIDENCE_DIR"):
+        poc_server._validate_unified_runtime()
+    monkeypatch.setenv("SECCOP_S3_EVIDENCE_DIR", settings["SECCOP_S3_EVIDENCE_DIR"])
+    Path(settings["SECCOP_S3_EVIDENCE_DIR"]).chmod(0o755)
+    with pytest.raises(RuntimeError, match="RUNTIME_CONFIG_INVALID:SECCOP_S3_EVIDENCE_DIR"):
+        poc_server._validate_unified_runtime()
+    Path(settings["SECCOP_S3_EVIDENCE_DIR"]).chmod(0o700)
     monkeypatch.delenv("SECCOP_EC2_RND_TARGET_MAP")
     with pytest.raises(RuntimeError, match="RUNTIME_CONFIG_INVALID:SECCOP_EC2_RND_TARGET_MAP"):
         poc_server._validate_unified_runtime()
@@ -1012,6 +1028,45 @@ def test_unified_runtime_launcher_starts_complete_three_source_health(tmp_path: 
         finally:
             process.terminate()
             process.wait(timeout=5)
+    finally:
+        os.environ.clear()
+        os.environ.update(original)
+
+
+def test_unified_runtime_launcher_ignores_inherited_missing_required_value(tmp_path: Path) -> None:
+    class _Env:
+        def setenv(self, name: str, value: str) -> None:
+            os.environ[name] = value
+
+    original = os.environ.copy()
+    try:
+        settings = _complete_unified_runtime(_Env(), tmp_path)
+        config_path = tmp_path / "runtime.env"
+        config_path.write_text(
+            "\n".join(
+                f"{name}={value}"
+                for name, value in settings.items()
+                if name != "SECCOP_ECR_APP_SERVER"
+            ) + "\n",
+            encoding="utf-8",
+        )
+        config_path.chmod(0o600)
+        script = Path(__file__).parents[1] / "scripts" / "start-unified-seccop.sh"
+        result = subprocess.run(
+            [str(script), "--check"],
+            cwd=script.parents[1],
+            env={
+                **os.environ,
+                "SECCOP_RUNTIME_ENV": str(config_path),
+                "SECCOP_PYTHON": sys.executable,
+                "SECCOP_ECR_APP_SERVER": "1",
+            },
+            capture_output=True,
+            check=False,
+            text=True,
+        )
+        assert result.returncode == 2
+        assert result.stderr.strip() == "RUNTIME_CONFIG_INVALID:SECCOP_ECR_APP_SERVER"
     finally:
         os.environ.clear()
         os.environ.update(original)
