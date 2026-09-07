@@ -2,8 +2,8 @@
 # Exact identifiers live only in the private evidence directory.
 record_version: 1
 sanitized: true
-last_verified: 2026-09-02
-last_action: ecr-multi-image-fixtures-retained
+last_verified: 2026-09-03
+last_action: issue55-dev-imdsv2-reuse-ami-factory-role-pass
 profile_alias: amit
 profile_alias_equivalent: project1
 region: ap-southeast-1
@@ -19,6 +19,75 @@ observed_empty_classes:
   - elastic_ip
 
 resources:
+  - kind: iam
+    alias: SECCOP_AUTOMATION_ROLE_ISSUE55_DEV_01
+    name: AUTOMATION_ROLE_ISSUE55_DEV_01
+    role: AUTOMATION_ROLE_ISSUE55_DEV_01
+    policy: AUTOMATION_POLICY_ISSUE55_DEV_01 (not attached; permission blocker)
+    state: retained/partial
+    cleanup: keep
+    ttl: 01-10-26
+    cleanup_status: retain-approved
+    lifecycle: reusable-demo-prerequisite
+
+  - kind: ec2
+    alias: SECCOP_DEV_EC2_IMDSV2_RETAINED_R01
+    name: DEV_EC2_RESOURCE_01
+    profile_alias: ihis_dev
+    state: running/compliant
+    instance_type: t3.medium-existing
+    metadata: HttpTokens=required
+    ssm: online
+    public_ipv4: none
+    security_group: SG_EC2_RESOURCE_01_ZERO_INGRESS
+    root_volume: existing-gp2-unchanged
+    cleanup: keep
+    ttl: 01-10-26
+    cleanup_status: retain-approved
+    lifecycle: reusable-demo-target
+
+  - kind: config_rule
+    alias: SECCOP_CONFIG_EC2_IMDSV2_RULE_DEV
+    name: ec2-imdsv2-check
+    state: active/exact-target
+    source: EC2_IMDSV2_CHECK
+    scope: DEV_EC2_RESOURCE_01
+    cleanup: keep
+    ttl: 01-10-26
+    cleanup_status: retain-approved
+    lifecycle: reusable-demo-control
+
+  - kind: config_remediation
+    alias: SECCOP_CONFIG_EC2_IMDSV2_REMEDIATION_DEV
+    name: AWSConfigRemediation-EnforceEC2InstanceIMDSv2
+    version: '4'
+    automatic: false
+    automation_role: SECCOP_AMI_FACTORY_DEV_DEMO_ROLE_REUSED
+    state: active/retained
+    cleanup: keep
+    ttl: 01-10-26
+    cleanup_status: retain-approved
+    lifecycle: reusable-demo-control
+
+  - kind: iam
+    alias: SECCOP_AMI_FACTORY_DEV_DEMO_ROLE_REUSED
+    name: AMI_FACTORY_DEV_DEMO_ROLE
+    state: retained/reused-unchanged
+    trust: SSM-present
+    cleanup: keep
+    ttl: review-only
+    cleanup_status: retain-approved
+    lifecycle: existing-shared-demo-prerequisite
+    notes: SECCOP_AUTOMATION_ROLE_ISSUE55_DEV_01 remains retained partial and untouched.
+
+  - kind: config_recorder
+    alias: SECCOP_CONFIG_RECORDER_DEV_EXISTING
+    name: existing all-supported recorder
+    state: active/unchanged
+    scope: S3_and_EC2
+    cleanup_status: retain-shared-prerequisite
+    lifecycle: shared-config-prerequisite
+
   - kind: ec2
     alias: SECCOP_EC2_INSPECTOR_R01
     name: seccop-project1-inspector-host-r01
@@ -145,8 +214,16 @@ historical:
     evidence: ~/.AGENTS-temp/agentic-ai-cybersecurity-lab/terraform-terragrunt-cleanup/20260826-224000/RESULT.md
 
 cleanup_policy:
-  status: cleanup-complete
-  last_run_mutation_performed: true
+  status: retain-by-default
+  ttl_is_review_only: true
+  cleanup_tag: keep
+  explicit_amit_approval_required_for:
+    - termination
+    - deletion
+    - purge
+    - cleanup_wrapper
+  cleanup_plan: "Prepare read-only inventory and cost/state report, then request approval naming exact resource classes/scope; run repo-owned cleanup and independently verify only after approval."
+  historical_cleanup_mutation_performed: true
   approval_required_for:
     - EC2 termination
     - dedicated security-group removal

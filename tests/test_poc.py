@@ -28,6 +28,7 @@ from secure_agent_harness.poc_server import (
     _collect_codex_turn,
     _HybridSession,
     _public_remediation_payload,
+    _reject_s3_proposal,
     _run_codex_preflight,
 )
 from secure_agent_harness.seccop_scan import review_demo_cve
@@ -35,6 +36,7 @@ from http.server import ThreadingHTTPServer
 
 sys.path.insert(0, str(Path(__file__).parents[1] / "scripts"))
 import seccop_demo  # noqa: E402
+import issue47_s3_compliance as issue47  # noqa: E402
 
 
 def _request(cve_id: str = "CVE-2099-0001") -> PocRequest:
@@ -108,6 +110,9 @@ def test_browser_surface_is_local_and_has_the_gate_controls() -> None:
     assert "/api/decision" in html
     assert "/api/live-evidence" in html
     assert "/api/scan" in html
+    assert "/api/demo/reject" in html
+    assert "isS3Risk ? 'Remediate'" in html
+    assert "Exposure-risk remediation rejected" in html
     assert "/api/cve-review" in html
     assert "/api/codex-preflight" in html
     assert "Check Codex connection" in html
@@ -119,9 +124,21 @@ def test_browser_surface_is_local_and_has_the_gate_controls() -> None:
     assert "Upload read-only evidence" in html
     assert "Approve mock remediation" in html
     assert "Generate remediation suggestion" in html
-    assert "GovTech inference: not used" in html
+    assert "GovTech inference: not used" not in html
     assert "Reject" in html
     assert "A server change always needs a separate review and approval" in html
+
+
+def test_s3_proposal_reject_is_bound_and_non_mutating() -> None:
+    poc_server._S3_PROPOSALS.clear()
+    poc_server._S3_PROPOSALS["SECCOP_PROPOSAL_TEST"] = {"proposal_hash": "hash", "consumed": False}
+
+    result = _reject_s3_proposal("SECCOP_PROPOSAL_TEST", "hash")
+
+    assert result["status"] == "REJECTED"
+    assert result["reason_code"] == "HUMAN_REJECTED"
+    assert result["mutation_performed"] is False
+    assert "SECCOP_PROPOSAL_TEST" not in poc_server._S3_PROPOSALS
 
 
 class _FakeCodexTransport:
@@ -732,11 +749,69 @@ def test_ecr_approve_uses_matching_clean_fixture_and_current_verification(monkey
 
     monkeypatch.setattr(seccop_demo, "_ecr_scan_selected", fake_scan)
 
-    result = seccop_demo._ecr_fix(object(), tmp_path, ecr_scanner="inspector", ecr_fixture="npm-vulnerable")
+    result = seccop_demo._ecr_fix(object(), tmp_path, ecr_scanner="inspector", ecr_fixture="current")
 
     assert result["status"] == "VERIFIED"
-    assert promoted == ["npm-clean"]
-    assert scanned == [("npm-clean", "demo-current")]
+    assert promoted == ["current-clean"]
+    assert scanned == [("current", "demo-current")]
+
+
+def test_ecr_scan_tag_override_reads_mutable_current_target(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    selected: list[str] = []
+
+    def fake_scan(_aws: object, *, tag: str, **_: object) -> dict[str, object]:
+        selected.append(tag)
+        return {"source": "ECR_IMAGE", "alias": "ECR_IMAGE_01", "state": "COMPLIANT", "reason_code": "SECCOP_ECR_INSPECTOR_CVE_ABSENT", "scanner_provider": "AMAZON_INSPECTOR", "scanner_mode": "ECR_ENHANCED_SCANNING", "cve_id": seccop_demo.BAD_CVE}
+
+    monkeypatch.setattr(seccop_demo, "_scan_ecr_inspector", fake_scan)
+    result = seccop_demo._ecr_scan(
+        object(), tmp_path, ecr_scanner="inspector", ecr_fixture="current", tag_override="demo-current"
+    )
+
+    assert result["reason_code"] == "SECCOP_ECR_COMPLIANT"
+    assert selected == ["demo-current"]
+
+
+def test_ecr_scan_rejects_unrelated_fixture_or_tag_override(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    monkeypatch.setattr(seccop_demo, "_scan_ecr_inspector", lambda *_args, **_kwargs: pytest.fail("mismatched override must fail closed"))
+
+    arbitrary = seccop_demo._ecr_scan(object(), tmp_path, ecr_scanner="inspector", ecr_fixture="current", tag_override="other-tag")
+    mismatched = seccop_demo._ecr_scan(object(), tmp_path, ecr_scanner="inspector", ecr_fixture="npm-vulnerable", tag_override="demo-current")
+
+    assert arbitrary["reason_code"] == "SECCOP_ECR_EVIDENCE_BLOCKED"
+    assert mismatched["reason_code"] == "SECCOP_ECR_EVIDENCE_BLOCKED"
+
+
+def test_ecr_operator_switches_scan_to_current_after_fix_and_reset(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("SECCOP_DEMO_BACKEND", "AWS")
+    monkeypatch.setenv("SECCOP_ECR_OPERATOR_MVP", "1")
+    monkeypatch.setenv("SECCOP_ECR_SCANNER", "inspector")
+    monkeypatch.setenv("SECCOP_PROFILE", "amit")
+    monkeypatch.setenv("AWS_REGION", "ap-southeast-1")
+    monkeypatch.delenv("SECCOP_ECR_APP_SERVER", raising=False)
+    monkeypatch.setattr(poc_server, "_ECR_APPROVAL_READY", False)
+    monkeypatch.setattr(poc_server, "_ECR_SCAN_TAG_OVERRIDE", None)
+    captured: list[list[str]] = []
+
+    def fake_run(args: list[str], **_: object) -> SimpleNamespace:
+        captured.append(args)
+        command = next(item for item in ("ecr-scan", "ecr-fix", "ecr-reset") if item in args)
+        payload = {
+            "ecr-scan": {"status": "READY", "reason_code": "SECCOP_ECR_NON_COMPLIANT"},
+            "ecr-fix": {"status": "VERIFIED", "reason_code": "SECCOP_ECR_PROMOTION_VERIFIED"},
+            "ecr-reset": {"status": "READY", "reason_code": "SECCOP_ECR_REOPEN_READY"},
+        }[command]
+        return SimpleNamespace(stdout=json.dumps(payload))
+
+    monkeypatch.setattr(poc_server.subprocess, "run", fake_run)
+    assert poc_server._run_real_demo("scan")["reason_code"] == "SECCOP_ECR_NON_COMPLIANT"
+    monkeypatch.setattr(poc_server, "_ECR_APPROVAL_READY", True)
+    assert poc_server._run_real_demo("fix", source="ecr")["status"] == "VERIFIED"
+    assert poc_server._run_real_demo("scan")["status"] == "READY"
+    assert captured[-1][captured[-1].index("--ecr-tag-override") + 1] == "demo-current"
+    assert poc_server._run_real_demo("reset")["status"] == "READY"
+    assert poc_server._run_real_demo("scan")["status"] == "READY"
+    assert captured[-1][captured[-1].index("--ecr-tag-override") + 1] == "demo-current"
 
 
 def test_ecr_operator_api_passes_explicit_scanner_without_running_aws(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -758,6 +833,173 @@ def test_ecr_operator_api_passes_explicit_scanner_without_running_aws(monkeypatc
     assert captured[0][captured[0].index("--ecr-scanner") + 1] == "inspector"
 
 
+def test_legacy_live_entrypoint_requires_explicit_profile(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("SECCOP_DEMO_BACKEND", "AWS")
+    monkeypatch.delenv("AWS_PROFILE", raising=False)
+    monkeypatch.delenv("SECCOP_PROFILE", raising=False)
+    monkeypatch.setattr(poc_server.subprocess, "run", lambda *_args, **_kwargs: pytest.fail("profile gate must run before subprocess"))
+
+    result = poc_server._run_real_demo("scan")
+
+    assert result["reason_code"] == "AWS_PROFILE_REQUIRED"
+
+
+def test_ecr_compliant_rescan_skips_codex_before_turn(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("SECCOP_DEMO_BACKEND", "AWS")
+    monkeypatch.setenv("SECCOP_ECR_OPERATOR_MVP", "1")
+    monkeypatch.setenv("SECCOP_ECR_SCANNER", "inspector")
+    monkeypatch.setenv("SECCOP_PROFILE", "amit")
+    monkeypatch.setenv("AWS_REGION", "ap-southeast-1")
+    monkeypatch.setenv("SECCOP_ECR_APP_SERVER", "1")
+    monkeypatch.setattr(poc_server.subprocess, "run", lambda *_args, **_kwargs: SimpleNamespace(stdout=json.dumps({"status": "NO_FINDINGS", "reason_code": "SECCOP_ECR_COMPLIANT"})))
+    monkeypatch.setattr(poc_server, "_start_ecr_codex_explanation", lambda *_args: pytest.fail("compliant rescan must not start Codex BEFORE"))
+
+    result = poc_server._run_real_demo("scan", source="ecr")
+
+    assert result["reason_code"] == "SECCOP_ECR_COMPLIANT"
+    assert "agent" not in result
+
+
+def test_ec2_operator_uses_explicit_read_only_profile_in_combined_mode(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("SECCOP_DEMO_BACKEND", "AWS")
+    monkeypatch.setenv("SECCOP_ECR_S3_COMBINED", "1")
+    monkeypatch.setenv("SECCOP_ECR_OPERATOR_MVP", "1")
+    monkeypatch.setenv("SECCOP_S3_COMPLIANCE_E2E", "1")
+    monkeypatch.setenv("SECCOP_EC2_IMDSV2_E2E", "1")
+    monkeypatch.setenv("SECCOP_PROFILE", "amit")
+    monkeypatch.setenv("AWS_REGION", "ap-southeast-1")
+    monkeypatch.setenv("SECCOP_EC2_PROFILE", "ihis_dev")
+    monkeypatch.setenv("SECCOP_EC2_REGION", "ap-southeast-1")
+    captured: dict[str, object] = {}
+
+    def fake_run(args: list[str], **kwargs: object) -> SimpleNamespace:
+        captured["args"] = args
+        captured["env"] = kwargs["env"]
+        return SimpleNamespace(stdout=json.dumps({
+            "status": "COMPLIANT",
+            "reason_code": "SECCOP_EC2_IMDSV2_COMPLIANT",
+            "findings": [],
+        }))
+
+    monkeypatch.setattr(poc_server.subprocess, "run", fake_run)
+    result = poc_server._run_real_demo("scan", source="ec2")
+
+    assert result["reason_code"] == "SECCOP_EC2_IMDSV2_COMPLIANT"
+    args = captured["args"]
+    env = captured["env"]
+    assert isinstance(args, list)
+    assert args[args.index("--profile") + 1] == "ihis_dev"
+    assert args[args.index("--region") + 1] == "ap-southeast-1"
+    assert isinstance(env, dict)
+    assert env["AWS_PROFILE"] == "ihis_dev"
+    assert env["SECCOP_PROFILE"] == "ihis_dev"
+
+
+def test_combined_health_mode_advertises_all_three_sources(monkeypatch: pytest.MonkeyPatch) -> None:
+    for name in ("SECCOP_ECR_S3_COMBINED", "SECCOP_ECR_OPERATOR_MVP", "SECCOP_S3_COMPLIANCE_E2E", "SECCOP_EC2_IMDSV2_E2E"):
+        monkeypatch.setenv(name, "1")
+    monkeypatch.setenv("SECCOP_DEMO_BACKEND", "AWS")
+    server = ThreadingHTTPServer(("127.0.0.1", 0), _Handler)
+    thread = Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    try:
+        payload = json.loads(urlopen(f"http://127.0.0.1:{server.server_port}/api/health").read())
+        assert payload["review_mode"] == "ECR_S3_EC2_COMBINED"
+        assert payload["enabled_sources"] == ["ec2", "ecr", "s3"]
+    finally:
+        server.shutdown()
+
+
+def test_ec2_rnd_route_is_fixed_lab01_with_reject_then_approved_remediation(monkeypatch: pytest.MonkeyPatch) -> None:
+    for name, value in {
+        "SECCOP_DEMO_BACKEND": "AWS",
+        "SECCOP_ECR_S3_COMBINED": "1",
+        "SECCOP_EC2_IMDSV2_E2E": "1",
+        "SECCOP_EC2_RND_REARM": "1",
+        "SECCOP_EC2_PROFILE": "ihis_dev",
+        "SECCOP_EC2_REGION": "ap-southeast-1",
+    }.items():
+        monkeypatch.setenv(name, value)
+    poc_server._EC2_PROPOSALS.clear()
+    captured: list[list[str]] = []
+
+    def fake_run(args: list[str], **_: object) -> SimpleNamespace:
+        captured.append(args)
+        command = next(item for item in ("ec2-rnd-scan", "ec2-rnd-reject", "ec2-rnd-apply", "ec2-rnd-reopen") if item in args)
+        payload = {
+            "ec2-rnd-scan": {
+                "status": "READY",
+                "reason_code": "SECCOP_EC2_IMDSV2_NON_COMPLIANT",
+                "state": "NON_COMPLIANT",
+                "resource_alias": "DEV_EC2_LAB_01",
+                "config_rule_name": "ec2-imdsv2-check-rnd-lab01",
+                "findings": [],
+            },
+            "ec2-rnd-reject": {
+                "status": "REJECTED",
+                "reason_code": "HUMAN_REJECTED",
+                "state": "NON_COMPLIANT",
+                "resource_alias": "DEV_EC2_LAB_01",
+                "mutation_performed": False,
+            },
+            "ec2-rnd-apply": {
+                "status": "VERIFIED",
+                "reason_code": "SECCOP_EC2_IMDSV2_REMEDIATED",
+                "state": "COMPLIANT",
+                "resource_alias": "DEV_EC2_LAB_01",
+                "metadata_http_tokens": "required",
+                "automation_status": "Success",
+            },
+            "ec2-rnd-reopen": {
+                "status": "READY",
+                "reason_code": "SECCOP_EC2_IMDSV2_NON_COMPLIANT",
+                "state": "NON_COMPLIANT",
+                "resource_alias": "DEV_EC2_LAB_01",
+                "config_rule_name": "ec2-imdsv2-check-rnd-lab01",
+                "findings": [],
+                "reopen_status": "REOPENED",
+                "mutation_performed": True,
+            },
+        }[command]
+        return SimpleNamespace(stdout=json.dumps(payload))
+
+    monkeypatch.setattr(poc_server.subprocess, "run", fake_run)
+    scan = poc_server._run_real_demo("scan", source="ec2")
+    assert scan["reason_code"] == "SECCOP_EC2_IMDSV2_NON_COMPLIANT"
+    assert captured[0][captured[0].index("--alias") + 1] == "DEV_EC2_LAB_01"
+    rejected = poc_server._run_real_demo("reject", source="ec2", proposal_id=scan["proposal_id"], proposal_hash=scan["proposal_hash"])
+    assert rejected["reason_code"] == "HUMAN_REJECTED"
+    assert rejected["mutation_performed"] is False
+    replay = poc_server._run_real_demo("fix", source="ec2", proposal_id=scan["proposal_id"], proposal_hash=scan["proposal_hash"])
+    assert replay["reason_code"] == "APPROVAL_REQUIRED"
+    fresh = poc_server._run_real_demo("scan", source="ec2")
+    verified = poc_server._run_real_demo("fix", source="ec2", proposal_id=fresh["proposal_id"], proposal_hash=fresh["proposal_hash"])
+    assert verified["reason_code"] == "SECCOP_EC2_IMDSV2_REMEDIATED"
+    assert verified["metadata_http_tokens"] == "required"
+    assert captured[-1][captured[-1].index("--alias") + 1] == "DEV_EC2_LAB_01"
+    assert captured[-1][-1] == "--confirm"
+    reopened = poc_server._run_real_demo("reset", source="ec2")
+    assert reopened["reason_code"] == "SECCOP_EC2_IMDSV2_NON_COMPLIANT"
+    assert reopened["reopen_status"] == "REOPENED"
+    assert "proposal_id" in reopened
+    blocked = poc_server._run_real_demo("scan", source="ec2", target_alias="DEV_EC2_UNAPPROVED")
+    assert blocked["reason_code"] == "TARGET_NOT_ALLOWED"
+
+
+def test_ec2_rnd_reopen_already_open_skips_config_wait(monkeypatch: pytest.MonkeyPatch) -> None:
+    target = {"MetadataOptions": {"HttpTokens": "optional"}}
+    rule = {"Scope": {"ComplianceResourceId": "EC2_RESOURCE_01"}, "Source": {"SourceIdentifier": issue47.EC2_CONFIG_SOURCE}, "ConfigRuleState": "ACTIVE"}
+    monkeypatch.setattr(issue47, "_ec2_rnd_target", lambda *_: ("EC2_RESOURCE_01", target))
+    monkeypatch.setattr(issue47, "_ec2_rnd_binding", lambda *_: rule)
+    monkeypatch.setattr(issue47, "_ec2_rnd_current_compliance", lambda *_: "NON_COMPLIANT")
+    monkeypatch.setattr(issue47, "_ec2_rnd_compliance", lambda *_: pytest.fail("Config evaluation must not run when the finding is open"))
+
+    result = issue47._ec2_rnd_reopen("ihis_dev", "ap-southeast-1", issue47.EC2_RND_ALIAS_LAB01, True)
+
+    assert result["reason_code"] == "FINDING_ALREADY_OPEN"
+    assert result["mutation_performed"] is False
+
+
 def test_ecr_reopen_is_idempotent_when_the_finding_is_already_open(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
     monkeypatch.setattr(seccop_demo, "_ecr_scan", lambda *_: {"reason_code": "SECCOP_ECR_NON_COMPLIANT"})
     monkeypatch.setattr(seccop_demo, "_push_image", lambda *_: pytest.fail("unexpected ECR mutation"))
@@ -774,6 +1016,63 @@ def test_browser_has_persistent_ecr_reopen_control() -> None:
     assert "Scan ECR image" in html
     assert "Reopen this ECR finding?" in html
     assert "ECR_OPERATOR" in Path(__file__).parents[1].joinpath("src/secure_agent_harness/poc_server.py").read_text()
+
+
+def test_browser_uses_clean_verification_copy_for_compliant_ecr_rescan() -> None:
+    html = (Path(__file__).parents[1] / "web" / "poc_chat.html").read_text()
+
+    assert "result.status === 'NO_FINDINGS' && result.state === 'COMPLIANT'" in html
+    assert "Clean verification" in html
+    assert "Amazon Inspector verified the approved ECR digest is clean." in html
+    assert "No active package findings were returned for the approved ECR digest." in html
+    assert "ECR_CODEX_BEFORE_READY" not in html
+    assert "sanitized BEFORE facts" not in html
+
+
+def test_browser_sidebar_and_composer_management_view() -> None:
+    html = (Path(__file__).parents[1] / "web" / "poc_chat.html").read_text()
+
+    assert "Technical evidence fallback" not in html
+    assert "AI USAGE" not in html
+    assert 'id="composer-wrap" class="composer-wrap hidden"' in html
+    assert 'id="toggle-composer" class="btn primary"' in html
+    assert "Show Ask SecCop" in html
+    assert "Hide Ask SecCop" in html
+    assert "aria-expanded" in html
+    assert "advisory-upload" in html and "scan-environment" in html
+    assert "function configureEcrReview(" in html
+    assert "function configureS3Review(" in html
+    assert "ECR_S3_EC2_COMBINED" in html
+    assert "DEV_EC2_LAB_01" in html
+    assert "fixed LAB_01 still accepts IMDSv1" in html
+    assert "id=\"reopen-s3-finding\"" in html
+    assert "RND_REOPEN_REQUIRED" not in html
+    ec2_view = html.split("function configureEc2Review", 1)[1].split("function configureUnifiedReview", 1)[0]
+    assert "reopenS3FindingButton.hidden = false" in ec2_view
+    assert "reopenS3FindingButton.textContent = 'Reopen Finding'" in ec2_view
+    assert "ec2ReopenReady" not in html
+    assert "The approved DEMO reset was blocked." not in html
+    assert "Reopen fixed DEV_EC2_LAB_01?" in html
+    assert "FINDING_ALREADY_OPEN" in html
+    for control_id in ("scan-environment", "reopen-s3-finding", "start-real-demo", "advisory-upload", "compare-live", "csv-upload", "compare-csv"):
+        assert f'id="{control_id}"' in html
+    assert '<div class="live-panel hidden" aria-hidden="true" hidden>' in html
+    assert '<div id="backend-note" class="side-footer hidden" aria-hidden="true" hidden></div>' in html
+    assert 'id="mode-status" class="status-pill"' not in html
+    assert 'welcome-mark' not in html
+    assert "ECR Vulnerability Scanning Review" in html
+    assert "ECR Operator Review" not in html
+    assert "ECR + S3 + EC2 review" not in html
+    assert "toggleComposerButton.classList.remove('hidden')" in html
+
+
+def test_lab01_cli_has_private_self_service_mapping_diagnostic() -> None:
+    script = (Path(__file__).parents[1] / "scripts" / "ec2-lab01-kiss.sh").read_text()
+
+    assert "configure --instance-id <id>" in script
+    assert "public example placeholder" in script
+    assert "mapping instance is invalid" not in script
+    assert "status|reset --confirm|reopen --confirm" in script
 
 
 def test_live_evidence_upload_validates_without_echoing_untrusted_payload() -> None:

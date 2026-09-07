@@ -18,6 +18,8 @@ const liveScanOnly = ['1', 'hybrid', 'hybrid-local'].includes(process.env.LIVE_S
 const hybridLive = process.env.LIVE_SCAN_ONLY === 'hybrid';
 const hybridFixture = process.env.LIVE_SCAN_ONLY === 'hybrid-local';
 const codexPreflight = process.env.LIVE_SCAN_ONLY === 'codex';
+const unifiedEc2 = process.env.UNIFIED_EC2 === '1';
+const ec2Rnd = process.env.EC2_RND === '1';
 if (!appUrl || !cdpUrl || !evidenceDir || !reviewDir) {
   throw new Error('APP_URL, CDP_URL, EVIDENCE_DIR, and REVIEW_DIR are required');
 }
@@ -68,10 +70,82 @@ try {
   const response = await page.goto(appUrl, { waitUntil: 'domcontentloaded', timeout: 15_000 });
   assert(response?.ok(), 'The SecCop page did not return HTTP success');
   await page.locator('#welcome').waitFor({ state: 'visible', timeout: 10_000 });
-  assert((await page.locator('body').innerText()).includes('Safe demo boundary.'), 'Safety banner was not visible');
+  const initialText = await page.locator('body').innerText();
+  assert(unifiedEc2 || ec2Rnd ? initialText.includes('review boundary.') : initialText.includes('Safe demo boundary.'), 'Safety banner was not visible');
   await shot('SecCop-Scan-01.png');
 
-  if (codexPreflight) {
+  if (ec2Rnd) {
+    const health = await page.evaluate(async () => (await fetch('/api/health')).json());
+    assert(health.review_mode === 'ECR_S3_EC2_COMBINED', 'The R&D backend did not advertise the unified source set');
+    assert(JSON.stringify(health.enabled_sources) === JSON.stringify(['ec2', 'ecr', 's3']), 'The R&D backend source set was incomplete');
+    assert(health.demo_backend === 'AWS' && health.ec2_rnd_rearm === true, 'The R&D backend mode was not enabled');
+    await page.getByRole('button', { name: 'EC2', exact: true }).click();
+    const selector = page.locator('#ec2-target-selector');
+    await selector.waitFor({ state: 'visible', timeout: 10_000 });
+    assert(await selector.locator('option').count() === 1, 'The R&D selector did not expose the fixed LAB_01 alias');
+    const states = [];
+    for (const alias of ['DEV_EC2_LAB_01']) {
+      await page.getByRole('button', { name: 'EC2', exact: true }).click();
+      await selector.selectOption(alias);
+      const scanResponsePromise = page.waitForResponse(
+        (item) => item.url().endsWith('/api/scan') && item.request().method() === 'POST',
+        { timeout: 360_000 },
+      );
+      await page.locator('#scan-environment').click();
+      const scanResponse = await scanResponsePromise;
+      assert(scanResponse.ok(), `The ${alias} R&D scan endpoint did not return HTTP success`);
+      const scanPayload = await scanResponse.json();
+      const scanResult = scanPayload.result || {};
+      assert(scanResult.state === 'NON_COMPLIANT' && scanResult.reason_code === 'SECCOP_EC2_IMDSV2_NON_COMPLIANT', `${alias} was not NON_COMPLIANT`);
+      assert(!JSON.stringify(scanPayload).match(/arn:|i-[0-9a-f]{8,17}|\\Users\\|\/home\/|\/mnt\//), `Private data was exposed for ${alias}`);
+      await page.getByText('X ACTION REQUIRED', { exact: true }).last().waitFor({ state: 'visible', timeout: 10_000 });
+      const findingAction = page.locator('.scan-finding').last().getByRole('button', { name: 'Reopen Finding', exact: true });
+      await findingAction.click();
+      await page.getByRole('button', { name: 'Reopen Finding', exact: true }).last().waitFor({ state: 'visible', timeout: 10_000 });
+      states.push({ alias, state: scanResult.state, reason_code: scanResult.reason_code });
+      await saveJson(`unified-ec2-rnd-${alias.toLowerCase()}.json`, { alias, state: scanResult.state, reason_code: scanResult.reason_code });
+      await shot(`SecCop-RND-${alias}.png`, { fullPage: true });
+      if (alias === 'DEV_EC2_LAB_01') await page.locator('#new-chat').click();
+    }
+    await saveJson('unified-ec2-rnd-state.json', { review_mode: health.review_mode, enabled_sources: health.enabled_sources, targets: states });
+  } else if (unifiedEc2) {
+    const health = await page.evaluate(async () => (await fetch('/api/health')).json());
+    assert(health.review_mode === 'ECR_S3_EC2_COMBINED', 'The unified backend did not advertise all three sources');
+    assert(JSON.stringify(health.enabled_sources) === JSON.stringify(['ec2', 'ecr', 's3']), 'The unified backend source set was incomplete');
+    assert(health.demo_backend === 'AWS', 'The unified runner reached the wrong backend');
+    assert(!JSON.stringify(health).match(/arn:|i-[0-9a-f]{8,17}|\\Users\\|\/home\/|\/mnt\//), 'Private backend data was exposed in health');
+    const tabs = page.locator('.source-tab');
+    assert(await tabs.count() === 3, 'The unified source navigation did not render three tabs');
+    for (const source of ['EC2', 'ECR', 'S3']) {
+      const tab = page.getByRole('button', { name: source, exact: true });
+      assert(await tab.getAttribute('aria-disabled') !== 'true', `${source} remained disabled in unified mode`);
+    }
+    await page.getByRole('button', { name: 'EC2', exact: true }).click();
+    assert((await page.locator('#review-title').textContent()).includes('EC2 IMDSv2 Compliance Review'), 'The EC2 review view did not open');
+    const scanResponsePromise = page.waitForResponse(
+      (item) => item.url().endsWith('/api/scan') && item.request().method() === 'POST',
+      { timeout: 360_000 },
+    );
+    await page.locator('#scan-environment').click();
+    const scanResponse = await scanResponsePromise;
+    assert(scanResponse.ok(), 'The unified EC2 scan endpoint did not return HTTP success');
+    const scanPayload = await scanResponse.json();
+    const scanResult = scanPayload.result || {};
+    assert(scanResult.state === 'COMPLIANT' && ['COMPLIANT', 'NO_FINDINGS'].includes(scanResult.status), 'The unified EC2 scan was not COMPLIANT');
+    assert(scanResult.reason_code === 'SECCOP_EC2_IMDSV2_COMPLIANT', 'The unified EC2 result reason was not truthful');
+    assert(Array.isArray(scanResult.findings) && scanResult.findings.length === 0, 'The compliant EC2 result contained findings');
+    assert(!JSON.stringify(scanPayload).match(/arn:|i-[0-9a-f]{8,17}|\\Users\\|\/home\/|\/mnt\//), 'Private backend data was exposed in the EC2 scan');
+    await page.getByText('CHECK VERIFIED', { exact: true }).waitFor({ state: 'visible', timeout: 10_000 });
+    assert((await page.locator('body').innerText()).includes('EC2 IMDSv2 Compliance Review'), 'The EC2 review title was not visible');
+    await saveJson('unified-ec2-state.json', {
+      review_mode: health.review_mode,
+      enabled_sources: health.enabled_sources,
+      status: scanResult.status,
+      reason_code: scanResult.reason_code,
+      findings: scanResult.findings.length,
+    });
+    await shot('SecCop-Unified-EC2-Compliant.png', { fullPage: true });
+  } else if (codexPreflight) {
     const preflightResponse = page.waitForResponse(
       (item) => item.url().endsWith('/api/codex-preflight'),
       { timeout: 180_000 },
@@ -394,7 +468,13 @@ try {
     status: 'PASS',
     appUrl,
     viewport: { width: 1920, height: 1080 },
-    screenshots: codexPreflight ? [
+    screenshots: ec2Rnd ? [
+      'SecCop-Scan-01.png',
+      'SecCop-RND-DEV_EC2_LAB_01.png',
+    ] : unifiedEc2 ? [
+      'SecCop-Scan-01.png',
+      'SecCop-Unified-EC2-Compliant.png',
+    ] : codexPreflight ? [
       'SecCop-Codex-Preflight.png',
       'SecCop-Codex-Preflight-card.png',
     ] : liveScanOnly ? [

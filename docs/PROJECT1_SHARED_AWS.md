@@ -1,5 +1,9 @@
 # Project1 shared AWS lab context
 
+Historical Project1 context only: this document preserves older Project1/
+`vagent` resource facts and is not the current SecCop execution profile.
+Current SecCop AWS work uses explicit `amit` credentials in `ap-southeast-1`.
+
 This repository uses the existing Project1 learning account only for the
 disposable Security Copilot demo. The network is shared; the demo compute is
 not.
