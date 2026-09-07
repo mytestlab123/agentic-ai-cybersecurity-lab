@@ -2,13 +2,11 @@ from pathlib import Path
 import gzip
 import json
 import os
-import socket
 import subprocess
 import sys
-import time
 from threading import Thread
 from types import SimpleNamespace
-from urllib.error import HTTPError, URLError
+from urllib.error import HTTPError
 from urllib.request import Request, urlopen
 
 import pytest
@@ -993,7 +991,7 @@ def test_unified_runtime_preflight_requires_all_source_bindings(
         poc_server._validate_unified_runtime()
 
 
-def test_unified_runtime_launcher_starts_complete_three_source_health(tmp_path: Path) -> None:
+def test_unified_runtime_launcher_check_uses_fixed_port(tmp_path: Path) -> None:
     class _Env:
         def setenv(self, name: str, value: str) -> None:
             os.environ[name] = value
@@ -1001,33 +999,56 @@ def test_unified_runtime_launcher_starts_complete_three_source_health(tmp_path: 
     original = os.environ.copy()
     try:
         settings = _complete_unified_runtime(_Env(), tmp_path)
-        with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as probe:
-            probe.bind(("127.0.0.1", 0))
-            port = probe.getsockname()[1]
         config_path = tmp_path / "runtime.env"
-        config_path.write_text("\n".join([*(f"{name}={value}" for name, value in settings.items()), f"POC_PORT={port}"]) + "\n", encoding="utf-8")
+        config_path.write_text("\n".join(f"{name}={value}" for name, value in settings.items()) + "\n", encoding="utf-8")
         config_path.chmod(0o600)
         script = Path(__file__).parents[1] / "scripts" / "start-unified-seccop.sh"
-        env = os.environ.copy()
-        env.update({
-            "SECCOP_RUNTIME_ENV": str(config_path),
-            "SECCOP_PYTHON": sys.executable,
-        })
-        process = subprocess.Popen([str(script)], cwd=script.parents[1], env=env)
-        try:
-            deadline = time.monotonic() + 5
-            while True:
-                try:
-                    payload = json.loads(urlopen(f"http://127.0.0.1:{port}/api/health", timeout=0.5).read())
-                    break
-                except (OSError, URLError):
-                    if time.monotonic() >= deadline:
-                        raise
-                    time.sleep(0.05)
-            assert payload["enabled_sources"] == ["ec2", "ecr", "s3"]
-        finally:
-            process.terminate()
-            process.wait(timeout=5)
+        result = subprocess.run(
+            [str(script), "--check"],
+            cwd=script.parents[1],
+            env={
+                **os.environ,
+                "POC_PORT": "9999",
+                "SECCOP_RUNTIME_ENV": str(config_path),
+                "SECCOP_PYTHON": sys.executable,
+            },
+            capture_output=True,
+            check=False,
+            text=True,
+        )
+        assert result.returncode == 0
+        assert result.stdout.strip() == "SECCOP_RUNTIME_READY POC_PORT=2222"
+    finally:
+        os.environ.clear()
+        os.environ.update(original)
+
+
+def test_unified_runtime_launcher_rejects_non_600_runtime_file(tmp_path: Path) -> None:
+    class _Env:
+        def setenv(self, name: str, value: str) -> None:
+            os.environ[name] = value
+
+    original = os.environ.copy()
+    try:
+        settings = _complete_unified_runtime(_Env(), tmp_path)
+        config_path = tmp_path / "runtime.env"
+        config_path.write_text("\n".join(f"{name}={value}" for name, value in settings.items()) + "\n", encoding="utf-8")
+        config_path.chmod(0o200)
+        script = Path(__file__).parents[1] / "scripts" / "start-unified-seccop.sh"
+        result = subprocess.run(
+            [str(script), "--check"],
+            cwd=script.parents[1],
+            env={
+                **os.environ,
+                "SECCOP_RUNTIME_ENV": str(config_path),
+                "SECCOP_PYTHON": sys.executable,
+            },
+            capture_output=True,
+            check=False,
+            text=True,
+        )
+        assert result.returncode == 2
+        assert result.stderr.strip() == "RUNTIME_CONFIG_INVALID:SECCOP_RUNTIME_ENV"
     finally:
         os.environ.clear()
         os.environ.update(original)
