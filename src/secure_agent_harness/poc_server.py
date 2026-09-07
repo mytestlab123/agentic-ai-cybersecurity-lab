@@ -69,6 +69,13 @@ _EC2_RND_ALIAS_LAB01 = "DEV_EC2_LAB_01"
 _ECR_TURN_TIMEOUT = 60.0
 _CODEX_PREFLIGHT_TURN_TIMEOUT = 30.0
 _CODEX_STDERR_DIR = Path.home() / ".AGENTS-temp" / "agentic-ai-cybersecurity-lab" / "issue53-app-server-observability" / "app-server-stderr"
+_UNIFIED_RUNTIME_S3_STATE = {
+    "config_rule_name": "s3-bucket-level-public-access-prohibited",
+    "config_source": "S3_BUCKET_LEVEL_PUBLIC_ACCESS_PROHIBITED",
+    "remediation_document": "AWSConfigRemediation-ConfigureS3BucketPublicAccessBlock",
+    "remediation_document_version": "8",
+    "resource_type": "AWS::S3::Bucket",
+}
 
 
 @dataclass(frozen=True)
@@ -2021,13 +2028,93 @@ class _Handler(BaseHTTPRequestHandler):
         del format, args
 
 
-def main() -> None:
+def _runtime_config_error(field: str) -> RuntimeError:
+    return RuntimeError(f"RUNTIME_CONFIG_INVALID:{field}")
+
+
+def _runtime_value(name: str, expected: str) -> None:
+    if os.environ.get(name) != expected:
+        raise _runtime_config_error(name)
+
+
+def _private_runtime_json(name: str) -> dict[str, object]:
+    value = os.environ.get(name)
+    if not value:
+        raise _runtime_config_error(name)
+    path = Path(value)
+    try:
+        mode = path.stat().st_mode
+        if path.is_symlink() or not path.is_file() or mode & 0o077:
+            raise OSError
+        result = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        raise _runtime_config_error(name) from None
+    if not isinstance(result, dict):
+        raise _runtime_config_error(name)
+    return result
+
+
+def _validate_unified_runtime() -> None:
+    for name, expected in {
+        "SECCOP_DEMO_BACKEND": "AWS",
+        "SECCOP_ECR_S3_COMBINED": "1",
+        "SECCOP_ECR_OPERATOR_MVP": "1",
+        "SECCOP_ECR_SCANNER": "inspector",
+        "SECCOP_S3_COMPLIANCE_E2E": "1",
+        "SECCOP_EC2_IMDSV2_E2E": "1",
+        "SECCOP_EC2_RND_REARM": "1",
+        "SECCOP_PROFILE": "amit",
+        "AWS_PROFILE": "amit",
+        "AWS_DEFAULT_PROFILE": "amit",
+        "AWS_REGION": "ap-southeast-1",
+        "AWS_DEFAULT_REGION": "ap-southeast-1",
+        "SECCOP_EC2_PROFILE": "ihis_dev",
+        "SECCOP_EC2_REGION": "ap-southeast-1",
+    }.items():
+        _runtime_value(name, expected)
+    if not os.environ.get("SECCOP_S3_BUCKET"):
+        raise _runtime_config_error("SECCOP_S3_BUCKET")
+    protected = [item for item in os.environ.get("SECCOP_S3_PROTECTED_BUCKETS", "").split(",") if item]
+    if len(protected) != 2:
+        raise _runtime_config_error("SECCOP_S3_PROTECTED_BUCKETS")
+    s3_state = _private_runtime_json("SECCOP_S3_STATE")
+    if s3_state.get("bucket") != os.environ["SECCOP_S3_BUCKET"] or s3_state.get("automatic") is not False:
+        raise _runtime_config_error("SECCOP_S3_STATE")
+    if any(s3_state.get(name) != value for name, value in _UNIFIED_RUNTIME_S3_STATE.items()):
+        raise _runtime_config_error("SECCOP_S3_STATE")
+    ec2_map = _private_runtime_json("SECCOP_EC2_RND_TARGET_MAP")
+    if set(ec2_map) != {"profile", "region", _EC2_RND_ALIAS_LAB01}:
+        raise _runtime_config_error("SECCOP_EC2_RND_TARGET_MAP")
+    if ec2_map.get("profile") != "ihis_dev" or ec2_map.get("region") != "ap-southeast-1":
+        raise _runtime_config_error("SECCOP_EC2_RND_TARGET_MAP")
+    target = ec2_map.get(_EC2_RND_ALIAS_LAB01)
+    if not isinstance(target, str) or not re.fullmatch(r"i-[0-9a-f]+", target):
+        raise _runtime_config_error("SECCOP_EC2_RND_TARGET_MAP")
+
+
+def _runtime_port() -> int:
     try:
         port = int(os.environ.get("POC_PORT", "8765"))
     except ValueError as exc:
         raise SystemExit("POC_PORT must be an integer.") from exc
     if not 1024 <= port <= 65535:
         raise SystemExit("POC_PORT must be between 1024 and 65535.")
+    return port
+
+
+def main() -> None:
+    runtime_mode = sys.argv[1:]
+    if runtime_mode not in ([], ["--unified-runtime-preflight"], ["--unified-runtime-check"]):
+        raise SystemExit("Unsupported runtime command.")
+    if runtime_mode:
+        try:
+            _validate_unified_runtime()
+        except RuntimeError as exc:
+            raise SystemExit(str(exc)) from None
+    port = _runtime_port()
+    if runtime_mode == ["--unified-runtime-check"]:
+        print(f"SECCOP_RUNTIME_READY POC_PORT={port}", flush=True)
+        return
     server = ThreadingHTTPServer(("127.0.0.1", port), _Handler)
     print(f"Issue 5 local POC: http://127.0.0.1:{port}", flush=True)
     try:

@@ -2,10 +2,13 @@ from pathlib import Path
 import gzip
 import json
 import os
+import socket
+import subprocess
 import sys
+import time
 from threading import Thread
 from types import SimpleNamespace
-from urllib.error import HTTPError
+from urllib.error import HTTPError, URLError
 from urllib.request import Request, urlopen
 
 import pytest
@@ -908,6 +911,110 @@ def test_combined_health_mode_advertises_all_three_sources(monkeypatch: pytest.M
         assert payload["enabled_sources"] == ["ec2", "ecr", "s3"]
     finally:
         server.shutdown()
+
+
+def _complete_unified_runtime(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> dict[str, str]:
+    state_path = tmp_path / "s3-state.json"
+    state_path.write_text(json.dumps({
+        "bucket": "S3_DRIFT_ALIAS",
+        "automatic": False,
+        "config_rule_name": "s3-bucket-level-public-access-prohibited",
+        "config_source": "S3_BUCKET_LEVEL_PUBLIC_ACCESS_PROHIBITED",
+        "remediation_document": "AWSConfigRemediation-ConfigureS3BucketPublicAccessBlock",
+        "remediation_document_version": "8",
+        "resource_type": "AWS::S3::Bucket",
+    }), encoding="utf-8")
+    state_path.chmod(0o600)
+    map_path = tmp_path / "ec2-lab01-map.json"
+    map_path.write_text(json.dumps({
+        "profile": "ihis_dev",
+        "region": "ap-southeast-1",
+        "DEV_EC2_LAB_01": "i-" + "0" * 8,
+    }), encoding="utf-8")
+    map_path.chmod(0o600)
+    settings = {
+        "SECCOP_DEMO_BACKEND": "AWS",
+        "SECCOP_ECR_S3_COMBINED": "1",
+        "SECCOP_ECR_OPERATOR_MVP": "1",
+        "SECCOP_ECR_SCANNER": "inspector",
+        "SECCOP_S3_COMPLIANCE_E2E": "1",
+        "SECCOP_EC2_IMDSV2_E2E": "1",
+        "SECCOP_EC2_RND_REARM": "1",
+        "SECCOP_PROFILE": "amit",
+        "AWS_PROFILE": "amit",
+        "AWS_DEFAULT_PROFILE": "amit",
+        "AWS_REGION": "ap-southeast-1",
+        "AWS_DEFAULT_REGION": "ap-southeast-1",
+        "SECCOP_EC2_PROFILE": "ihis_dev",
+        "SECCOP_EC2_REGION": "ap-southeast-1",
+        "SECCOP_S3_BUCKET": "S3_DRIFT_ALIAS",
+        "SECCOP_S3_PROTECTED_BUCKETS": "S3_PROTECTED_01,S3_PROTECTED_02",
+        "SECCOP_S3_STATE": str(state_path),
+        "SECCOP_EC2_RND_TARGET_MAP": str(map_path),
+    }
+    for name, value in settings.items():
+        monkeypatch.setenv(name, value)
+    return settings
+
+
+def test_unified_runtime_preflight_requires_all_source_bindings(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path,
+) -> None:
+    settings = _complete_unified_runtime(monkeypatch, tmp_path)
+
+    poc_server._validate_unified_runtime()
+
+    monkeypatch.delenv("SECCOP_S3_STATE")
+    with pytest.raises(RuntimeError, match="RUNTIME_CONFIG_INVALID:SECCOP_S3_STATE"):
+        poc_server._validate_unified_runtime()
+    monkeypatch.setenv("SECCOP_S3_STATE", settings["SECCOP_S3_STATE"])
+    monkeypatch.delenv("SECCOP_ECR_SCANNER")
+    with pytest.raises(RuntimeError, match="RUNTIME_CONFIG_INVALID:SECCOP_ECR_SCANNER"):
+        poc_server._validate_unified_runtime()
+    monkeypatch.setenv("SECCOP_ECR_SCANNER", settings["SECCOP_ECR_SCANNER"])
+    monkeypatch.delenv("SECCOP_EC2_RND_TARGET_MAP")
+    with pytest.raises(RuntimeError, match="RUNTIME_CONFIG_INVALID:SECCOP_EC2_RND_TARGET_MAP"):
+        poc_server._validate_unified_runtime()
+
+
+def test_unified_runtime_launcher_starts_complete_three_source_health(tmp_path: Path) -> None:
+    class _Env:
+        def setenv(self, name: str, value: str) -> None:
+            os.environ[name] = value
+
+    original = os.environ.copy()
+    try:
+        settings = _complete_unified_runtime(_Env(), tmp_path)
+        with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as probe:
+            probe.bind(("127.0.0.1", 0))
+            port = probe.getsockname()[1]
+        config_path = tmp_path / "runtime.env"
+        config_path.write_text("\n".join([*(f"{name}={value}" for name, value in settings.items()), f"POC_PORT={port}"]) + "\n", encoding="utf-8")
+        config_path.chmod(0o600)
+        script = Path(__file__).parents[1] / "scripts" / "start-unified-seccop.sh"
+        env = os.environ.copy()
+        env.update({
+            "SECCOP_RUNTIME_ENV": str(config_path),
+            "SECCOP_PYTHON": sys.executable,
+        })
+        process = subprocess.Popen([str(script)], cwd=script.parents[1], env=env)
+        try:
+            deadline = time.monotonic() + 5
+            while True:
+                try:
+                    payload = json.loads(urlopen(f"http://127.0.0.1:{port}/api/health", timeout=0.5).read())
+                    break
+                except (OSError, URLError):
+                    if time.monotonic() >= deadline:
+                        raise
+                    time.sleep(0.05)
+            assert payload["enabled_sources"] == ["ec2", "ecr", "s3"]
+        finally:
+            process.terminate()
+            process.wait(timeout=5)
+    finally:
+        os.environ.clear()
+        os.environ.update(original)
 
 
 def test_ec2_rnd_route_is_fixed_lab01_with_reject_then_approved_remediation(monkeypatch: pytest.MonkeyPatch) -> None:
