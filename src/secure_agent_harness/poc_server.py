@@ -1332,6 +1332,18 @@ def _fixture_hybrid_scan() -> SecCopScanResult:
     })
 
 
+def _fixture_codex_source_facts(source: str, scan: dict[str, object]) -> dict[str, object]:
+    """Keep fixture prompts source-correct without claiming live provider reads."""
+
+    facts = dict(scan)
+    facts.update({
+        "ecr": {"state": "NON_COMPLIANT", "scanner_mode": "ECR_ENHANCED_SCANNING", "package_ecosystem": "PYTHON", "cve_id": "CVE-2099-0001", "package_name": "demo-package", "installed_version": "1.0", "severity": "HIGH"},
+        "s3": {"state": "NON_COMPLIANT", "config_rule_name": "s3-bucket-level-public-access-prohibited", "remediation_document": "AWSConfigRemediation-ConfigureS3BucketPublicAccessBlock", "findings": [{"observed_state": "Block Public Access absent"}]},
+        "ec2": {"state": "NON_COMPLIANT", "config_rule_name": "ec2-imdsv2-check", "remediation_document": "AWSConfigRemediation-EnforceEC2InstanceIMDSv2", "metadata_http_tokens": "optional"},
+    }[source])
+    return facts
+
+
 def _fixture_hybrid_status(request: SecCopAdvisoryRequest) -> dict[str, object]:
     """Render only after the repo runner proves both local integration lanes."""
 
@@ -1804,7 +1816,7 @@ class _Handler(BaseHTTPRequestHandler):
             scan = _live_server_scan() if _real_demo_enabled() else _fixture_hybrid_scan() if fixture_hybrid else run_demo_scan()
             response: dict[str, object] = {"result": scan.model_dump(mode="json"), "events": []}
             if request.source in {"ecr", "s3", "ec2"}:
-                _CODEX_SOURCE_SCANS[request.source] = dict(response["result"])
+                _CODEX_SOURCE_SCANS[request.source] = _fixture_codex_source_facts(request.source, response["result"]) if fixture_hybrid else dict(response["result"])
             if (_real_demo_enabled() or fixture_hybrid) and scan.status == "READY" and _SERVER_SCAN_REQUEST is not None:
                 response["agent"] = (
                     _fixture_hybrid_status(_SERVER_SCAN_REQUEST)
