@@ -389,9 +389,14 @@ def test_source_codex_reasoning_binds_before_question_and_after_to_one_source(
         {"method": "turn/completed", "params": {"turn": {"id": "TURN_ALIAS_03", "status": "completed"}}},
     ])
     monkeypatch.setattr(poc_server, "_CodexProcessTransport", lambda: transport)
+    facts = {
+        "ecr": {"state": "NON_COMPLIANT", "scanner_mode": "ECR_ENHANCED_SCANNING", "package_ecosystem": "PYTHON", "cve_id": "CVE-2020-8203", "package_name": "urllib3", "installed_version": "1.24.1", "severity": "HIGH"},
+        "s3": {"state": "NON_COMPLIANT", "config_rule_name": "s3-bucket-level-public-access-prohibited", "remediation_document": "AWSConfigRemediation-ConfigureS3BucketPublicAccessBlock", "findings": [{"observed_state": "Block Public Access absent"}]},
+        "ec2": {"state": "NON_COMPLIANT", "config_rule_name": "ec2-imdsv2-check-rnd-lab01", "metadata_http_tokens": "optional"},
+    }[source]
     poc_server._close_hybrid_session()
     poc_server._CODEX_INVESTIGATION_SOURCE = None
-    before = poc_server._start_source_codex_explanation(source, "Explain the safe next step.", {"state": "NON_COMPLIANT"})
+    before = poc_server._start_source_codex_explanation(source, "Explain the safe next step.", facts)
     question = poc_server._ask_source_codex(source, "What should the operator review?")
     after = poc_server._finish_source_codex_explanation(source, {"status": "VERIFIED", "state": "COMPLIANT"})
 
@@ -399,6 +404,10 @@ def test_source_codex_reasoning_binds_before_question_and_after_to_one_source(
     assert question["reason_code"] == f"{source.upper()}_CODEX_QUESTION_READY"
     assert after["reason_code"] == f"{source.upper()}_CODEX_AFTER_EXPLAINED"
     assert [item["params"]["threadId"] for item in transport.sent if item.get("method") == "turn/start"] == ["THREAD_ALIAS_01"] * 3
+    prompt = next(item["params"]["input"][0]["text"] for item in transport.sent if item.get("method") == "turn/start")
+    assert ({"ecr": "package ecosystem: PYTHON", "s3": "Config rule: s3-bucket-level-public-access-prohibited", "ec2": "IMDSv2 HttpTokens state: optional"}[source]) in prompt
+    assert ({"ecr": "Block Public Access", "s3": "package ecosystem", "ec2": "package ecosystem"}[source]) not in prompt
+    assert source.upper() in after["message"]
     assert poc_server._HYBRID_SESSION is None
 
 
@@ -413,6 +422,51 @@ def test_source_codex_question_rejects_wrong_source_and_missing_scan() -> None:
     finally:
         poc_server._close_hybrid_session()
         poc_server._CODEX_INVESTIGATION_SOURCE = None
+
+
+def test_source_codex_rejects_busy_malformed_and_wrong_source_without_losing_valid_investigation(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    transport = _FakeCodexTransport([
+        {"id": 1, "result": {"userAgent": "codex"}}, {"id": 2, "result": {"account": {"type": "chatgpt"}}}, {"id": 3, "result": {"thread": {"id": "THREAD_ALIAS_01"}}},
+        {"id": 4, "result": {"turn": {"id": "TURN_ALIAS_01"}}}, {"method": "item/agentMessage/delta", "params": {"delta": "Before."}}, {"method": "turn/completed", "params": {"turn": {"id": "TURN_ALIAS_01", "status": "completed"}}},
+        {"id": 5, "result": {"turn": {"id": "TURN_ALIAS_02"}}}, {"method": "item/agentMessage/delta", "params": {"delta": "Question."}}, {"method": "turn/completed", "params": {"turn": {"id": "TURN_ALIAS_02", "status": "completed"}}},
+        {"id": 6, "result": {"turn": {"id": "TURN_ALIAS_03"}}}, {"method": "item/agentMessage/delta", "params": {"delta": "After."}}, {"method": "turn/completed", "params": {"turn": {"id": "TURN_ALIAS_03", "status": "completed"}}},
+    ])
+    monkeypatch.setattr(poc_server, "_CodexProcessTransport", lambda: transport)
+    monkeypatch.setattr(poc_server, "_trace_codex", lambda *_args, **_kwargs: None)
+    poc_server._close_hybrid_session()
+    assert poc_server._start_source_codex_explanation("ecr", "Explain the safe next step.", {"state": "NON_COMPLIANT"})["status"] == "READY"
+    active = poc_server._HYBRID_SESSION
+    assert poc_server._start_source_codex_explanation("s3", "Explain this other finding.", {"state": "NON_COMPLIANT"})["reason_code"] == "CODEX_INVESTIGATION_BUSY"
+    assert poc_server._ask_source_codex("ecr", "x" * 301)["reason_code"] == "REQUEST_REJECTED"
+    assert poc_server._ask_source_codex("s3", "Explain this.")["reason_code"] == "CODEX_THREAD_CONTINUITY_LOST"
+    assert poc_server._HYBRID_SESSION is active
+    assert poc_server._ask_source_codex("ecr", "What should the operator review?")["status"] == "READY"
+    assert poc_server._finish_source_codex_explanation("ecr", {"status": "VERIFIED", "state": "COMPLIANT"})["status"] == "READY"
+    assert poc_server._HYBRID_SESSION is None
+
+
+def test_source_reasoning_routes_only_the_matching_finalized_payload(monkeypatch: pytest.MonkeyPatch) -> None:
+    for name, value in {
+        "SECCOP_DEMO_BACKEND": "AWS", "SECCOP_ECR_S3_COMBINED": "1", "SECCOP_ECR_OPERATOR_MVP": "1", "SECCOP_ECR_APP_SERVER": "1",
+        "SECCOP_ECR_SCANNER": "inspector", "SECCOP_S3_COMPLIANCE_E2E": "1", "SECCOP_PROFILE": "amit", "AWS_REGION": "ap-southeast-1", "SECCOP_S3_BUCKET": "S3_DRIFT_ALIAS",
+    }.items():
+        monkeypatch.setenv(name, value)
+    routed: list[tuple[str, str, set[str]]] = []
+    monkeypatch.setattr(poc_server, "_attach_source_reasoning", lambda source, command, payload, _request: routed.append((source, command, set(payload))))
+
+    def fake_run(args: list[str], **_: object) -> SimpleNamespace:
+        if "ecr-scan" in args:
+            return SimpleNamespace(stdout=json.dumps({"status": "READY", "reason_code": "SECCOP_ECR_NON_COMPLIANT", "state": "NON_COMPLIANT"}))
+        return SimpleNamespace(stdout=json.dumps({"status": "READY", "reason_code": "SECCOP_S3_NON_COMPLIANT", "state": "NON_COMPLIANT", "config_rule_name": "s3-bucket-level-public-access-prohibited", "remediation_document": "AWSConfigRemediation-ConfigureS3BucketPublicAccessBlock", "findings": []}))
+
+    monkeypatch.setattr(poc_server.subprocess, "run", fake_run)
+    poc_server._run_real_demo("scan", source="ecr")
+    poc_server._run_real_demo("scan", source="s3")
+
+    assert [(source, command) for source, command, _keys in routed] == [("ecr", "scan"), ("s3", "scan")]
+    assert {"proposal_id", "proposal_hash"}.issubset(routed[1][2])
 
 
 def test_source_timeout_is_pending_and_never_claims_no_execution(monkeypatch: pytest.MonkeyPatch) -> None:

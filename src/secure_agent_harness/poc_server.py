@@ -321,8 +321,9 @@ def _collect_codex_turn(session: _HybridSession, prompt: str, *, receive_timeout
     raise _CodexPreflightError("CODEX_APP_SERVER_UNAVAILABLE")
 
 
-def _hybrid_blocked(reason_code: str) -> dict[str, object]:
-    _close_hybrid_session()
+def _hybrid_blocked(reason_code: str, *, close_session: bool = True) -> dict[str, object]:
+    if close_session:
+        _close_hybrid_session()
     return {
         "status": "BLOCKED", "reason_code": reason_code,
         "aws_evidence_status": "SECCOP_ADAPTER", "aws_mcp_status": "AWS_MCP_UNAVAILABLE",
@@ -426,18 +427,37 @@ def _start_hybrid_explanation(request: SecCopAdvisoryRequest, *, evidence_status
 def _source_codex_facts(source: str, scan: dict[str, object]) -> str:
     """Project only trusted, source-bound provider facts into a Codex prompt."""
 
-    fields = (
+    findings = scan.get("findings", [])
+    finding = next((item for item in findings if isinstance(item, dict)), {}) if isinstance(findings, list) else {}
+    if not isinstance(finding, dict):
+        finding = {}
+    fields: tuple[tuple[str, object], ...] = (
         ("source", source.upper()),
         ("resource alias", scan.get("resource_alias") or {"ecr": "ECR_IMAGE_01", "s3": "S3_BUCKET_ALIAS_03", "ec2": _EC2_RND_ALIAS_LAB01}.get(source, "UNKNOWN")),
         ("provider", {"ecr": "AMAZON_INSPECTOR", "s3": "AWS_CONFIG", "ec2": "AWS_CONFIG"}.get(source, "UNKNOWN")),
-        ("scanner", scan.get("scanner_mode") or "ECR_ENHANCED_SCANNING"),
-        ("package ecosystem", scan.get("package_ecosystem") or "UNKNOWN"),
-        ("CVE", scan.get("cve_id") or "UNKNOWN"),
-        ("package", scan.get("package_name") or "none reported"),
-        ("installed version", scan.get("installed_version") or "none reported"),
-        ("severity", scan.get("severity") or "UNKNOWN"),
         ("state", scan.get("state") or scan.get("status") or "UNKNOWN"),
     )
+    if source == "ecr":
+        fields += (
+            ("scanner", scan.get("scanner_mode") or "ECR_ENHANCED_SCANNING"),
+            ("package ecosystem", scan.get("package_ecosystem") or "UNKNOWN"),
+            ("CVE", scan.get("cve_id") or finding.get("cve_id") or "UNKNOWN"),
+            ("package", scan.get("package_name") or finding.get("package_name") or "none reported"),
+            ("installed version", scan.get("installed_version") or finding.get("installed_version") or "none reported"),
+            ("severity", scan.get("severity") or finding.get("severity") or "UNKNOWN"),
+        )
+    elif source == "s3":
+        fields += (
+            ("Config rule", scan.get("config_rule_name") or _UNIFIED_RUNTIME_S3_STATE["config_rule_name"]),
+            ("remediation document", scan.get("remediation_document") or _UNIFIED_RUNTIME_S3_STATE["remediation_document"]),
+            ("observed public-access control", scan.get("observed_public_access_control") or finding.get("observed_state") or ("Block Public Access enabled" if scan.get("state") == "COMPLIANT" else "Block Public Access absent")),
+        )
+    elif source == "ec2":
+        fields += (
+            ("Config rule", scan.get("config_rule_name") or "ec2-imdsv2-check-rnd-lab01"),
+            ("remediation document", "AWSConfigRemediation-EnforceEC2InstanceIMDSv2"),
+            ("IMDSv2 HttpTokens state", scan.get("metadata_http_tokens") or finding.get("observed_state") or ("required" if scan.get("state") == "COMPLIANT" else "optional")),
+        )
     safe = []
     for label, value in fields:
         text = " ".join(str(value).split())
@@ -469,9 +489,9 @@ def _start_source_codex_explanation(source: str, request_text: str, scan: dict[s
 
     global _HYBRID_SESSION, _CODEX_INVESTIGATION_SOURCE
     if source not in {"ecr", "s3", "ec2"}:
-        return _hybrid_blocked("REQUEST_REJECTED")
+        return _hybrid_blocked("REQUEST_REJECTED", close_session=False)
     if _HYBRID_SESSION is not None:
-        return _hybrid_blocked("CODEX_INVESTIGATION_BUSY")
+        return _hybrid_blocked("CODEX_INVESTIGATION_BUSY", close_session=False)
     started = time.monotonic()
     try:
         request = " ".join(request_text.split())
@@ -522,10 +542,12 @@ def _finish_source_codex_explanation(source: str, after: dict[str, object]) -> d
     session = _HYBRID_SESSION
     if session is None:
         return _hybrid_blocked("CODEX_THREAD_UNAVAILABLE")
+    if source not in {"ecr", "s3", "ec2"}:
+        return _hybrid_blocked("REQUEST_REJECTED", close_session=False)
+    if _CODEX_INVESTIGATION_SOURCE != source or session.continuity_marker != f"{source.upper()}_BEFORE_COMPLETE" or session.turns_completed < 1:
+        return _hybrid_blocked("CODEX_THREAD_CONTINUITY_LOST", close_session=False)
     started = time.monotonic()
     try:
-        if _CODEX_INVESTIGATION_SOURCE != source or session.continuity_marker != f"{source.upper()}_BEFORE_COMPLETE" or session.turns_completed < 1:
-            return _hybrid_blocked("CODEX_THREAD_CONTINUITY_LOST")
         before = session.context.get("facts", {}) if isinstance(session.context, dict) else {}
         after_facts = dict(after)
         for field in ("scanner_mode", "package_ecosystem", "cve_id"):
@@ -545,7 +567,7 @@ def _finish_source_codex_explanation(source: str, after: dict[str, object]) -> d
             "aws_evidence_status": {"ecr": "AMAZON_INSPECTOR", "s3": "AWS_CONFIG", "ec2": "AWS_CONFIG"}[source], "aws_mcp_status": "NOT_USED",
             "aws_mcp_mode": "READ_ONLY", "tool_activity": ["Same read-only Codex thread continued"],
             "response_text": response, "continuity_marker": session.continuity_marker,
-            "message": "Codex explained the verified ECR AFTER state on the same thread.",
+            "message": f"Codex explained the verified {source.upper()} AFTER state on the same thread.",
         }
     except _CodexPreflightError as error:
         _trace_codex(source, "AFTER", "BLOCKED", duration_ms=int((time.monotonic() - started) * 1000))
@@ -561,11 +583,11 @@ def _ask_source_codex(source: str, question: str) -> dict[str, object]:
     session = _HYBRID_SESSION
     request = " ".join(question.split())
     if source not in {"ecr", "s3", "ec2"} or not request or len(request) > 300:
-        return _hybrid_blocked("REQUEST_REJECTED")
+        return _hybrid_blocked("REQUEST_REJECTED", close_session=False)
     if session is None:
-        return _hybrid_blocked("CODEX_SCAN_REQUIRED")
+        return _hybrid_blocked("CODEX_SCAN_REQUIRED", close_session=False)
     if _CODEX_INVESTIGATION_SOURCE != source or session.continuity_marker != f"{source.upper()}_BEFORE_COMPLETE":
-        return _hybrid_blocked("CODEX_THREAD_CONTINUITY_LOST")
+        return _hybrid_blocked("CODEX_THREAD_CONTINUITY_LOST", close_session=False)
     try:
         response = _collect_codex_turn(session, "Question about the same sanitized evidence: " + request + "\nAnswer briefly. Do not use tools.", receive_timeout=_ECR_TURN_TIMEOUT)
         _trace_codex(source, "QUESTION", "READY", session=session)
@@ -967,7 +989,6 @@ def _run_real_demo(command: str, *, source: str | None = None, request_text: str
             _ECR_APPROVAL_READY = False
             _ECR_SCAN_TAG_OVERRIDE = "demo-current"
         _attach_source_reasoning("ecr", command, payload, request_text)
-        _attach_source_reasoning("s3", command, payload, request_text)
         return payload
     if os.environ.get("SECCOP_S3_COMPLIANCE_E2E") == "1" and (not combined or source == "s3"):
         mapped = {"scan": "scan", "fix": "apply", "reset": "reset"}.get(command)
@@ -1016,6 +1037,7 @@ def _run_real_demo(command: str, *, source: str | None = None, request_text: str
                 _S3_APPROVAL_READY = True
         if mapped == "apply" and payload.get("status") == "VERIFIED": _S3_APPROVAL_READY = False
         if mapped == "reset" and payload.get("reason_code") == "SECCOP_S3_RESET_READY": _S3_APPROVAL_READY = False
+        _attach_source_reasoning("s3", command, payload, request_text)
         return payload
     allowed_commands = {"start", "scan", "rescan", "fix"}
     if command not in allowed_commands:
