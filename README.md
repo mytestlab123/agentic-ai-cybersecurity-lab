@@ -161,6 +161,15 @@ The runner saves JSON evidence in the operator-local temporary evidence area,
 copies review screenshots to the requested Windows folder, and cleans up only
 the app and browser profile it created.
 
+For the repeatable M8 release check, use the smaller synthetic golden run:
+
+```bash
+./scripts/golden-gui-e2e.sh
+```
+
+It clears inherited live-demo bindings, runs one headless browser against an
+owned local server, retains no pass-path screenshots, and makes no AWS call.
+
 ## Repeatable three-source DEMO
 
 Issue 32 adds guarded start and cleanup commands for the approved live

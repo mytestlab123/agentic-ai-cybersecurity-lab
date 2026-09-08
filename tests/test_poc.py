@@ -141,6 +141,7 @@ def test_browser_surface_is_local_and_has_the_gate_controls() -> None:
         ("s3", {"status": "NO_FINDINGS", "state": "COMPLIANT", "reason_code": "SECCOP_S3_COMPLIANT"}, "No decision required", "No action required", "clean or compliant"),
         ("ec2", {"status": "COMPLIANT", "reason_code": "SECCOP_EC2_IMDSV2_COMPLIANT"}, "No decision required", "No action required", "clean or compliant"),
         ("ec2", {"status": "BLOCKED", "state": "PENDING", "reason_code": "TARGET_NOT_ALLOWED"}, "No decision", "Not completed", "Not complete"),
+        ("ecr", {"status": "PENDING", "state": "UNKNOWN", "reason_code": "SECCOP_ECR_SUBMISSION_UNKNOWN", "safe_retry_action": "RECONCILE_BEFORE_RETRY"}, "Awaiting a safe terminal", "Not completed", "Pending provider reconciliation"),
     ],
 )
 def test_governance_timeline_preserves_five_stage_truth(
