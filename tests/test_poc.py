@@ -316,6 +316,7 @@ def test_ecr_codex_before_after_uses_one_sanitized_thread(monkeypatch: pytest.Mo
         {"method": "turn/completed", "params": {"turn": {"id": "TURN_ALIAS_02", "status": "completed"}}},
     ])
     monkeypatch.setattr(poc_server, "_CodexProcessTransport", lambda: transport)
+    monkeypatch.setattr(poc_server, "_trace_codex", lambda *_args, **_kwargs: None)
     before = poc_server._start_ecr_codex_explanation("Investigate and explain the safe next step.", {
         "scanner_mode": "ECR_ENHANCED_SCANNING", "package_ecosystem": "JAVASCRIPT_NPM",
         "cve_id": "CVE-2020-8203", "package_name": "lodash", "installed_version": "4.17.15",
