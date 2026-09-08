@@ -1195,6 +1195,19 @@
       }
     }
 
+    async function resetCodexInvestigation() {
+      try {
+        const payload = await post('/api/codex-reset', {});
+        if (payload.result?.status !== 'READY') throw new Error(payload.result?.reason_code || 'CODEX_SESSION_RESET_FAILED');
+        await refreshCodexStatus();
+        return true;
+      } catch (error) {
+        const body = addMessage('assistant', 'The local Codex investigation could not be reset.');
+        body.lastChild.classList.add('error-copy');
+        return false;
+      }
+    }
+
     form.addEventListener('submit', async (event) => {
       event.preventDefault();
       const prompt = promptEl.value.trim();
@@ -1225,7 +1238,10 @@
       finally { runButton.disabled = false; }
     });
 
-    newChat.addEventListener('click', () => { messages.replaceChildren(); welcome.classList.remove('hidden'); inputModeEl.value = 'CVE_REVIEW'; promptEl.value = ''; promptEl.focus(); runId = null; lastLiveProposalId = null; lastLiveProposalHash = null; });
+    newChat.addEventListener('click', async () => {
+      if (!await resetCodexInvestigation()) return;
+      messages.replaceChildren(); welcome.classList.remove('hidden'); inputModeEl.value = 'CVE_REVIEW'; promptEl.value = ''; promptEl.focus(); runId = null; lastLiveProposalId = null; lastLiveProposalHash = null;
+    });
 
     toggleComposerButton.addEventListener('click', () => {
       const collapsed = composerWrap.classList.toggle('hidden');
