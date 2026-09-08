@@ -283,6 +283,21 @@ def _codex_status() -> dict[str, object]:
     }
 
 
+def _reset_codex_investigation() -> dict[str, object]:
+    """End only the current local no-tool investigation at operator request."""
+
+    global _HYBRID_SESSION, _CODEX_INVESTIGATION_SOURCE
+    try:
+        if _HYBRID_SESSION is not None:
+            _HYBRID_SESSION.transport.close()
+    except OSError:
+        return {"status": "BLOCKED", "reason_code": "CODEX_SESSION_RESET_FAILED", "message": "The local Codex investigation could not be reset."}
+    _HYBRID_SESSION = None
+    _CODEX_INVESTIGATION_SOURCE = None
+    _CODEX_OBSERVABILITY.update({"source": "NONE", "active": False, "lifecycle": "FRESH", "turns_completed": 0})
+    return {"status": "READY", "reason_code": "CODEX_SESSION_RESET", "message": "The local Codex investigation was reset; provider and approval state are unchanged."}
+
+
 def _collect_codex_turn(session: _HybridSession, prompt: str, *, receive_timeout: float = 180.0) -> str:
     deadline = time.monotonic() + receive_timeout
     request_id = session.next_id
@@ -1657,6 +1672,13 @@ class _Handler(BaseHTTPRequestHandler):
                 self._send_json(400, {"status": "BLOCKED", "reason_code": "REQUEST_REJECTED"})
                 return
             self._send_json(200, {"result": _run_codex_preflight(), "events": []})
+            return
+
+        if self.path == "/api/codex-reset":
+            if payload:
+                self._send_json(400, {"status": "BLOCKED", "reason_code": "REQUEST_REJECTED"})
+                return
+            self._send_json(200, {"result": _reset_codex_investigation(), "events": []})
             return
 
         if self.path == "/api/scan":

@@ -438,6 +438,74 @@ def test_codex_status_endpoint_is_readonly_and_excludes_private_fields(monkeypat
     assert poc_server._SECCOP_APPROVALS == approvals_before
 
 
+def test_codex_reset_preserves_conflict_protection_then_allows_fresh_source_sessions(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    class TrackingTransport(_FakeCodexTransport):
+        def __init__(self, messages: list[dict[str, object]]) -> None:
+            super().__init__(messages)
+            self.closed = False
+
+        def close(self) -> None:
+            self.closed = True
+
+    def messages() -> list[dict[str, object]]:
+        return [
+            {"id": 1, "result": {"userAgent": "codex"}}, {"id": 2, "result": {"account": {"type": "chatgpt"}}}, {"id": 3, "result": {"thread": {"id": "THREAD_ALIAS_01"}}},
+            {"id": 4, "result": {"turn": {"id": "TURN_ALIAS_01"}}}, {"method": "item/agentMessage/delta", "params": {"delta": "Before."}}, {"method": "turn/completed", "params": {"turn": {"id": "TURN_ALIAS_01", "status": "completed"}}},
+        ]
+
+    transports = [TrackingTransport(messages()) for _ in range(3)]
+    pending_transports = list(transports)
+    monkeypatch.setattr(poc_server, "_CodexProcessTransport", lambda: pending_transports.pop(0))
+    monkeypatch.setattr(poc_server, "_trace_codex", lambda *_args, **_kwargs: None)
+    monkeypatch.setenv("SECCOP_ECR_APP_SERVER", "1")
+    monkeypatch.setattr(poc_server, "_CODEX_OBSERVABILITY", {"source": "NONE", "active": False, "lifecycle": "FRESH", "turns_completed": 0})
+    poc_server._close_hybrid_session()
+
+    assert poc_server._start_source_codex_explanation("ecr", "Explain the safe next step.", {"state": "NON_COMPLIANT"})["status"] == "READY"
+    assert poc_server._start_source_codex_explanation("s3", "Explain this other finding.", {"state": "NON_COMPLIANT"})["reason_code"] == "CODEX_INVESTIGATION_BUSY"
+    assert poc_server._reset_codex_investigation()["reason_code"] == "CODEX_SESSION_RESET"
+    assert transports[0].closed is True
+    assert poc_server._codex_status() == {"status": "OK", "app_server": "ENABLED", "current_source": "NONE", "session": "INACTIVE", "lifecycle": "FRESH", "completed_turns": 0}
+    assert poc_server._start_source_codex_explanation("s3", "Explain the safe next step.", {"state": "NON_COMPLIANT"})["status"] == "READY"
+    assert poc_server._reset_codex_investigation()["reason_code"] == "CODEX_SESSION_RESET"
+    assert transports[1].closed is True
+    assert poc_server._start_source_codex_explanation("ec2", "Explain the safe next step.", {"state": "NON_COMPLIANT"})["status"] == "READY"
+    assert poc_server._reset_codex_investigation()["reason_code"] == "CODEX_SESSION_RESET"
+    assert transports[2].closed is True
+
+
+def test_codex_reset_endpoint_is_local_only_and_private_safe(monkeypatch: pytest.MonkeyPatch) -> None:
+    class TrackingTransport(_FakeCodexTransport):
+        def __init__(self) -> None:
+            super().__init__([])
+            self.closed = False
+
+        def close(self) -> None:
+            self.closed = True
+
+    transport = TrackingTransport()
+    monkeypatch.setattr(poc_server, "_HYBRID_SESSION", _HybridSession(transport, "THREAD_ALIAS_01", [], 4, {}, "ECR_BEFORE_COMPLETE", 1))
+    monkeypatch.setattr(poc_server, "_CODEX_INVESTIGATION_SOURCE", "ecr")
+    monkeypatch.setattr(poc_server, "_CODEX_OBSERVABILITY", {"source": "ECR", "active": True, "lifecycle": "BEFORE_COMPLETE", "turns_completed": 1})
+    proposals_before = dict(poc_server._SECCOP_PROPOSALS)
+    approvals_before = dict(poc_server._SECCOP_APPROVALS)
+    server = ThreadingHTTPServer(("127.0.0.1", 0), _Handler)
+    thread = Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    try:
+        request = Request(f"http://127.0.0.1:{server.server_port}/api/codex-reset", data=b"{}", headers={"Content-Type": "application/json"}, method="POST")
+        payload = json.loads(urlopen(request).read())
+    finally:
+        server.shutdown()
+    assert payload == {"result": {"status": "READY", "reason_code": "CODEX_SESSION_RESET", "message": "The local Codex investigation was reset; provider and approval state are unchanged."}, "events": []}
+    assert transport.closed is True
+    assert poc_server._SECCOP_PROPOSALS == proposals_before
+    assert poc_server._SECCOP_APPROVALS == approvals_before
+    assert not ({"thread", "prompt", "path", "model", "trace", "token", "credential", "provider", "proposal", "approval", "action", "target"} & set(payload["result"]))
+
+
 def test_source_codex_question_rejects_wrong_source_and_missing_scan() -> None:
     poc_server._close_hybrid_session()
     poc_server._CODEX_INVESTIGATION_SOURCE = None
@@ -1366,6 +1434,10 @@ def test_browser_source_composer_forwards_questions_without_rescanning() -> None
     assert 'id="codex-status"' in html
     assert "/api/codex-status" in html
     assert "void refreshCodexStatus();" in html
+    assert "async function resetCodexInvestigation()" in html
+    assert "/api/codex-reset" in html
+    assert "if (!await resetCodexInvestigation()) return;" in html
+    assert "await refreshCodexStatus();" in html
 
 
 def test_browser_sidebar_and_composer_management_view() -> None:
