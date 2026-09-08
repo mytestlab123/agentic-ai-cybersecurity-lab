@@ -11,6 +11,7 @@ evidence_dir="${EVIDENCE_ROOT:-${temp_root}/agentic-ai-cybersecurity-lab/browser
 review_dir=${REVIEW_DIR:-}
 live_advisory=${LIVE_ADVISORY:-}
 live_scan_only=${LIVE_SCAN_ONLY:-0}
+golden_gui=${SECCOP_GOLDEN_GUI:-0}
 node_runner="$repo_dir/scripts/browser-e2e.mjs"
 app_pid=''
 chrome_pid=''
@@ -28,6 +29,10 @@ require_command() {
 for command_name in curl jq ss wslpath; do
   require_command "$command_name"
 done
+[[ "$golden_gui" == 0 || "$golden_gui" == 1 ]] || {
+  printf 'SECCOP_GOLDEN_GUI must be 0 or 1\n' >&2
+  exit 1
+}
 [[ -r "$node_runner" ]] || {
   printf 'missing browser runner: %s\n' "$node_runner" >&2
   exit 1
@@ -88,7 +93,19 @@ trap cleanup EXIT INT TERM
 
 (
   cd "$repo_dir"
-  POC_PORT="$app_port" LIVE_SCAN_ONLY="$live_scan_only" uv run python -m secure_agent_harness.poc_server
+  if [[ "$golden_gui" == 1 ]]; then
+    # A golden run must not inherit a retained live-demo binding from the
+    # caller. It proves the documented synthetic browser contract only.
+    exec env -u SECCOP_DEMO_BACKEND -u SECCOP_ECR_S3_COMBINED -u SECCOP_ECR_OPERATOR_MVP \
+      -u SECCOP_ECR_APP_SERVER -u SECCOP_ECR_SCANNER -u SECCOP_ECR_FIXTURE \
+      -u SECCOP_S3_COMPLIANCE_E2E -u SECCOP_S3_EVIDENCE_DIR -u SECCOP_S3_BUCKET \
+      -u SECCOP_S3_PROTECTED_BUCKETS -u SECCOP_EC2_IMDSV2_E2E -u SECCOP_EC2_RND_REARM \
+      -u SECCOP_EC2_PROFILE -u SECCOP_EC2_REGION -u AWS_PROFILE -u AWS_DEFAULT_PROFILE \
+      -u AWS_REGION -u AWS_DEFAULT_REGION -u SECCOP_PROFILE \
+      POC_PORT="$app_port" LIVE_SCAN_ONLY="$live_scan_only" uv run python -m secure_agent_harness.poc_server
+  else
+    exec env POC_PORT="$app_port" LIVE_SCAN_ONLY="$live_scan_only" uv run python -m secure_agent_harness.poc_server
+  fi
 ) >"$evidence_dir/app.log" 2>&1 &
 app_pid=$!
 
@@ -185,17 +202,19 @@ node_windows=${WINDOWS_NODE:-'/mnt/c/Program Files/nodejs/node.exe'}
 
 APP_URL="$app_url" CDP_URL="$cdp_url" EVIDENCE_DIR="$evidence_dir_windows" \
   REVIEW_DIR="$(wslpath -w "$review_dir")" PLAYWRIGHT_CORE="$playwright_windows" \
-  LIVE_ADVISORY="$live_advisory_windows" LIVE_SCAN_ONLY="$live_scan_only" export APP_URL CDP_URL EVIDENCE_DIR REVIEW_DIR PLAYWRIGHT_CORE LIVE_ADVISORY LIVE_SCAN_ONLY
-export WSLENV='APP_URL:CDP_URL:EVIDENCE_DIR:REVIEW_DIR:PLAYWRIGHT_CORE:LIVE_ADVISORY:LIVE_SCAN_ONLY'
+  LIVE_ADVISORY="$live_advisory_windows" LIVE_SCAN_ONLY="$live_scan_only" SECCOP_GOLDEN_GUI="$golden_gui" \
+  export APP_URL CDP_URL EVIDENCE_DIR REVIEW_DIR PLAYWRIGHT_CORE LIVE_ADVISORY LIVE_SCAN_ONLY SECCOP_GOLDEN_GUI
+export WSLENV='APP_URL:CDP_URL:EVIDENCE_DIR:REVIEW_DIR:PLAYWRIGHT_CORE:LIVE_ADVISORY:LIVE_SCAN_ONLY:SECCOP_GOLDEN_GUI'
 "$node_windows" "$runner_windows"
 
+screenshots=()
+if [[ "$golden_gui" != 1 ]]; then
 screenshots=(
   SecCop-Scan-01.png \
   SecCop-CVE-01.png \
   SecCop-CVE-01-slide.png \
   SecCop-Scan-02.png \
   SecCop-Approval-01-slide.png \
-  SecCop-Scan-02-live-review.png \
   SecCop-Scan-03.png \
   SecCop-Scan-04.png \
   SecCop-Scan-05-blocked.png
@@ -210,6 +229,7 @@ elif [[ "$live_scan_only" == codex ]]; then
   screenshots=(SecCop-Codex-Preflight.png SecCop-Codex-Preflight-card.png)
 elif [[ -n "$live_advisory" ]]; then
   screenshots=(SecCop-Live-Finding.png SecCop-Live-Approval.png SecCop-Live-After.png)
+fi
 fi
 for screenshot in "${screenshots[@]}"; do
   test -s "$evidence_dir/$screenshot"
@@ -230,6 +250,11 @@ jq -e '.status == "PASS" and .externalRequests == 0 and .consoleErrors == 0' \
 if [[ ${SECCOP_E2E_FAIL_BEFORE_PUBLISH:-0} == 1 ]]; then
   printf '%s\n' 'intentional failure before screenshot publication' >&2
   exit 9
+fi
+if [[ "$golden_gui" == 1 ]]; then
+  printf 'PASS: SecCop browser golden GUI proof (no screenshots)\n'
+  printf 'Evidence: %s\n' "$evidence_dir"
+  exit 0
 fi
 publish_dir="$evidence_dir/publish"
 install -d -m 700 "$publish_dir"

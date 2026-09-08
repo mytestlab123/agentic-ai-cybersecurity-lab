@@ -37,6 +37,16 @@ For routine Codex validation prefer:
 
 Codex should first read the small PASS/FAIL result. Inspect trace, screenshot, console or DevTools only for the failing flow.
 
+The repo-owned quick command is:
+
+```bash
+./scripts/golden-gui-e2e.sh
+```
+
+It starts an isolated local synthetic server, clears retained live-demo
+bindings, uses one headless browser, and keeps screenshots out of a passing
+run. It must not be used as live-provider evidence.
+
 ## Golden GUI flows
 
 Keep the browser suite intentionally small. Cover the manager-visible journeys only:

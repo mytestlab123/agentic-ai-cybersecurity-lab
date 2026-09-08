@@ -143,6 +143,9 @@ read-only suggestions. The composer also starts with a one-CVE check: paste a
 single CVE to see which of the three demo sources contains it. This lookup is
 read-only and does not start approval or remediation.
 
+The concise manager startup, approval, reset, and verification journey is in
+[docs/SECCOP_V01_MANAGER_RUNBOOK.md](docs/SECCOP_V01_MANAGER_RUNBOOK.md).
+
 The latest browser proof is in the
 [SecCop DEMO evidence report](docs/evidence/seccop-demo/report.md), with
 sanitized screenshots beside it.
