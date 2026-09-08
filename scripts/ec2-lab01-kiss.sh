@@ -5,7 +5,7 @@ umask 077
 alias_name=DEV_EC2_LAB_01
 rule_name=ec2-imdsv2-check-rnd-lab01
 map_root="${HOME:?}/.AGENTS-temp/agentic-ai-cybersecurity-lab"
-map_file="${SECCOP_EC2_LAB01_MAP:-$map_root/ec2-lab01-map.json}"
+map_file="${SECCOP_EC2_RND_TARGET_MAP:-$map_root/seccop-unified/ec2-lab01-map.json}"
 
 fail() { printf 'BLOCKED: %s\n' "$1" >&2; exit 1; }
 usage() {
@@ -26,12 +26,12 @@ load_mapping() {
   command -v jq >/dev/null 2>&1 || fail 'jq is required'
   local keyset candidate
   keyset=$(jq -er 'if type == "object" then ([keys[]] | sort | join(",")) else empty end' "$map_file") || fail "LAB_01 mapping JSON is invalid; run: $(map_hint)"
-  [[ "$keyset" == 'instance_id,profile,region' ]] || fail "LAB_01 mapping must contain only instance_id, profile, and region; run: $(map_hint)"
+  [[ "$keyset" == 'DEV_EC2_LAB_01,profile,region' ]] || fail "LAB_01 mapping must contain only DEV_EC2_LAB_01, profile, and region; run: $(map_hint)"
   profile=$(jq -er '.profile | strings' "$map_file") || fail "LAB_01 mapping has no profile; run: $(map_hint)"
   [[ "$profile" == 'ihis_dev' ]] || fail "LAB_01 mapping profile must be ihis_dev; run: $(map_hint)"
   region=$(jq -er '.region | strings' "$map_file") || fail "LAB_01 mapping has no region; run: $(map_hint)"
   [[ "$region" == 'ap-southeast-1' ]] || fail "LAB_01 mapping region must be ap-southeast-1; run: $(map_hint)"
-  candidate=$(jq -er '.instance_id | strings' "$map_file") || fail "LAB_01 mapping has no instance_id; run: $(map_hint)"
+  candidate=$(jq -er '.DEV_EC2_LAB_01 | strings' "$map_file") || fail "LAB_01 mapping has no DEV_EC2_LAB_01 target; run: $(map_hint)"
   [[ "$candidate" != 'REPLACE_WITH_PRIVATE_LAB_01_INSTANCE_ID' ]] || fail "LAB_01 mapping still contains the public example placeholder; run: $(map_hint)"
   [[ "$candidate" =~ ^i-[0-9a-f]{8,17}$ ]] || fail "LAB_01 mapping instance_id is invalid; run: $(map_hint)"
   instance_id=$candidate
@@ -47,7 +47,7 @@ configure() {
   [[ -d "$map_root" ]] || install -d -m 700 "$map_root"
   [[ -d "$parent" ]] || install -d -m 700 "$parent"
   tmp=$(mktemp "$map_file.tmp.XXXXXX") || fail 'could not create the private LAB_01 mapping file'
-  jq -cn --arg instance_id "$requested_id" '{profile:"ihis_dev",region:"ap-southeast-1",instance_id:$instance_id}' > "$tmp"
+  jq -cn --arg instance_id "$requested_id" '{profile:"ihis_dev",region:"ap-southeast-1",DEV_EC2_LAB_01:$instance_id}' > "$tmp"
   chmod 600 "$tmp"
   mv -- "$tmp" "$map_file"
   printf 'LAB_01 mapping configured at %s (profile=ihis_dev region=ap-southeast-1; instance ID withheld)\n' "$map_file"

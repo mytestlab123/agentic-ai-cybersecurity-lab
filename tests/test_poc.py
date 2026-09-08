@@ -111,6 +111,7 @@ def test_browser_surface_is_local_and_has_the_gate_controls() -> None:
     assert "/api/decision" in html
     assert "/api/live-evidence" in html
     assert "/api/scan" in html
+    assert "/api/ask" in html
     assert "/api/demo/reject" in html
     assert "isS3Risk ? 'Remediate'" in html
     assert "Exposure-risk remediation rejected" in html
@@ -366,6 +367,66 @@ def test_ecr_codex_after_fails_closed_when_continuity_marker_is_missing() -> Non
         poc_server._close_hybrid_session()
     assert result["status"] == "BLOCKED"
     assert result["reason_code"] == "CODEX_THREAD_CONTINUITY_LOST"
+
+
+@pytest.mark.parametrize("source", ["ecr", "s3", "ec2"])
+def test_source_codex_reasoning_binds_before_question_and_after_to_one_source(
+    monkeypatch: pytest.MonkeyPatch, source: str,
+) -> None:
+    transport = _FakeCodexTransport([
+        {"id": 1, "result": {"userAgent": "codex"}},
+        {"id": 2, "result": {"account": {"type": "chatgpt"}}},
+        {"id": 3, "result": {"thread": {"id": "THREAD_ALIAS_01"}}},
+        {"id": 4, "result": {"turn": {"id": "TURN_ALIAS_01"}}},
+        {"method": "item/agentMessage/delta", "params": {"delta": "Before explanation."}},
+        {"method": "turn/completed", "params": {"turn": {"id": "TURN_ALIAS_01", "status": "completed"}}},
+        {"id": 5, "result": {"turn": {"id": "TURN_ALIAS_02"}}},
+        {"method": "item/agentMessage/delta", "params": {"delta": "Question explanation."}},
+        {"method": "turn/completed", "params": {"turn": {"id": "TURN_ALIAS_02", "status": "completed"}}},
+        {"id": 6, "result": {"turn": {"id": "TURN_ALIAS_03"}}},
+        {"method": "item/agentMessage/delta", "params": {"delta": "After explanation."}},
+        {"method": "turn/completed", "params": {"turn": {"id": "TURN_ALIAS_03", "status": "completed"}}},
+    ])
+    monkeypatch.setattr(poc_server, "_CodexProcessTransport", lambda: transport)
+    poc_server._close_hybrid_session()
+    poc_server._CODEX_INVESTIGATION_SOURCE = None
+    before = poc_server._start_source_codex_explanation(source, "Explain the safe next step.", {"state": "NON_COMPLIANT"})
+    question = poc_server._ask_source_codex(source, "What should the operator review?")
+    after = poc_server._finish_source_codex_explanation(source, {"status": "VERIFIED", "state": "COMPLIANT"})
+
+    assert before["reason_code"] == f"{source.upper()}_CODEX_BEFORE_READY"
+    assert question["reason_code"] == f"{source.upper()}_CODEX_QUESTION_READY"
+    assert after["reason_code"] == f"{source.upper()}_CODEX_AFTER_EXPLAINED"
+    assert [item["params"]["threadId"] for item in transport.sent if item.get("method") == "turn/start"] == ["THREAD_ALIAS_01"] * 3
+    assert poc_server._HYBRID_SESSION is None
+
+
+def test_source_codex_question_rejects_wrong_source_and_missing_scan() -> None:
+    poc_server._close_hybrid_session()
+    poc_server._CODEX_INVESTIGATION_SOURCE = None
+    assert poc_server._ask_source_codex("s3", "Explain this.")["reason_code"] == "CODEX_SCAN_REQUIRED"
+    poc_server._HYBRID_SESSION = _HybridSession(_FakeCodexTransport([]), "THREAD_ALIAS_01", [], 4, {}, "ECR_BEFORE_COMPLETE", 1)
+    poc_server._CODEX_INVESTIGATION_SOURCE = "ecr"
+    try:
+        assert poc_server._ask_source_codex("s3", "Explain this.")["reason_code"] == "CODEX_THREAD_CONTINUITY_LOST"
+    finally:
+        poc_server._close_hybrid_session()
+        poc_server._CODEX_INVESTIGATION_SOURCE = None
+
+
+def test_source_timeout_is_pending_and_never_claims_no_execution(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("SECCOP_DEMO_BACKEND", "AWS")
+    monkeypatch.setenv("SECCOP_ECR_OPERATOR_MVP", "1")
+    monkeypatch.setenv("SECCOP_ECR_SCANNER", "inspector")
+    monkeypatch.setenv("SECCOP_PROFILE", "amit")
+    monkeypatch.setenv("AWS_REGION", "ap-southeast-1")
+    monkeypatch.setattr(poc_server.subprocess, "run", lambda *_args, **_kwargs: (_ for _ in ()).throw(subprocess.TimeoutExpired("fixture", 1)))
+
+    result = poc_server._run_real_demo("scan", source="ecr")
+
+    assert result["reason_code"] == "SECCOP_ECR_SUBMISSION_UNKNOWN"
+    assert result["mutation_state"] == "UNKNOWN"
+    assert result["safe_retry_action"] == "RECONCILE_BEFORE_RETRY"
 
 
 class _FakeProcess:
@@ -1210,6 +1271,16 @@ def test_browser_uses_clean_verification_copy_for_compliant_ecr_rescan() -> None
     assert "No active package findings were returned for the approved ECR digest." in html
     assert "ECR_CODEX_BEFORE_READY" not in html
     assert "sanitized BEFORE facts" not in html
+
+
+def test_browser_source_composer_forwards_questions_without_rescanning() -> None:
+    html = (Path(__file__).parents[1] / "web" / "poc_chat.html").read_text()
+
+    form_handler = html.split("form.addEventListener('submit'", 1)[1].split("newChat.addEventListener", 1)[0]
+    assert "await askSecCop(prompt)" in form_handler
+    assert "/api/ask" in html
+    assert "if (ecrReview || s3Review) { startScan(runButton); return; }" not in html
+    assert "ECR promotion blocked" in html
 
 
 def test_browser_sidebar_and_composer_management_view() -> None:

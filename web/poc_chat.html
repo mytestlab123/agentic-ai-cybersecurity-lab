@@ -768,7 +768,7 @@
       const card = node('div', 'result-card');
       const head = node('div', 'result-head');
       const verified = result.status === 'VERIFIED';
-      head.appendChild(node('div', 'result-title', sourceType === 'S3_BUCKET' ? (verified ? 'Exposure-risk remediation verified' : 'Exposure-risk remediation blocked') : ec2Review && sourceType === 'EC2_CONFIG' ? (verified ? 'EC2 IMDSv2 remediation verified' : 'EC2 IMDSv2 remediation blocked') : ecrReview && sourceType === 'ECR_IMAGE' ? 'ECR promotion verified' : 'Approved DEMO fix'));
+      head.appendChild(node('div', 'result-title', sourceType === 'S3_BUCKET' ? (verified ? 'Exposure-risk remediation verified' : 'Exposure-risk remediation blocked') : ec2Review && sourceType === 'EC2_CONFIG' ? (verified ? 'EC2 IMDSv2 remediation verified' : 'EC2 IMDSv2 remediation blocked') : ecrReview && sourceType === 'ECR_IMAGE' ? (verified ? 'ECR promotion verified' : 'ECR promotion blocked') : 'Approved DEMO fix'));
       const remediationBadge = ((s3Review && sourceType === 'S3_BUCKET') || (ec2Review && sourceType === 'EC2_CONFIG') || (ecrReview && sourceType === 'ECR_IMAGE')) && verified ? { label: 'CHECK VERIFIED', className: 'protected' } : { label: result.reason_code || result.status || 'BLOCKED', className: '' };
       head.appendChild(node('span', 'badge ' + remediationBadge.className, remediationBadge.label));
       card.appendChild(head);
@@ -1159,10 +1159,30 @@
       }
     }
 
+    async function askSecCop(question) {
+      const source = selectedSource;
+      addMessage('user', question);
+      const thinking = addMessage('assistant', 'Reviewing the current source evidence with Codex...');
+      try {
+        const payload = await post('/api/ask', { source, question });
+        thinking.parentElement.remove();
+        const result = payload.result || {};
+        const body = addMessage('assistant', result.message || 'Ask SecCop was blocked.');
+        if (result.response_text) body.appendChild(node('div', 'approval-copy', result.response_text));
+      } catch (error) {
+        thinking.textContent = error.message === 'CODEX_SCAN_REQUIRED' ? 'Scan this source before asking SecCop.' : 'Ask SecCop was blocked.';
+        thinking.classList.add('error-copy');
+      }
+    }
+
     form.addEventListener('submit', async (event) => {
       event.preventDefault();
-      if (ecrReview || s3Review) { startScan(runButton); return; }
       const prompt = promptEl.value.trim();
+      if (ecrReview || s3Review || ec2Review) {
+        if (!prompt) { const body = addMessage('assistant', 'Enter one short question about the current source evidence.'); body.lastChild.classList.add('error-copy'); return; }
+        await askSecCop(prompt);
+        return;
+      }
       const cves = extractCves(prompt);
       if (!cves.length) { const body = addMessage('assistant', 'Paste one CVE identifier, such as CVE-2099-0001.'); body.lastChild.classList.add('error-copy'); return; }
       if (cves.length > 1) { const body = addMessage('assistant', 'Please paste one CVE at a time so each check stays clear and exact.'); body.lastChild.classList.add('error-copy'); return; }

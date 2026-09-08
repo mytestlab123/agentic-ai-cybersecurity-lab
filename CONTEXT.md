@@ -29,6 +29,12 @@ remediation state and supersedes this snapshot.
 Current objective: persistent Security Copilot (SecCop) live demo after the
 local visual POC and fake-tested read-only adapter.
 
+Current three-source reasoning contract: ECR, S3, and fixed EC2 LAB_01 use the
+existing no-tool Codex App Server path only for source-bound sanitized BEFORE,
+question, and verified AFTER explanations. AWS/provider evidence, approvals,
+execution, and verification are deterministic. Local fixture proof is not AWS
+proof; retained resources remain untouched unless separately approved.
+
 The local harness remains deterministic, default-deny, and no-op on approval.
 The read-only adapter projects constrained Inspector package fields and SSM
 patch state. The browser now accepts a strict Inspector CSV plus an exact EC2

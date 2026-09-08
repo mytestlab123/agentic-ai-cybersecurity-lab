@@ -58,6 +58,7 @@ _SECCOP_ADVISORIES: dict[str, SecCopAdvisoryRequest] = {}
 _SECCOP_TARGET_IDS: dict[str, str] = {}
 _SERVER_SCAN_REQUEST: SecCopAdvisoryRequest | None = None
 _HYBRID_SESSION: "_HybridSession | None" = None
+_CODEX_INVESTIGATION_SOURCE: str | None = None
 _S3_APPROVAL_READY = False
 _S3_PROPOSALS: dict[str, dict[str, str | bool]] = {}
 _ECR_APPROVAL_READY = False
@@ -69,6 +70,7 @@ _EC2_RND_ALIAS_LAB01 = "DEV_EC2_LAB_01"
 _ECR_TURN_TIMEOUT = 60.0
 _CODEX_PREFLIGHT_TURN_TIMEOUT = 30.0
 _CODEX_STDERR_DIR = Path.home() / ".AGENTS-temp" / "agentic-ai-cybersecurity-lab" / "issue53-app-server-observability" / "app-server-stderr"
+_CODEX_TRACE_PATH = Path.home() / ".AGENTS-temp" / "agentic-ai-cybersecurity-lab" / "seccop-codex" / "investigations.jsonl"
 _UNIFIED_RUNTIME_S3_STATE = {
     "config_rule_name": "s3-bucket-level-public-access-prohibited",
     "config_source": "S3_BUCKET_LEVEL_PUBLIC_ACCESS_PROHIBITED",
@@ -247,10 +249,11 @@ class _HybridSession:
 
 
 def _close_hybrid_session() -> None:
-    global _HYBRID_SESSION
+    global _HYBRID_SESSION, _CODEX_INVESTIGATION_SOURCE
     if _HYBRID_SESSION is not None:
         _HYBRID_SESSION.transport.close()
         _HYBRID_SESSION = None
+    _CODEX_INVESTIGATION_SOURCE = None
 
 
 def _collect_codex_turn(session: _HybridSession, prompt: str, *, receive_timeout: float = 180.0) -> str:
@@ -420,12 +423,13 @@ def _start_hybrid_explanation(request: SecCopAdvisoryRequest, *, evidence_status
         return _hybrid_blocked(error.reason_code if isinstance(error, _CodexPreflightError) else "CODEX_APP_SERVER_UNAVAILABLE")
 
 
-def _ecr_codex_facts(scan: dict[str, object]) -> str:
-    """Project only server-owned ECR/Inspector facts into a Codex prompt."""
+def _source_codex_facts(source: str, scan: dict[str, object]) -> str:
+    """Project only trusted, source-bound provider facts into a Codex prompt."""
 
     fields = (
-        ("resource alias", "ECR_IMAGE_01"),
-        ("storage provider", "AWS_ECR"),
+        ("source", source.upper()),
+        ("resource alias", scan.get("resource_alias") or {"ecr": "ECR_IMAGE_01", "s3": "S3_BUCKET_ALIAS_03", "ec2": _EC2_RND_ALIAS_LAB01}.get(source, "UNKNOWN")),
+        ("provider", {"ecr": "AMAZON_INSPECTOR", "s3": "AWS_CONFIG", "ec2": "AWS_CONFIG"}.get(source, "UNKNOWN")),
         ("scanner", scan.get("scanner_mode") or "ECR_ENHANCED_SCANNING"),
         ("package ecosystem", scan.get("package_ecosystem") or "UNKNOWN"),
         ("CVE", scan.get("cve_id") or "UNKNOWN"),
@@ -443,11 +447,32 @@ def _ecr_codex_facts(scan: dict[str, object]) -> str:
     return "\n".join(safe)
 
 
-def _start_ecr_codex_explanation(request_text: str, scan: dict[str, object]) -> dict[str, object]:
-    """Send the real ECR request and sanitized BEFORE facts through one thread."""
+def _trace_codex(source: str, stage: str, result: str, *, session: _HybridSession | None = None, duration_ms: int = 0) -> None:
+    """Keep a minimal private lifecycle trace; no prompts, IDs, or provider payloads."""
 
-    global _HYBRID_SESSION
-    _close_hybrid_session()
+    _CODEX_TRACE_PATH.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
+    if _CODEX_TRACE_PATH.exists() and _CODEX_TRACE_PATH.stat().st_mode & 0o077:
+        return
+    record = {
+        "source": source, "correlation": f"{source}:{session.turns_completed if session else 0}",
+        "thread": session.thread_id if session else "NOT_STARTED",
+        "requested_model": "gpt-5.6-luna", "resolved_model": "UNKNOWN",
+        "stage": stage, "result": result, "duration_ms": duration_ms,
+    }
+    with _CODEX_TRACE_PATH.open("a", encoding="utf-8") as handle:
+        handle.write(json.dumps(record, separators=(",", ":")) + "\n")
+    _CODEX_TRACE_PATH.chmod(0o600)
+
+
+def _start_source_codex_explanation(source: str, request_text: str, scan: dict[str, object]) -> dict[str, object]:
+    """Start one source-bound no-tool Codex investigation from trusted facts."""
+
+    global _HYBRID_SESSION, _CODEX_INVESTIGATION_SOURCE
+    if source not in {"ecr", "s3", "ec2"}:
+        return _hybrid_blocked("REQUEST_REJECTED")
+    if _HYBRID_SESSION is not None:
+        return _hybrid_blocked("CODEX_INVESTIGATION_BUSY")
+    started = time.monotonic()
     try:
         request = " ".join(request_text.split())
         if not request or len(request) > 300 or re.search(r"(?:arn:|sha256:|AKIA|aws\s+cli|(?:secret|credential|token)|/home/|\\Users\\)", request, re.IGNORECASE):
@@ -464,37 +489,44 @@ def _start_ecr_codex_explanation(request_text: str, scan: dict[str, object]) -> 
         }, pending).get("thread")
         if not isinstance(thread, dict) or not isinstance(thread.get("id"), str):
             raise _CodexPreflightError("CODEX_APP_SERVER_OUTPUT_REJECTED")
-        session = _HybridSession(transport, thread["id"], pending, 4, dict(scan))
-        session.continuity_marker = "ECR_BEFORE_ACTIVE"
+        session = _HybridSession(transport, thread["id"], pending, 4, {"source": source, "facts": dict(scan)})
+        session.continuity_marker = f"{source.upper()}_BEFORE_ACTIVE"
         _HYBRID_SESSION = session
+        _CODEX_INVESTIGATION_SOURCE = source
         prompt = (
             "User request: " + request + "\n\n"
-            "Sanitized BEFORE facts:\n" + _ecr_codex_facts(scan) + "\n\n"
+            "Sanitized BEFORE facts:\n" + _source_codex_facts(source, scan) + "\n\n"
             "Explain the finding and recommend the safe, approval-gated next step in two short plain-language sentences. Do not use tools."
         )
         response = _collect_codex_turn(session, prompt, receive_timeout=_ECR_TURN_TIMEOUT)
-        session.continuity_marker = "ECR_BEFORE_COMPLETE"
+        session.continuity_marker = f"{source.upper()}_BEFORE_COMPLETE"
+        _trace_codex(source, "BEFORE", "READY", session=session, duration_ms=int((time.monotonic() - started) * 1000))
         return {
-            "status": "READY", "reason_code": "ECR_CODEX_BEFORE_READY",
-            "aws_evidence_status": "AMAZON_INSPECTOR", "aws_mcp_status": "NOT_USED",
+            "status": "READY", "reason_code": f"{source.upper()}_CODEX_BEFORE_READY",
+            "aws_evidence_status": {"ecr": "AMAZON_INSPECTOR", "s3": "AWS_CONFIG", "ec2": "AWS_CONFIG"}[source], "aws_mcp_status": "NOT_USED",
             "aws_mcp_mode": "READ_ONLY", "tool_activity": ["One read-only Codex thread"],
             "response_text": response, "continuity_marker": session.continuity_marker,
-            "message": "Codex explained the real Inspector finding from sanitized BEFORE facts.",
+            "message": "Codex explained the source-bound provider finding from sanitized BEFORE facts.",
         }
     except (OSError, _CodexPreflightError) as error:
+        _close_hybrid_session()
+        _CODEX_INVESTIGATION_SOURCE = None
+        _trace_codex(source, "BEFORE", "BLOCKED", duration_ms=int((time.monotonic() - started) * 1000))
         return _hybrid_blocked(error.reason_code if isinstance(error, _CodexPreflightError) else "CODEX_APP_SERVER_UNAVAILABLE")
 
 
-def _finish_ecr_codex_explanation(after: dict[str, object]) -> dict[str, object]:
-    """Continue the exact ECR thread with sanitized AFTER facts."""
+def _finish_source_codex_explanation(source: str, after: dict[str, object]) -> dict[str, object]:
+    """Continue the exact source investigation after deterministic verification."""
 
+    global _CODEX_INVESTIGATION_SOURCE
     session = _HYBRID_SESSION
     if session is None:
         return _hybrid_blocked("CODEX_THREAD_UNAVAILABLE")
+    started = time.monotonic()
     try:
-        if session.continuity_marker != "ECR_BEFORE_COMPLETE" or session.turns_completed < 1:
+        if _CODEX_INVESTIGATION_SOURCE != source or session.continuity_marker != f"{source.upper()}_BEFORE_COMPLETE" or session.turns_completed < 1:
             return _hybrid_blocked("CODEX_THREAD_CONTINUITY_LOST")
-        before = session.context or {}
+        before = session.context.get("facts", {}) if isinstance(session.context, dict) else {}
         after_facts = dict(after)
         for field in ("scanner_mode", "package_ecosystem", "cve_id"):
             if field not in after_facts and field in before:
@@ -502,22 +534,60 @@ def _finish_ecr_codex_explanation(after: dict[str, object]) -> dict[str, object]
         if not after_facts.get("state"):
             after_facts["state"] = "COMPLIANT" if after_facts.get("status") == "VERIFIED" else after_facts.get("status", "UNKNOWN")
         prompt = (
-            "Sanitized AFTER facts for the same ECR review:\n" + _ecr_codex_facts(after_facts) + "\n\n"
+            "Sanitized AFTER facts for the same source review:\n" + _source_codex_facts(source, after_facts) + "\n\n"
             "Explain the verified final state in two short plain-language sentences. Do not use tools."
         )
         response = _collect_codex_turn(session, prompt, receive_timeout=_ECR_TURN_TIMEOUT)
-        session.continuity_marker = "ECR_AFTER_COMPLETE"
+        session.continuity_marker = f"{source.upper()}_AFTER_COMPLETE"
+        _trace_codex(source, "AFTER", "READY", session=session, duration_ms=int((time.monotonic() - started) * 1000))
         return {
-            "status": "READY", "reason_code": "ECR_CODEX_AFTER_EXPLAINED",
-            "aws_evidence_status": "AMAZON_INSPECTOR", "aws_mcp_status": "NOT_USED",
+            "status": "READY", "reason_code": f"{source.upper()}_CODEX_AFTER_EXPLAINED",
+            "aws_evidence_status": {"ecr": "AMAZON_INSPECTOR", "s3": "AWS_CONFIG", "ec2": "AWS_CONFIG"}[source], "aws_mcp_status": "NOT_USED",
             "aws_mcp_mode": "READ_ONLY", "tool_activity": ["Same read-only Codex thread continued"],
             "response_text": response, "continuity_marker": session.continuity_marker,
             "message": "Codex explained the verified ECR AFTER state on the same thread.",
         }
     except _CodexPreflightError as error:
+        _trace_codex(source, "AFTER", "BLOCKED", duration_ms=int((time.monotonic() - started) * 1000))
         return _hybrid_blocked(error.reason_code)
     finally:
         _close_hybrid_session()
+        _CODEX_INVESTIGATION_SOURCE = None
+
+
+def _ask_source_codex(source: str, question: str) -> dict[str, object]:
+    """Answer a bounded question only from the current server-owned investigation."""
+
+    session = _HYBRID_SESSION
+    request = " ".join(question.split())
+    if source not in {"ecr", "s3", "ec2"} or not request or len(request) > 300:
+        return _hybrid_blocked("REQUEST_REJECTED")
+    if session is None:
+        return _hybrid_blocked("CODEX_SCAN_REQUIRED")
+    if _CODEX_INVESTIGATION_SOURCE != source or session.continuity_marker != f"{source.upper()}_BEFORE_COMPLETE":
+        return _hybrid_blocked("CODEX_THREAD_CONTINUITY_LOST")
+    try:
+        response = _collect_codex_turn(session, "Question about the same sanitized evidence: " + request + "\nAnswer briefly. Do not use tools.", receive_timeout=_ECR_TURN_TIMEOUT)
+        _trace_codex(source, "QUESTION", "READY", session=session)
+        return {"status": "READY", "reason_code": f"{source.upper()}_CODEX_QUESTION_READY", "response_text": response, "message": "Codex answered from the current source-bound investigation."}
+    except _CodexPreflightError as error:
+        _trace_codex(source, "QUESTION", "BLOCKED")
+        return _hybrid_blocked(error.reason_code)
+
+
+def _start_ecr_codex_explanation(request_text: str, scan: dict[str, object]) -> dict[str, object]:
+    """Compatibility wrapper for existing ECR callers."""
+
+    return _start_source_codex_explanation("ecr", request_text, scan)
+
+
+def _finish_ecr_codex_explanation(after: dict[str, object]) -> dict[str, object]:
+    """Compatibility wrapper for existing ECR callers."""
+
+    global _CODEX_INVESTIGATION_SOURCE
+    if _CODEX_INVESTIGATION_SOURCE is None and _HYBRID_SESSION is not None and _HYBRID_SESSION.continuity_marker == "ECR_BEFORE_COMPLETE":
+        _CODEX_INVESTIGATION_SOURCE = "ecr"
+    return _finish_source_codex_explanation("ecr", after)
 
 
 def _finish_hybrid_explanation(result: SecCopRemediationResult) -> dict[str, object]:
@@ -733,6 +803,39 @@ def _real_demo_enabled() -> bool:
     return os.environ.get("SECCOP_DEMO_BACKEND", "LOCAL").upper() == "AWS"
 
 
+def _attach_source_reasoning(source: str, command: str, payload: dict[str, object], request_text: str | None) -> None:
+    """Attach no-tool reasoning without changing deterministic source authority."""
+
+    if os.environ.get("SECCOP_ECR_APP_SERVER") != "1":
+        return
+    if command == "scan" and payload.get("reason_code") not in {"SECCOP_ECR_COMPLIANT", "SECCOP_S3_COMPLIANT", "SECCOP_EC2_IMDSV2_COMPLIANT"}:
+        payload["agent"] = _start_source_codex_explanation(
+            source,
+            request_text or f"Investigate the {source.upper()} finding and explain the safe next step.",
+            payload,
+        )
+    elif command == "fix" and payload.get("status") == "VERIFIED":
+        payload["agent_after"] = _finish_source_codex_explanation(source, payload)
+
+
+def _run_source_command(source: str, operation: str, args: list[str], *, timeout: float, env: dict[str, str]) -> subprocess.CompletedProcess[str] | None:
+    """Contain source subprocess uncertainty without inventing execution state."""
+
+    try:
+        return subprocess.run(args, capture_output=True, text=True, check=False, timeout=timeout, env=env)
+    except (OSError, subprocess.TimeoutExpired):
+        return None
+
+
+def _source_submission_unknown(source: str, operation: str) -> dict[str, object]:
+    return {
+        "status": "PENDING", "reason_code": f"SECCOP_{source.upper()}_SUBMISSION_UNKNOWN",
+        "operation": operation, "mutation_state": "UNKNOWN", "verification_state": "PENDING",
+        "safe_retry_action": "RECONCILE_BEFORE_RETRY",
+        "message": "The source operation did not return a terminal result. Reconcile its exact provider state before retrying.",
+    }
+
+
 def _run_real_demo(command: str, *, source: str | None = None, request_text: str | None = None, proposal_id: str | None = None, proposal_hash: str | None = None, target_alias: str | None = None) -> dict[str, object]:
     """Run the repo-owned AWS DEMO command and return sanitized JSON only."""
 
@@ -774,7 +877,9 @@ def _run_real_demo(command: str, *, source: str | None = None, request_text: str
         ec2_env.update({"AWS_PROFILE": ec2_profile, "AWS_DEFAULT_PROFILE": ec2_profile, "AWS_REGION": ec2_region, "AWS_DEFAULT_REGION": ec2_region, "SECCOP_PROFILE": ec2_profile, "SECCOP_REGION": ec2_region})
         args = [sys.executable, str(_EC2_COMPLIANCE_SCRIPT), mapped, "--profile", ec2_profile, "--region", ec2_region, "--alias", target_alias]
         args.append("--confirm")
-        completed = subprocess.run(args, capture_output=True, text=True, check=False, timeout=600, env=ec2_env)
+        completed = _run_source_command("ec2", command, args, timeout=600, env=ec2_env)
+        if completed is None:
+            return _source_submission_unknown("ec2", command)
         try:
             payload = json.loads(completed.stdout)
         except json.JSONDecodeError:
@@ -788,6 +893,7 @@ def _run_real_demo(command: str, *, source: str | None = None, request_text: str
                 if isinstance(finding, dict):
                     finding.update({"proposal_id": proposal_id, "proposal_hash": proposal_hash})
             payload.update({"proposal_id": proposal_id, "proposal_hash": proposal_hash})
+        _attach_source_reasoning("ec2", command, payload, request_text)
         return payload
     if ec2_enabled and source == "ec2":
         ec2_profile = os.environ.get("SECCOP_EC2_PROFILE", os.environ.get("SECCOP_PROFILE", ""))
@@ -812,7 +918,9 @@ def _run_real_demo(command: str, *, source: str | None = None, request_text: str
                 return {"status": "BLOCKED", "reason_code": "APPROVAL_REQUIRED", "message": "Approve the exact EC2 IMDSv2 proposal before remediation."}
             proposal["consumed"] = True
         args = [sys.executable, str(_EC2_COMPLIANCE_SCRIPT), mapped, "--profile", ec2_profile, "--region", ec2_region]
-        completed = subprocess.run(args, capture_output=True, text=True, check=False, timeout=600, env=ec2_env)
+        completed = _run_source_command("ec2", command, args, timeout=600, env=ec2_env)
+        if completed is None:
+            return _source_submission_unknown("ec2", command)
         try:
             payload = json.loads(completed.stdout)
         except json.JSONDecodeError:
@@ -829,6 +937,7 @@ def _run_real_demo(command: str, *, source: str | None = None, request_text: str
             _EC2_APPROVAL_READY = True
         if mapped == "ec2-apply" and payload.get("status") == "VERIFIED":
             _EC2_APPROVAL_READY = False
+        _attach_source_reasoning("ec2", command, payload, request_text)
         return payload
     if os.environ.get("SECCOP_ECR_OPERATOR_MVP") == "1" and (not combined or source == "ecr"):
         mapped = {"start": "ecr-start", "scan": "ecr-scan", "fix": "ecr-fix", "reset": "ecr-reset"}.get(command)
@@ -843,7 +952,9 @@ def _run_real_demo(command: str, *, source: str | None = None, request_text: str
         if mapped == "ecr-scan" and _ECR_SCAN_TAG_OVERRIDE is not None:
             args.extend(["--ecr-tag-override", _ECR_SCAN_TAG_OVERRIDE])
         if mapped != "ecr-scan": args.append("--confirm")
-        completed = subprocess.run(args, capture_output=True, text=True, check=False, timeout=300, env=os.environ.copy())
+        completed = _run_source_command("ecr", command, args, timeout=300, env=os.environ.copy())
+        if completed is None:
+            return _source_submission_unknown("ecr", command)
         try:
             payload = json.loads(completed.stdout)
         except json.JSONDecodeError:
@@ -855,12 +966,8 @@ def _run_real_demo(command: str, *, source: str | None = None, request_text: str
         if mapped == "ecr-reset" and payload.get("status") == "READY":
             _ECR_APPROVAL_READY = False
             _ECR_SCAN_TAG_OVERRIDE = "demo-current"
-        if os.environ.get("SECCOP_ECR_APP_SERVER") == "1" and mapped == "ecr-scan" and payload.get("reason_code") != "SECCOP_ECR_COMPLIANT":
-            payload["agent"] = _start_ecr_codex_explanation(
-                request_text or "Investigate the ECR finding and explain the safe next step.", payload,
-            )
-        elif os.environ.get("SECCOP_ECR_APP_SERVER") == "1" and mapped == "ecr-fix" and payload.get("status") in {"VERIFIED", "READY"}:
-            payload["agent_after"] = _finish_ecr_codex_explanation(payload)
+        _attach_source_reasoning("ecr", command, payload, request_text)
+        _attach_source_reasoning("s3", command, payload, request_text)
         return payload
     if os.environ.get("SECCOP_S3_COMPLIANCE_E2E") == "1" and (not combined or source == "s3"):
         mapped = {"scan": "scan", "fix": "apply", "reset": "reset"}.get(command)
@@ -874,7 +981,9 @@ def _run_real_demo(command: str, *, source: str | None = None, request_text: str
         if mapped == "reset" and source not in {None, "s3"}:
             return {"status": "BLOCKED", "reason_code": "APPROVAL_REQUIRED", "message": "Approve the exact S3 proposal before remediation."}
         args = [sys.executable, str(_S3_COMPLIANCE_SCRIPT), mapped, "--profile", os.environ["SECCOP_PROFILE"], "--region", os.environ["AWS_REGION"], "--bucket", os.environ["SECCOP_S3_BUCKET"]]
-        completed = subprocess.run(args, capture_output=True, text=True, check=False, timeout=480, env=os.environ.copy())
+        completed = _run_source_command("s3", command, args, timeout=480, env=os.environ.copy())
+        if completed is None:
+            return _source_submission_unknown("s3", command)
         try:
             payload = json.loads(completed.stdout)
         except json.JSONDecodeError:
@@ -884,7 +993,9 @@ def _run_real_demo(command: str, *, source: str | None = None, request_text: str
             aliases = ["Finance reports", "Audit logs", "Application backups"]
             states = ["ACTION REQUIRED" if payload.get("reason_code") == "SECCOP_S3_NON_COMPLIANT" else "PROTECTED"]
             for bucket in filter(None, protected_buckets):
-                companion = subprocess.run(args[:-1] + [bucket], capture_output=True, text=True, check=False, timeout=120, env=os.environ.copy())
+                companion = _run_source_command("s3", command, args[:-1] + [bucket], timeout=120, env=os.environ.copy())
+                if companion is None:
+                    return _source_submission_unknown("s3", command)
                 try:
                     companion_payload = json.loads(companion.stdout)
                 except json.JSONDecodeError:
@@ -1532,6 +1643,13 @@ class _Handler(BaseHTTPRequestHandler):
                     )
                 )
             self._send_json(200, response)
+            return
+
+        if self.path == "/api/ask":
+            if set(payload) != {"source", "question"} or not isinstance(payload.get("source"), str) or not isinstance(payload.get("question"), str):
+                self._send_json(400, {"status": "BLOCKED", "reason_code": "REQUEST_REJECTED"})
+                return
+            self._send_json(200, {"result": _ask_source_codex(payload["source"], payload["question"]), "events": []})
             return
 
         if self.path == "/api/cve-review":

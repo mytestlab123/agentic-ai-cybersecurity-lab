@@ -98,6 +98,10 @@ exact proposal**, **human Remediate/Reject** (ECR may say **Approve Once**),
 **Verify provider truth**, then optional reopen only after a verified outcome.
 The UI cannot authorize an unbound target, proposal, or AWS action.
 
+Codex App Server reasoning is restricted to server-owned, source-bound
+sanitized facts and one fixed permissible action. Provider reads, proposal
+binding, approval, execution, reset, and verification remain deterministic.
+
 For fixed `DEV_EC2_LAB_01`, the EC2 GUI path is
 `NON_COMPLIANT -> Review -> Remediate/Reject -> StartRemediationExecution ->
 COMPLIANT`. Reject is non-mutating. Remediate must use the existing manual

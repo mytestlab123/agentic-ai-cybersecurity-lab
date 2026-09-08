@@ -1,7 +1,18 @@
 # SecCop operator DEMO
 
-This is a short POC story for a non-technical audience. It shows one CVE
-check, one Scan button, three source cards, and one real controlled fix.
+This is a short POC story for a non-technical audience. The current operator
+entrypoint is the unified fixed-loopback server, not the historical CVE demo.
+
+## Current three-source journey
+
+Start only with `./scripts/start-unified-seccop.sh`, then open
+`http://127.0.0.1:2222`. For ECR, S3, or fixed EC2 LAB_01: scan provider facts,
+review one exact deterministic proposal with a no-tool Codex explanation,
+human Remediate/Reject, verify provider truth, then optionally reopen the
+configured demo state. Codex explains only source-bound sanitized facts; it
+cannot authorize a target, action, approval, or verification result.
+
+The remaining CVE content is historical POC background.
 
 ## What the operator sees
 
