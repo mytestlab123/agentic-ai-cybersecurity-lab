@@ -61,6 +61,9 @@
     h1 { margin:3px 0 0; font-size:1.05rem; font-weight:600; }
     .safety-banner { max-width:850px; width:calc(100% - 48px); margin:18px auto 0; padding:10px 13px; color:#c8d5e9; background:#202d3d; border:1px solid #334861; border-radius:8px; font-size:.78rem; }
     .safety-banner strong { color:var(--blue); }
+    .codex-status { max-width:850px; width:calc(100% - 48px); display:flex; gap:8px; align-items:center; margin:10px auto 0; padding:8px 12px; color:#b7b7b7; background:#202020; border:1px solid #3d3d3d; border-radius:8px; font-size:.72rem; }
+    .codex-status strong { color:#d9f8e9; }
+    .codex-status-detail { margin-left:auto; color:#8e8e8e; }
     .chat { flex:1; width:100%; max-width:850px; margin:0 auto; padding:30px 24px 170px; }
     .welcome { max-width:650px; margin:30px auto 40px; text-align:center; }
     .welcome h2 { margin:0 0 8px; font-size:1.55rem; font-weight:600; }
@@ -181,6 +184,7 @@
         <div><div class="eyebrow">SECCOP POC</div><h1 id="review-title">Vulnerability review</h1></div>
       </header>
       <div id="safety-banner" class="safety-banner"><strong>Safe demo boundary.</strong> Paste one CVE to check all demo sources. A server change always needs a separate review and approval.</div>
+      <div id="codex-status" class="codex-status" role="status" aria-live="polite"><strong>Codex App Server</strong><span id="codex-status-state">Checking status</span><span id="codex-status-detail" class="codex-status-detail"></span></div>
 
       <section class="chat" aria-live="polite">
         <div class="flow-strip" aria-label="Operator workflow">
@@ -243,6 +247,8 @@
     const compareLiveButton = document.querySelector('#compare-live');
     const compareCsvButton = document.querySelector('#compare-csv');
     const backendNote = document.querySelector('#backend-note');
+    const codexStatusState = document.querySelector('#codex-status-state');
+    const codexStatusDetail = document.querySelector('#codex-status-detail');
     const welcome = document.querySelector('#welcome');
     const messages = document.querySelector('#messages');
     const newChat = document.querySelector('#new-chat');
@@ -1036,8 +1042,22 @@
     async function post(path, body) {
       const response = await fetch(path, { method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify(body) });
       const payload = await response.json();
+      void refreshCodexStatus();
       if (!response.ok) throw new Error(payload.message || payload.reason_code || 'REQUEST_REJECTED');
       return payload;
+    }
+
+    async function refreshCodexStatus() {
+      try {
+        const response = await fetch('/api/codex-status', { cache: 'no-store' });
+        if (!response.ok) return;
+        const status = await response.json();
+        codexStatusState.textContent = status.app_server === 'ENABLED' ? 'Enabled' : 'Disabled';
+        codexStatusDetail.textContent = `${status.current_source} · ${status.session.toLowerCase()} · ${status.lifecycle} · ${status.completed_turns} completed`;
+      } catch (_error) {
+        codexStatusState.textContent = 'Unavailable';
+        codexStatusDetail.textContent = '';
+      }
     }
 
     async function startScan(button) {
@@ -1251,6 +1271,7 @@
       } catch (error) {
         // The local synthetic page remains usable if the health probe is unavailable.
       }
+      void refreshCodexStatus();
     }
 
     uploadEl.addEventListener('change', async () => {

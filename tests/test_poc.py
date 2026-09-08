@@ -316,6 +316,8 @@ def test_ecr_codex_before_after_uses_one_sanitized_thread(monkeypatch: pytest.Mo
         {"method": "turn/completed", "params": {"turn": {"id": "TURN_ALIAS_02", "status": "completed"}}},
     ])
     monkeypatch.setattr(poc_server, "_CodexProcessTransport", lambda: transport)
+    monkeypatch.setenv("SECCOP_ECR_APP_SERVER", "1")
+    monkeypatch.setattr(poc_server, "_CODEX_OBSERVABILITY", {"source": "NONE", "active": False, "lifecycle": "FRESH", "turns_completed": 0})
     monkeypatch.setattr(poc_server, "_trace_codex", lambda *_args, **_kwargs: None)
     before = poc_server._start_ecr_codex_explanation("Investigate and explain the safe next step.", {
         "scanner_mode": "ECR_ENHANCED_SCANNING", "package_ecosystem": "JAVASCRIPT_NPM",
@@ -389,6 +391,8 @@ def test_source_codex_reasoning_binds_before_question_and_after_to_one_source(
         {"method": "turn/completed", "params": {"turn": {"id": "TURN_ALIAS_03", "status": "completed"}}},
     ])
     monkeypatch.setattr(poc_server, "_CodexProcessTransport", lambda: transport)
+    monkeypatch.setenv("SECCOP_ECR_APP_SERVER", "1")
+    monkeypatch.setattr(poc_server, "_CODEX_OBSERVABILITY", {"source": "NONE", "active": False, "lifecycle": "FRESH", "turns_completed": 0})
     facts = {
         "ecr": {"state": "NON_COMPLIANT", "scanner_mode": "ECR_ENHANCED_SCANNING", "package_ecosystem": "PYTHON", "cve_id": "CVE-2020-8203", "package_name": "urllib3", "installed_version": "1.24.1", "severity": "HIGH"},
         "s3": {"state": "NON_COMPLIANT", "config_rule_name": "s3-bucket-level-public-access-prohibited", "remediation_document": "AWSConfigRemediation-ConfigureS3BucketPublicAccessBlock", "findings": [{"observed_state": "Block Public Access absent"}]},
@@ -396,8 +400,12 @@ def test_source_codex_reasoning_binds_before_question_and_after_to_one_source(
     }[source]
     poc_server._close_hybrid_session()
     poc_server._CODEX_INVESTIGATION_SOURCE = None
+    assert poc_server._codex_status() == {"status": "OK", "app_server": "ENABLED", "current_source": "NONE", "session": "INACTIVE", "lifecycle": "FRESH", "completed_turns": 0}
     before = poc_server._start_source_codex_explanation(source, "Explain the safe next step.", facts)
+    assert poc_server._codex_status() == {"status": "OK", "app_server": "ENABLED", "current_source": source.upper(), "session": "ACTIVE", "lifecycle": "BEFORE_COMPLETE", "completed_turns": 1}
     question = poc_server._ask_source_codex(source, "What should the operator review?")
+    assert poc_server._codex_status()["lifecycle"] == "QUESTION_COMPLETE"
+    assert poc_server._codex_status()["completed_turns"] == 2
     after = poc_server._finish_source_codex_explanation(source, {"status": "VERIFIED", "state": "COMPLIANT"})
 
     assert before["reason_code"] == f"{source.upper()}_CODEX_BEFORE_READY"
@@ -409,6 +417,25 @@ def test_source_codex_reasoning_binds_before_question_and_after_to_one_source(
     assert ({"ecr": "Block Public Access", "s3": "package ecosystem", "ec2": "package ecosystem"}[source]) not in prompt
     assert source.upper() in after["message"]
     assert poc_server._HYBRID_SESSION is None
+    assert poc_server._codex_status() == {"status": "OK", "app_server": "ENABLED", "current_source": source.upper(), "session": "INACTIVE", "lifecycle": "AFTER_COMPLETED", "completed_turns": 3}
+
+
+def test_codex_status_endpoint_is_readonly_and_excludes_private_fields(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("SECCOP_ECR_APP_SERVER", "1")
+    monkeypatch.setattr(poc_server, "_CODEX_OBSERVABILITY", {"source": "S3", "active": True, "lifecycle": "BEFORE_COMPLETE", "turns_completed": 1})
+    proposals_before = dict(poc_server._SECCOP_PROPOSALS)
+    approvals_before = dict(poc_server._SECCOP_APPROVALS)
+    server = ThreadingHTTPServer(("127.0.0.1", 0), _Handler)
+    thread = Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    try:
+        payload = json.loads(urlopen(f"http://127.0.0.1:{server.server_port}/api/codex-status").read())
+    finally:
+        server.shutdown()
+    assert payload == {"status": "OK", "app_server": "ENABLED", "current_source": "S3", "session": "ACTIVE", "lifecycle": "BEFORE_COMPLETE", "completed_turns": 1}
+    assert not ({"thread", "prompt", "path", "model", "trace", "token", "credential", "proposal", "approval", "action", "target"} & set(payload))
+    assert poc_server._SECCOP_PROPOSALS == proposals_before
+    assert poc_server._SECCOP_APPROVALS == approvals_before
 
 
 def test_source_codex_question_rejects_wrong_source_and_missing_scan() -> None:
@@ -1336,6 +1363,9 @@ def test_browser_source_composer_forwards_questions_without_rescanning() -> None
     assert "/api/ask" in html
     assert "if (ecrReview || s3Review) { startScan(runButton); return; }" not in html
     assert "ECR promotion blocked" in html
+    assert 'id="codex-status"' in html
+    assert "/api/codex-status" in html
+    assert "void refreshCodexStatus();" in html
 
 
 def test_browser_sidebar_and_composer_management_view() -> None:
