@@ -555,7 +555,7 @@ def _source_codex_prompt(source: str, request_text: str, scan: dict[str, object]
     return (
         "User request: " + request + "\n\n"
         "Sanitized BEFORE facts:\n" + _source_codex_facts(source, scan) + "\n\n"
-        "Explain the finding and recommend the safe, approval-gated next step in two short plain-language sentences. Do not use tools."
+        "Explain the finding and recommend the safe, approval-gated next step in two short plain-language sentences, at most 35 words total. Do not use tools."
     )
 
 
@@ -628,7 +628,7 @@ def _finish_source_codex_explanation(source: str, after: dict[str, object]) -> d
             after_facts["state"] = "COMPLIANT" if after_facts.get("status") == "VERIFIED" else after_facts.get("status", "UNKNOWN")
         prompt = (
             "Sanitized AFTER facts for the same source review:\n" + _source_codex_facts(source, after_facts) + "\n\n"
-            "Explain the verified final state in two short plain-language sentences. Do not use tools."
+            "Explain the verified final state in two short plain-language sentences, at most 35 words total. Do not use tools."
         )
         response = _collect_codex_turn(session, prompt, receive_timeout=_ECR_TURN_TIMEOUT)
         session.continuity_marker = f"{source.upper()}_AFTER_COMPLETE"
@@ -661,7 +661,7 @@ def _ask_source_codex(source: str, question: str) -> dict[str, object]:
         return _hybrid_blocked("CODEX_SCAN_REQUIRED", close_session=False)
     if _CODEX_INVESTIGATION_SOURCE != source or session.continuity_marker != f"{source.upper()}_BEFORE_COMPLETE":
         return _hybrid_blocked("CODEX_THREAD_CONTINUITY_LOST", close_session=False)
-    prompt = "Question about the same sanitized evidence: " + request + "\nAnswer briefly. Do not use tools."
+    prompt = "Question about the same sanitized evidence: " + request + "\nAnswer in at most 35 words. Do not use tools."
     try:
         response = _collect_codex_turn(session, prompt, receive_timeout=_ECR_TURN_TIMEOUT)
         _record_codex_lifecycle(source, "QUESTION_COMPLETE", session)
@@ -679,7 +679,7 @@ def _ask_general_codex(question: str) -> dict[str, object]:
     request = " ".join(question.split())
     if not request or len(request) > 300 or re.search(r"(?:arn:|sha256:|AKIA|aws\s+cli|(?:secret|credential|token)|/home/|\\\\Users\\\\)", request, re.IGNORECASE):
         return _hybrid_blocked("REQUEST_REJECTED", close_session=False)
-    prompt = "General AWS/security question (not live account evidence): " + request + "\nAnswer briefly from general knowledge. Do not use tools."
+    prompt = "General AWS/security question (not live account evidence): " + request + "\nAnswer in at most 35 words from general knowledge. Do not use tools."
     transport: _CodexProcessTransport | None = None
     try:
         transport = _CodexProcessTransport()
@@ -723,7 +723,7 @@ def _finish_hybrid_explanation(result: SecCopRemediationResult) -> dict[str, obj
         return _hybrid_blocked("CODEX_THREAD_UNAVAILABLE")
     try:
         response = _collect_codex_turn(session,
-            "Explain this sanitized follow-up in two short plain-language sentences. Do not use tools. "
+            "Explain this sanitized follow-up in two short plain-language sentences, at most 35 words total. Do not use tools. "
             f"Target LAB_SERVER_01; package {result.package_name}; before {result.before_version}; after {result.after_version}; "
             f"verification {result.verification_status}."
         )
@@ -774,8 +774,8 @@ def _codex_request(
 
 
 def _safe_codex_text(value: str) -> str:
-    text = " ".join(value.split())[:300]
-    if not text or re.search(r"(?:/home/|/mnt/|\\Users\\|arn:|\bi-[0-9a-f]{8,17}\b|sk-[A-Za-z0-9])", text):
+    text = " ".join(value.split())
+    if not text or len(text) > 300 or re.search(r"(?:/home/|/mnt/|\\Users\\|arn:|\bi-[0-9a-f]{8,17}\b|sk-[A-Za-z0-9])", text):
         raise _CodexPreflightError("CODEX_APP_SERVER_OUTPUT_REJECTED")
     return text
 

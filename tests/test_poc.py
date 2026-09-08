@@ -316,7 +316,7 @@ def test_hybrid_turn_ignores_buffered_completion_from_prior_turn() -> None:
     assert _collect_codex_turn(_HybridSession(transport, "THREAD_ALIAS_01", [], 7), "Safe prompt") == "Current completion."
 
 
-@pytest.mark.parametrize("completed_text", ["/home/private/path", 42, None])
+@pytest.mark.parametrize("completed_text", ["/home/private/path", "x" * 301, 42, None])
 def test_hybrid_turn_rejects_unsafe_or_missing_completed_agent_message_text(completed_text: object) -> None:
     transport = _FakeCodexTransport([
         {"id": 7, "result": {"turn": {"id": "TURN_ALIAS_02"}}},
@@ -380,6 +380,7 @@ def test_ecr_codex_before_after_uses_one_sanitized_thread(monkeypatch: pytest.Mo
     assert "Investigate and explain" in prompts[0]
     assert "lodash" in prompts[0] and "CVE-2020-8203" in prompts[0]
     assert "COMPLIANT" in prompts[1] and "CVE-2020-8203" in prompts[1]
+    assert all("at most 35 words" in prompt for prompt in prompts)
     assert all("sha256:" not in prompt and "arn:" not in prompt for prompt in prompts)
     assert [item["params"]["threadId"] for item in transport.sent if item.get("method") == "turn/start"] == ["THREAD_ALIAS_01", "THREAD_ALIAS_01"]
 
