@@ -15,6 +15,9 @@ source-bound evidence before and after a verified outcome. Human approval and
 provider verification remain mandatory. Historical Issue 5 material below is
 preserved as background, not the current operator entrypoint.
 
+The [SecCop roadmap](ROADMAP.md) tracks M5+M6 in Draft PR #70 and reserves
+M7+M8 for a later PR; it does not authorize AWS changes.
+
 ## POC boundary
 
 This is a KISS (Keep It Short and Stupid) learning POC, not an enterprise
