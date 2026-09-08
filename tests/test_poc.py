@@ -563,6 +563,17 @@ def test_source_codex_question_rejects_wrong_source_and_missing_scan() -> None:
         poc_server._CODEX_INVESTIGATION_SOURCE = None
 
 
+def test_busy_codex_investigation_gives_the_safe_local_recovery_action() -> None:
+    result = poc_server._hybrid_blocked("CODEX_INVESTIGATION_BUSY", close_session=False)
+
+    assert result["status"] == "BLOCKED"
+    assert result["reason_code"] == "CODEX_INVESTIGATION_BUSY"
+    assert result["message"] == (
+        "A source-bound AI explanation is already active. Select New investigation "
+        "before starting another AI explanation; provider and approval state are unchanged."
+    )
+
+
 def test_source_codex_rejects_busy_malformed_and_wrong_source_without_losing_valid_investigation(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

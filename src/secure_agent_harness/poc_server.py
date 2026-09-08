@@ -366,11 +366,21 @@ def _collect_codex_turn(session: _HybridSession, prompt: str, *, receive_timeout
 def _hybrid_blocked(reason_code: str, *, close_session: bool = True) -> dict[str, object]:
     if close_session:
         _close_hybrid_session()
+    message = {
+        "CODEX_INVESTIGATION_BUSY": (
+            "A source-bound AI explanation is already active. Select New investigation "
+            "before starting another AI explanation; provider and approval state are unchanged."
+        ),
+        "CODEX_THREAD_CONTINUITY_LOST": (
+            "The local AI conversation is no longer continuous. Select New investigation "
+            "before asking again; provider and approval state are unchanged."
+        ),
+    }.get(reason_code, "The optional AI explanation was unavailable; deterministic controls remain active.")
     return {
         "status": "BLOCKED", "reason_code": reason_code,
         "aws_evidence_status": "SECCOP_ADAPTER", "aws_mcp_status": "AWS_MCP_UNAVAILABLE",
         "aws_mcp_mode": "READ_ONLY", "tool_activity": [],
-        "message": "The optional AI explanation was unavailable; deterministic controls remain active.",
+        "message": message,
     }
 
 
