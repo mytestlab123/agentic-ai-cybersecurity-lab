@@ -3,9 +3,10 @@ set -euo pipefail
 umask 077
 
 alias_name=DEV_EC2_LAB_01
-rule_name=ec2-imdsv2-check-rnd-lab01
 map_root="${HOME:?}/.AGENTS-temp/agentic-ai-cybersecurity-lab"
 map_file="${SECCOP_EC2_RND_TARGET_MAP:-$map_root/seccop-unified/ec2-lab01-map.json}"
+repo_dir=$(cd "$(dirname -- "$0")/.." && pwd -P)
+backend="$repo_dir/scripts/issue47_s3_compliance.py"
 
 fail() { printf 'BLOCKED: %s\n' "$1" >&2; exit 1; }
 usage() {
@@ -53,58 +54,25 @@ configure() {
   printf 'LAB_01 mapping configured at %s (profile=ihis_dev region=ap-southeast-1; instance ID withheld)\n' "$map_file"
 }
 
-aws_json() {
-  AWS_PROFILE="$profile" AWS_DEFAULT_PROFILE="$profile" AWS_REGION="$region" AWS_DEFAULT_REGION="$region" \
-    aws --profile "$profile" --region "$region" "$@" --output json
+run_backend() {
+  local operation=$1
+  shift
+  [[ -f "$backend" ]] || fail 'the fixed LAB_01 backend is unavailable'
+  SECCOP_EC2_RND_TARGET_MAP="$map_file" \
+    AWS_PROFILE="$profile" AWS_DEFAULT_PROFILE="$profile" AWS_REGION="$region" AWS_DEFAULT_REGION="$region" \
+    "${SECCOP_PYTHON:-python3}" "$backend" "$operation" --profile "$profile" --region "$region" --alias "$alias_name" "$@"
 }
 
-instance_tokens() {
-  aws_json ec2 describe-instances --instance-ids "$instance_id" |
-    jq -er '[.Reservations[].Instances[]] | select(length == 1) | .[0] | select(.InstanceId == $id and .State.Name == "running") | .MetadataOptions.HttpTokens' --arg id "$instance_id"
-}
-
-config_state() {
-  aws_json configservice get-compliance-details-by-resource \
-    --resource-type AWS::EC2::Instance --resource-id "$instance_id" |
-    jq -r --arg rule "$rule_name" '[.EvaluationResults[] | select(.EvaluationResultIdentifier.EvaluationResultQualifier.ConfigRuleName == $rule)] | .[0].ComplianceType // "UNKNOWN"'
-}
-
-status() {
-  local tokens state
-  tokens=$(instance_tokens)
-  state=$(config_state)
-  jq -cn --arg alias "$alias_name" --arg tokens "$tokens" --arg state "$state" \
-    '{status:"READY",reason_code:"SECCOP_EC2_LAB01_STATUS",resource_alias:$alias,metadata_http_tokens:$tokens,config_state:$state,mutation_performed:false}'
-}
+status() { run_backend ec2-rnd-scan; }
 
 action() {
-  local command=$1 desired expected result reason tokens state
+  local command=$1
   [[ "${2:-}" == --confirm && -z "${3:-}" ]] || usage
   if [[ "$command" == reset ]]; then
-    desired=required; expected=COMPLIANT; result=RESET; reason=SECCOP_EC2_LAB01_ALREADY_RESET
+    run_backend ec2-rnd-apply --confirm
   else
-    desired=optional; expected=NON_COMPLIANT; result=REOPENED; reason=FINDING_ALREADY_OPEN
+    run_backend ec2-rnd-reopen --confirm
   fi
-  tokens=$(instance_tokens)
-  state=$(config_state)
-  if [[ "$tokens" == "$desired" && "$state" == "$expected" ]]; then
-    jq -cn --arg alias "$alias_name" --arg state "$state" --arg tokens "$tokens" --arg reason "$reason" \
-      '{status:"NOOP",reason_code:$reason,resource_alias:$alias,metadata_http_tokens:$tokens,config_state:$state,mutation_performed:false}'
-    return
-  fi
-  aws_json ec2 modify-instance-metadata-options --instance-id "$instance_id" --http-tokens "$desired" >/dev/null
-  aws_json configservice start-config-rules-evaluation --config-rule-names "$rule_name" >/dev/null
-  for _ in $(seq 1 36); do
-    tokens=$(instance_tokens)
-    state=$(config_state)
-    if [[ "$tokens" == "$desired" && "$state" == "$expected" ]]; then
-      jq -cn --arg alias "$alias_name" --arg state "$state" --arg tokens "$tokens" --arg reason "SECCOP_EC2_LAB01_${result}" \
-        '{status:$reason,reason_code:$reason,resource_alias:$alias,metadata_http_tokens:$tokens,config_state:$state,mutation_performed:true}'
-      return
-    fi
-    sleep 10
-  done
-  fail "LAB_01 did not reach the requested $result state"
 }
 
 case "${1:-}" in
