@@ -143,6 +143,9 @@ read-only suggestions. The composer also starts with a one-CVE check: paste a
 single CVE to see which of the three demo sources contains it. This lookup is
 read-only and does not start approval or remediation.
 
+The concise manager startup, approval, reset, and verification journey is in
+[docs/SECCOP_V01_MANAGER_RUNBOOK.md](docs/SECCOP_V01_MANAGER_RUNBOOK.md).
+
 The latest browser proof is in the
 [SecCop DEMO evidence report](docs/evidence/seccop-demo/report.md), with
 sanitized screenshots beside it.
@@ -157,6 +160,15 @@ To reproduce the local browser proof with the existing Windows Chrome and
 The runner saves JSON evidence in the operator-local temporary evidence area,
 copies review screenshots to the requested Windows folder, and cleans up only
 the app and browser profile it created.
+
+For the repeatable M8 release check, use the smaller synthetic golden run:
+
+```bash
+./scripts/golden-gui-e2e.sh
+```
+
+It clears inherited live-demo bindings, runs one headless browser against an
+owned local server, retains no pass-path screenshots, and makes no AWS call.
 
 ## Repeatable three-source DEMO
 

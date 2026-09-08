@@ -10,32 +10,25 @@ Codex App Server is the bounded reasoning/explanation brain. Deterministic SecCo
 
 This roadmap does not authorize AWS/cloud mutation. Live AWS changes still require the applicable explicit approval/gate.
 
-## Completed foundation
+## Completed milestones
 
 - **M1 - Three-source governed Security Copilot**: ECR/Inspector vulnerability, S3 Block Public Access compliance, EC2 IMDSv2 compliance.
 - **M2 - Unified operator runtime**: one repo-owned startup command, private fail-fast runtime configuration, one fixed loopback listener.
 - **M3 - Shared Codex reasoning brain**: source-bound no-tool BEFORE/question/verified-AFTER reasoning for ECR, S3 and EC2.
 - **M4 - Visible controllable Codex lifecycle**: public-safe lifecycle status plus explicit New Chat/session reset.
 
-## Remaining implementation: two PRs
+- **M5 - Live three-source proof**: merged provider-evidence proof for the retained ECR, S3, and EC2 stories, with approval remaining source-bound and human-gated. Evidence: Issue #69 / merged PR #70.
+- **M6 - Manager governance timeline**: public-safe five-stage timeline separates provider evidence, recommendation, human decision, deterministic action, and verification. Evidence: Issue #69 / merged PR #70.
+- **M7 - Fail-closed recovery and reconciliation**: source timeouts/submission uncertainty stay `PENDING` with `RECONCILE_BEFORE_RETRY`; pending verification does not claim success; New Chat/session reset changes local Codex state only. Evidence: focused API/mock regressions in `tests/test_poc.py`.
+- **M8 - Repeatable manager demo and v0.1 readiness**: the manager runbook, architecture/control-boundary diagram, five-minute talk track, and cheap synthetic Playwright golden proof are delivered on PR #72. Evidence: `docs/SECCOP_V01_MANAGER_RUNBOOK.md` and `./scripts/golden-gui-e2e.sh`.
 
-### PR A - M5 + M6: live proof + manager governance
+## v0.1 release gate
 
-Goal: one manager-ready live SecCop journey across all three existing stories.
-
-1. Prove ECR, S3 and EC2 through the same unified operator path with real provider evidence and real bounded Codex App Server reasoning.
-2. Prove the existing human-approved remediation path for each current story reaches deterministic/provider verification without widening authority.
-3. Show a compact manager-readable governance timeline: **Before -> Recommendation -> Human decision -> Action -> After**, using public-safe aliases and status only.
-
-Owning work: Issue #69.
-
-### PR B - M7 + M8: resilience + v0.1 release
-
-Goal: make the demo repeatable, recoverable and releasable.
-
-1. Handle only the highest-value failure/reconciliation cases: App Server/provider timeout or unknown submission state, verification-pending/eventual consistency, and restart/session-loss with a clear next action.
-2. Produce the short operator runbook, architecture diagram and five-minute manager talk track; document startup/reset/cleanup.
-3. Run the final public-safety/release check and prepare/tag `v0.1` only when the live demo is repeatable.
+M1-M8 implementation is complete when the cited evidence passes. The `v0.1`
+tag is intentionally **not** created by this roadmap: it requires final
+complete-diff review of PR #72, merge of that exact reviewed head, and a
+separate explicit human decision. No live AWS mutation is implied by that
+release decision.
 
 ## After v0.1
 

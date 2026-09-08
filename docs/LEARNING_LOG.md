@@ -133,3 +133,11 @@ fixed version, then records an explicit Approve or Reject decision without
 calling SSM. The UI labels the live path separately from the synthetic demo
 and reports `GovTech inference: not used`; no model request or credit use is
 needed for deterministic evidence correlation.
+
+## Issue 71 - v0.1 manager proof
+
+The manager runbook treats provider evidence, a human decision, deterministic
+action, and provider verification as separate facts. A compact golden browser
+mode reuses the existing Playwright Core runner with one local synthetic
+server, no pass-path screenshots, and no AWS calls. This keeps browser proof a
+cheap final check after typed and API tests rather than a replacement for them.
