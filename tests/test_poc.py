@@ -486,6 +486,7 @@ def test_codex_reset_endpoint_is_local_only_and_private_safe(monkeypatch: pytest
             self.closed = True
 
     transport = TrackingTransport()
+    monkeypatch.setenv("SECCOP_ECR_APP_SERVER", "1")
     monkeypatch.setattr(poc_server, "_HYBRID_SESSION", _HybridSession(transport, "THREAD_ALIAS_01", [], 4, {}, "ECR_BEFORE_COMPLETE", 1))
     monkeypatch.setattr(poc_server, "_CODEX_INVESTIGATION_SOURCE", "ecr")
     monkeypatch.setattr(poc_server, "_CODEX_OBSERVABILITY", {"source": "ECR", "active": True, "lifecycle": "BEFORE_COMPLETE", "turns_completed": 1})
@@ -495,6 +496,14 @@ def test_codex_reset_endpoint_is_local_only_and_private_safe(monkeypatch: pytest
     thread = Thread(target=server.serve_forever, daemon=True)
     thread.start()
     try:
+        rejected = Request(f"http://127.0.0.1:{server.server_port}/api/codex-reset", data=b'{"unexpected":true}', headers={"Content-Type": "application/json"}, method="POST")
+        with pytest.raises(HTTPError) as error:
+            urlopen(rejected)
+        assert error.value.code == 400
+        assert json.loads(error.value.read()) == {"status": "BLOCKED", "reason_code": "REQUEST_REJECTED"}
+        assert transport.closed is False
+        assert poc_server._HYBRID_SESSION is not None
+        assert poc_server._codex_status() == {"status": "OK", "app_server": "ENABLED", "current_source": "ECR", "session": "ACTIVE", "lifecycle": "BEFORE_COMPLETE", "completed_turns": 1}
         request = Request(f"http://127.0.0.1:{server.server_port}/api/codex-reset", data=b"{}", headers={"Content-Type": "application/json"}, method="POST")
         payload = json.loads(urlopen(request).read())
     finally:
