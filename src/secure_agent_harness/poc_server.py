@@ -349,18 +349,14 @@ def _collect_codex_turn(session: _HybridSession, prompt: str, *, receive_timeout
             response_parts.append(params["delta"])
         elif method == "turn/completed":
             completed = params.get("turn")
-            if not isinstance(completed, dict) or completed.get("id") != turn_id:
+            if params.get("threadId") not in {None, session.thread_id} or not isinstance(completed, dict) or completed.get("id") != turn_id:
                 continue
             if completed.get("status") != "completed":
                 raise _CodexPreflightError("CODEX_APP_SERVER_UNAVAILABLE")
             session.turns_completed += 1
             return response_text()
         elif method == "thread/status/changed":
-            status = params.get("status")
-            if params.get("threadId") != session.thread_id or not isinstance(status, dict) or status.get("type") != "idle":
-                continue
-            session.turns_completed += 1
-            return response_text()
+            continue
     raise _CodexPreflightError("CODEX_APP_SERVER_UNAVAILABLE")
 
 
@@ -484,6 +480,19 @@ def _source_codex_facts(source: str, scan: dict[str, object]) -> str:
     finding = next((item for item in findings if isinstance(item, dict)), {}) if isinstance(findings, list) else {}
     if not isinstance(finding, dict):
         finding = {}
+    ec2_http_tokens: str | None = None
+    if source == "ec2":
+        configured_tokens = scan.get("metadata_http_tokens")
+        if isinstance(configured_tokens, str) and configured_tokens.strip().lower() in {"required", "optional"}:
+            ec2_http_tokens = configured_tokens.strip().lower()
+        elif configured_tokens is not None:
+            raise _CodexPreflightError("CODEX_PROMPT_FACTS_REJECTED")
+        elif scan.get("state") == "COMPLIANT":
+            ec2_http_tokens = "required"
+        elif scan.get("state") == "NON_COMPLIANT":
+            ec2_http_tokens = "optional"
+        else:
+            raise _CodexPreflightError("CODEX_PROMPT_FACTS_REJECTED")
     fields: tuple[tuple[str, object], ...] = (
         ("source", source.upper()),
         ("resource alias", scan.get("resource_alias") or {"ecr": "ECR_IMAGE_01", "s3": "S3_BUCKET_ALIAS_03", "ec2": _EC2_RND_ALIAS_LAB01}.get(source, "UNKNOWN")),
@@ -509,13 +518,13 @@ def _source_codex_facts(source: str, scan: dict[str, object]) -> str:
         fields += (
             ("Config rule", scan.get("config_rule_name") or "ec2-imdsv2-check-rnd-lab01"),
             ("remediation document", "AWSConfigRemediation-EnforceEC2InstanceIMDSv2"),
-            ("IMDSv2 HttpTokens state", scan.get("metadata_http_tokens") or finding.get("observed_state") or ("required" if scan.get("state") == "COMPLIANT" else "optional")),
+            ("IMDSv2 HttpTokens state", ec2_http_tokens),
         )
     safe = []
     for label, value in fields:
         text = " ".join(str(value).split())
         if not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9 ./:+_()\-]{0,119}", text):
-            raise _CodexPreflightError("CODEX_APP_SERVER_OUTPUT_REJECTED")
+            raise _CodexPreflightError("CODEX_PROMPT_FACTS_REJECTED")
         safe.append(f"{label}: {text}")
     return "\n".join(safe)
 
