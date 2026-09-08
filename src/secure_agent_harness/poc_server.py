@@ -59,6 +59,7 @@ _SECCOP_TARGET_IDS: dict[str, str] = {}
 _SERVER_SCAN_REQUEST: SecCopAdvisoryRequest | None = None
 _HYBRID_SESSION: "_HybridSession | None" = None
 _CODEX_INVESTIGATION_SOURCE: str | None = None
+_CODEX_OBSERVABILITY: dict[str, object] = {"source": "NONE", "active": False, "lifecycle": "FRESH", "turns_completed": 0}
 _S3_APPROVAL_READY = False
 _S3_PROPOSALS: dict[str, dict[str, str | bool]] = {}
 _ECR_APPROVAL_READY = False
@@ -250,10 +251,36 @@ class _HybridSession:
 
 def _close_hybrid_session() -> None:
     global _HYBRID_SESSION, _CODEX_INVESTIGATION_SOURCE
+    if _CODEX_INVESTIGATION_SOURCE is not None and _HYBRID_SESSION is not None:
+        _CODEX_OBSERVABILITY["active"] = False
+        if _CODEX_OBSERVABILITY["lifecycle"] in {"BEFORE_ACTIVE", "BEFORE_COMPLETE", "QUESTION_COMPLETE"}:
+            _CODEX_OBSERVABILITY["lifecycle"] = "ABANDONED"
     if _HYBRID_SESSION is not None:
         _HYBRID_SESSION.transport.close()
         _HYBRID_SESSION = None
     _CODEX_INVESTIGATION_SOURCE = None
+
+
+def _record_codex_lifecycle(source: str, lifecycle: str, session: _HybridSession | None = None) -> None:
+    """Keep only the public-safe lifecycle needed by the status surface."""
+
+    _CODEX_OBSERVABILITY.update({
+        "source": source.upper(), "active": session is not None,
+        "lifecycle": lifecycle, "turns_completed": session.turns_completed if session else 0,
+    })
+
+
+def _codex_status() -> dict[str, object]:
+    """Expose no-tool lifecycle state without trace, provider, or authority data."""
+
+    return {
+        "status": "OK",
+        "app_server": "ENABLED" if os.environ.get("SECCOP_ECR_APP_SERVER") == "1" else "DISABLED",
+        "current_source": _CODEX_OBSERVABILITY["source"],
+        "session": "ACTIVE" if _CODEX_OBSERVABILITY["active"] else "INACTIVE",
+        "lifecycle": _CODEX_OBSERVABILITY["lifecycle"],
+        "completed_turns": _CODEX_OBSERVABILITY["turns_completed"],
+    }
 
 
 def _collect_codex_turn(session: _HybridSession, prompt: str, *, receive_timeout: float = 180.0) -> str:
@@ -513,6 +540,7 @@ def _start_source_codex_explanation(source: str, request_text: str, scan: dict[s
         session.continuity_marker = f"{source.upper()}_BEFORE_ACTIVE"
         _HYBRID_SESSION = session
         _CODEX_INVESTIGATION_SOURCE = source
+        _record_codex_lifecycle(source, "BEFORE_ACTIVE", session)
         prompt = (
             "User request: " + request + "\n\n"
             "Sanitized BEFORE facts:\n" + _source_codex_facts(source, scan) + "\n\n"
@@ -520,6 +548,7 @@ def _start_source_codex_explanation(source: str, request_text: str, scan: dict[s
         )
         response = _collect_codex_turn(session, prompt, receive_timeout=_ECR_TURN_TIMEOUT)
         session.continuity_marker = f"{source.upper()}_BEFORE_COMPLETE"
+        _record_codex_lifecycle(source, "BEFORE_COMPLETE", session)
         _trace_codex(source, "BEFORE", "READY", session=session, duration_ms=int((time.monotonic() - started) * 1000))
         return {
             "status": "READY", "reason_code": f"{source.upper()}_CODEX_BEFORE_READY",
@@ -529,6 +558,7 @@ def _start_source_codex_explanation(source: str, request_text: str, scan: dict[s
             "message": "Codex explained the source-bound provider finding from sanitized BEFORE facts.",
         }
     except (OSError, _CodexPreflightError) as error:
+        _record_codex_lifecycle(source, "FAILED")
         _close_hybrid_session()
         _CODEX_INVESTIGATION_SOURCE = None
         _trace_codex(source, "BEFORE", "BLOCKED", duration_ms=int((time.monotonic() - started) * 1000))
@@ -561,6 +591,7 @@ def _finish_source_codex_explanation(source: str, after: dict[str, object]) -> d
         )
         response = _collect_codex_turn(session, prompt, receive_timeout=_ECR_TURN_TIMEOUT)
         session.continuity_marker = f"{source.upper()}_AFTER_COMPLETE"
+        _record_codex_lifecycle(source, "AFTER_COMPLETED", session)
         _trace_codex(source, "AFTER", "READY", session=session, duration_ms=int((time.monotonic() - started) * 1000))
         return {
             "status": "READY", "reason_code": f"{source.upper()}_CODEX_AFTER_EXPLAINED",
@@ -570,6 +601,7 @@ def _finish_source_codex_explanation(source: str, after: dict[str, object]) -> d
             "message": f"Codex explained the verified {source.upper()} AFTER state on the same thread.",
         }
     except _CodexPreflightError as error:
+        _record_codex_lifecycle(source, "FAILED")
         _trace_codex(source, "AFTER", "BLOCKED", duration_ms=int((time.monotonic() - started) * 1000))
         return _hybrid_blocked(error.reason_code)
     finally:
@@ -590,9 +622,11 @@ def _ask_source_codex(source: str, question: str) -> dict[str, object]:
         return _hybrid_blocked("CODEX_THREAD_CONTINUITY_LOST", close_session=False)
     try:
         response = _collect_codex_turn(session, "Question about the same sanitized evidence: " + request + "\nAnswer briefly. Do not use tools.", receive_timeout=_ECR_TURN_TIMEOUT)
+        _record_codex_lifecycle(source, "QUESTION_COMPLETE", session)
         _trace_codex(source, "QUESTION", "READY", session=session)
         return {"status": "READY", "reason_code": f"{source.upper()}_CODEX_QUESTION_READY", "response_text": response, "message": "Codex answered from the current source-bound investigation."}
     except _CodexPreflightError as error:
+        _record_codex_lifecycle(source, "FAILED")
         _trace_codex(source, "QUESTION", "BLOCKED")
         return _hybrid_blocked(error.reason_code)
 
@@ -1565,6 +1599,9 @@ class _Handler(BaseHTTPRequestHandler):
         return payload if isinstance(payload, dict) else None
 
     def do_GET(self) -> None:  # noqa: N802 - stdlib handler API
+        if self.path == "/api/codex-status":
+            self._send_json(200, _codex_status())
+            return
         if self.path == "/api/health":
             combined = os.environ.get("SECCOP_ECR_S3_COMBINED") == "1"
             ecr_enabled = os.environ.get("SECCOP_ECR_OPERATOR_MVP") == "1"
