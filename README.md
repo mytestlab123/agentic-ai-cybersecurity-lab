@@ -4,6 +4,17 @@ A public, personal learning lab for understanding secure agent engineering with
 small Python experiments. Every example uses synthetic identifiers and local
 fixtures.
 
+## Current unified SecCop operator path
+
+The current three-source operator server starts only through
+`./scripts/start-unified-seccop.sh` and listens on `127.0.0.1:2222`. Its
+private runtime file is required and is never committed. Scan one configured
+ECR, S3, or fixed EC2 LAB_01 source; provider facts and exact proposal remain
+deterministic, while the existing no-tool Codex App Server explains the same
+source-bound evidence before and after a verified outcome. Human approval and
+provider verification remain mandatory. Historical Issue 5 material below is
+preserved as background, not the current operator entrypoint.
+
 ## POC boundary
 
 This is a KISS (Keep It Short and Stupid) learning POC, not an enterprise

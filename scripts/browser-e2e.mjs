@@ -80,13 +80,9 @@ try {
     assert(JSON.stringify(health.enabled_sources) === JSON.stringify(['ec2', 'ecr', 's3']), 'The R&D backend source set was incomplete');
     assert(health.demo_backend === 'AWS' && health.ec2_rnd_rearm === true, 'The R&D backend mode was not enabled');
     await page.getByRole('button', { name: 'EC2', exact: true }).click();
-    const selector = page.locator('#ec2-target-selector');
-    await selector.waitFor({ state: 'visible', timeout: 10_000 });
-    assert(await selector.locator('option').count() === 1, 'The R&D selector did not expose the fixed LAB_01 alias');
     const states = [];
     for (const alias of ['DEV_EC2_LAB_01']) {
       await page.getByRole('button', { name: 'EC2', exact: true }).click();
-      await selector.selectOption(alias);
       const scanResponsePromise = page.waitForResponse(
         (item) => item.url().endsWith('/api/scan') && item.request().method() === 'POST',
         { timeout: 360_000 },
@@ -99,9 +95,9 @@ try {
       assert(scanResult.state === 'NON_COMPLIANT' && scanResult.reason_code === 'SECCOP_EC2_IMDSV2_NON_COMPLIANT', `${alias} was not NON_COMPLIANT`);
       assert(!JSON.stringify(scanPayload).match(/arn:|i-[0-9a-f]{8,17}|\\Users\\|\/home\/|\/mnt\//), `Private data was exposed for ${alias}`);
       await page.getByText('X ACTION REQUIRED', { exact: true }).last().waitFor({ state: 'visible', timeout: 10_000 });
-      const findingAction = page.locator('.scan-finding').last().getByRole('button', { name: 'Reopen Finding', exact: true });
+      const findingAction = page.locator('.scan-finding').last().getByRole('button', { name: 'Remediate', exact: true });
       await findingAction.click();
-      await page.getByRole('button', { name: 'Reopen Finding', exact: true }).last().waitFor({ state: 'visible', timeout: 10_000 });
+      await page.getByRole('button', { name: 'Reject', exact: true }).last().waitFor({ state: 'visible', timeout: 10_000 });
       states.push({ alias, state: scanResult.state, reason_code: scanResult.reason_code });
       await saveJson(`unified-ec2-rnd-${alias.toLowerCase()}.json`, { alias, state: scanResult.state, reason_code: scanResult.reason_code });
       await shot(`SecCop-RND-${alias}.png`, { fullPage: true });

@@ -104,6 +104,14 @@ source: **Scan**, **Review one exact proposal**, **human Remediate or Reject**
 optional reopen only after a verified outcome. The browser never authorizes a
 target, action, or provider result.
 
+For every configured ECR, S3, and EC2 source, the existing no-tool Codex App
+Server path may explain only the current source-bound sanitized provider facts,
+one server-issued proposal, a user question, or a verified AFTER result. It
+never authorizes or substitutes for provider evidence, human approval, exact
+target binding, execution, or verification. A missing BEFORE explanation leaves
+provider facts visible but does not create an AI-ready approval state; a missing
+AFTER explanation never hides a verified provider outcome.
+
 For fixed `DEV_EC2_LAB_01`, the sole EC2 journey is
 `NON_COMPLIANT -> Review -> Remediate/Reject -> StartRemediationExecution ->
 COMPLIANT`. Review shows the exact AWS Config IMDSv2 proposal. Reject changes
