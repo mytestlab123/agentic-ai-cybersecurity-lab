@@ -131,6 +131,40 @@ def test_browser_surface_is_local_and_has_the_gate_controls() -> None:
     assert "A server change always needs a separate review and approval" in html
 
 
+@pytest.mark.parametrize(
+    ("source", "payload", "decision", "action", "verification"),
+    [
+        ("ecr", {"status": "READY", "state": "NON_COMPLIANT", "reason_code": "SECCOP_ECR_NON_COMPLIANT"}, "Awaiting review", "Not completed", "Awaiting provider truth"),
+        ("s3", {"status": "REJECTED", "state": "NON_COMPLIANT", "reason_code": "HUMAN_REJECTED"}, "Rejected", "Not completed", "Not run"),
+        ("ec2", {"status": "VERIFIED", "state": "COMPLIANT", "reason_code": "SECCOP_EC2_IMDSV2_REMEDIATED"}, "Approved", "Completed", "verified"),
+        ("ecr", {"status": "NO_FINDINGS", "state": "COMPLIANT", "reason_code": "SECCOP_ECR_COMPLIANT"}, "No decision required", "No action required", "clean or compliant"),
+        ("s3", {"status": "NO_FINDINGS", "state": "COMPLIANT", "reason_code": "SECCOP_S3_COMPLIANT"}, "No decision required", "No action required", "clean or compliant"),
+        ("ec2", {"status": "COMPLIANT", "reason_code": "SECCOP_EC2_IMDSV2_COMPLIANT"}, "No decision required", "No action required", "clean or compliant"),
+        ("ec2", {"status": "BLOCKED", "state": "PENDING", "reason_code": "TARGET_NOT_ALLOWED"}, "No decision", "Not completed", "Not complete"),
+    ],
+)
+def test_governance_timeline_preserves_five_stage_truth(
+    source: str, payload: dict[str, object], decision: str, action: str, verification: str
+) -> None:
+    timeline = poc_server._governance_timeline(source, payload)
+
+    assert set(timeline) == {"provider_evidence", "recommendation", "human_decision", "deterministic_action", "verification"}
+    assert timeline["provider_evidence"].startswith("Provider evidence:")
+    assert timeline["recommendation"].startswith("Recommendation:")
+    assert decision in timeline["human_decision"]
+    assert action in timeline["deterministic_action"]
+    assert verification in timeline["verification"]
+
+
+def test_manager_timeline_is_rendered_from_result_payload_only() -> None:
+    html = (Path(__file__).parents[1] / "web" / "poc_chat.html").read_text()
+
+    assert "function renderGovernanceTimeline(parent, timeline)" in html
+    for label in ("Provider evidence", "Recommendation", "Human decision", "Deterministic action", "Verification"):
+        assert label in html
+    assert "result.governance_timeline" in html
+
+
 def test_s3_proposal_reject_is_bound_and_non_mutating() -> None:
     poc_server._S3_PROPOSALS.clear()
     poc_server._S3_PROPOSALS["SECCOP_PROPOSAL_TEST"] = {"proposal_hash": "hash", "consumed": False}

@@ -450,6 +450,22 @@
       grid.appendChild(cell);
     }
 
+    function renderGovernanceTimeline(parent, timeline) {
+      if (!timeline) return;
+      const card = node('section', 'result-card governance-timeline');
+      const head = node('div', 'result-head');
+      head.appendChild(node('div', 'result-title', 'Manager governance timeline'));
+      card.appendChild(head);
+      const grid = node('div', 'evidence-grid');
+      evidenceCell(grid, 'Provider evidence', timeline.provider_evidence);
+      evidenceCell(grid, 'Recommendation', timeline.recommendation);
+      evidenceCell(grid, 'Human decision', timeline.human_decision);
+      evidenceCell(grid, 'Deterministic action', timeline.deterministic_action);
+      evidenceCell(grid, 'Verification', timeline.verification);
+      card.appendChild(grid);
+      parent.appendChild(card);
+    }
+
     function renderResult(parent, result) {
       const card = node('div', 'result-card');
       const head = node('div', 'result-head');
@@ -574,6 +590,7 @@
       }
       card.appendChild(findings);
       body.appendChild(card);
+      renderGovernanceTimeline(body, result.governance_timeline);
       setS3FlowStep(1);
       const cleanEcrVerification = ecrReview && result.status === 'NO_FINDINGS' && result.state === 'COMPLIANT';
       if (cleanEcrVerification) {
@@ -760,6 +777,7 @@
         evidenceCell(grid, 'State', result.state || 'NON_COMPLIANT');
         card.appendChild(grid);
         body.appendChild(card);
+        renderGovernanceTimeline(body, result.governance_timeline);
         button.disabled = false;
       } catch (error) {
         button.disabled = false;
@@ -796,6 +814,7 @@
         card.appendChild(reset);
       }
       body.appendChild(card);
+      renderGovernanceTimeline(body, result.governance_timeline);
       if (sourceType === 'S3_BUCKET' || sourceType === 'EC2_CONFIG' || (ecrReview && sourceType === 'ECR_IMAGE')) setS3FlowStep(5);
     }
 

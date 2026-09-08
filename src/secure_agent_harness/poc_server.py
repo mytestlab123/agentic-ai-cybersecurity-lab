@@ -907,6 +907,53 @@ def _source_submission_unknown(source: str, operation: str) -> dict[str, object]
     }
 
 
+def _governance_timeline(source: str, payload: dict[str, object]) -> dict[str, str]:
+    """Project a public-safe manager timeline without changing source authority."""
+
+    source_copy = {
+        "ecr": ("Amazon Inspector image evidence", "Review the exact clean-image recommendation"),
+        "s3": ("AWS Config S3 exposure-risk evidence", "Review the exact Block Public Access recommendation"),
+        "ec2": ("AWS Config IMDSv2 evidence", "Review the exact IMDSv2 recommendation"),
+    }[source]
+    status = str(payload.get("status", "BLOCKED"))
+    reason_code = str(payload.get("reason_code", "PROVIDER_RESULT_UNAVAILABLE"))
+    provider_state = str(payload.get("state", payload.get("verification_state", status)))
+    before = f"Provider evidence: {source_copy[0]} reported {provider_state} ({reason_code})."
+    recommendation = f"Recommendation: {source_copy[1]}."
+    if status == "VERIFIED":
+        decision = "Human decision: Approved the exact proposal."
+        action = "Deterministic action: Completed only for the approved bound proposal."
+        after = "Verification: Provider truth verified the protected or compliant state."
+    elif status == "NO_FINDINGS" or provider_state == "COMPLIANT":
+        recommendation = "Recommendation: No remediation proposal is required; retain the clean or compliant state."
+        decision = "Human decision: No decision required."
+        action = "Deterministic action: No action required."
+        after = "Verification: Provider truth found a clean or compliant state."
+    elif status == "REJECTED" or reason_code == "HUMAN_REJECTED":
+        decision = "Human decision: Rejected; no provider change was authorized."
+        action = "Deterministic action: Not completed."
+        after = "Verification: Not run because the proposal was rejected."
+    elif status == "PENDING":
+        decision = "Human decision: Awaiting a safe terminal provider result."
+        action = "Deterministic action: Not completed."
+        after = "Verification: Pending provider reconciliation."
+    elif status == "BLOCKED":
+        decision = "Human decision: No decision accepted."
+        action = "Deterministic action: Not completed."
+        after = "Verification: Not complete; provider action was blocked."
+    else:
+        decision = "Human decision: Awaiting review of the exact proposal."
+        action = "Deterministic action: Not completed."
+        after = "Verification: Awaiting provider truth after a future approved action."
+    return {
+        "provider_evidence": before,
+        "recommendation": recommendation,
+        "human_decision": decision,
+        "deterministic_action": action,
+        "verification": after,
+    }
+
+
 def _run_real_demo(command: str, *, source: str | None = None, request_text: str | None = None, proposal_id: str | None = None, proposal_hash: str | None = None, target_alias: str | None = None) -> dict[str, object]:
     """Run the repo-owned AWS DEMO command and return sanitized JSON only."""
 
@@ -1706,6 +1753,8 @@ class _Handler(BaseHTTPRequestHandler):
             if os.environ.get("SECCOP_S3_COMPLIANCE_E2E") == "1" or os.environ.get("SECCOP_ECR_OPERATOR_MVP") == "1" or os.environ.get("SECCOP_EC2_IMDSV2_E2E") == "1":
                 result = _run_real_demo("scan", source=request.source, request_text=request.request_text, target_alias=target_alias)
                 agent = result.pop("agent", None)
+                if request.source in {"ecr", "s3", "ec2"}:
+                    result["governance_timeline"] = _governance_timeline(request.source, result)
                 response: dict[str, object] = {"result": result, "events": []}
                 if agent is not None:
                     response["agent"] = agent
@@ -1755,7 +1804,9 @@ class _Handler(BaseHTTPRequestHandler):
             if source not in {"s3", "ecr", "ec2"} or payload.get("confirm") is not True:
                 self._send_json(400, {"status": "BLOCKED", "reason_code": "REQUEST_REJECTED"})
                 return
-            self._send_json(200, {"result": _run_real_demo("fix", source=source, proposal_id=payload.get("proposal_id"), proposal_hash=payload.get("proposal_hash")), "events": []})
+            result = _run_real_demo("fix", source=source, proposal_id=payload.get("proposal_id"), proposal_hash=payload.get("proposal_hash"))
+            result["governance_timeline"] = _governance_timeline(source, result)
+            self._send_json(200, {"result": result, "events": []})
             return
 
         if self.path == "/api/demo/reject":
@@ -1764,11 +1815,17 @@ class _Handler(BaseHTTPRequestHandler):
                 return
             if payload.get("source") == "ec2":
                 if os.environ.get("SECCOP_EC2_RND_REARM") == "1":
-                    self._send_json(200, {"result": _run_real_demo("reject", source="ec2", proposal_id=payload.get("proposal_id"), proposal_hash=payload.get("proposal_hash")), "events": []})
+                    result = _run_real_demo("reject", source="ec2", proposal_id=payload.get("proposal_id"), proposal_hash=payload.get("proposal_hash"))
+                    result["governance_timeline"] = _governance_timeline("ec2", result)
+                    self._send_json(200, {"result": result, "events": []})
                     return
-                self._send_json(200, {"result": _reject_ec2_proposal(payload.get("proposal_id"), payload.get("proposal_hash")), "events": []})
+                result = _reject_ec2_proposal(payload.get("proposal_id"), payload.get("proposal_hash"))
+                result["governance_timeline"] = _governance_timeline("ec2", result)
+                self._send_json(200, {"result": result, "events": []})
                 return
-            self._send_json(200, {"result": _reject_s3_proposal(payload.get("proposal_id"), payload.get("proposal_hash")), "events": []})
+            result = _reject_s3_proposal(payload.get("proposal_id"), payload.get("proposal_hash"))
+            result["governance_timeline"] = _governance_timeline("s3", result)
+            self._send_json(200, {"result": result, "events": []})
             return
 
         if self.path == "/api/demo/reset":
