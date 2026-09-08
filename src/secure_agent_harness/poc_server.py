@@ -919,10 +919,16 @@ def _governance_timeline(source: str, payload: dict[str, object]) -> dict[str, s
     reason_code = str(payload.get("reason_code", "PROVIDER_RESULT_UNAVAILABLE"))
     provider_state = str(payload.get("state", payload.get("verification_state", status)))
     before = f"Provider evidence: {source_copy[0]} reported {provider_state} ({reason_code})."
+    recommendation = f"Recommendation: {source_copy[1]}."
     if status == "VERIFIED":
         decision = "Human decision: Approved the exact proposal."
         action = "Deterministic action: Completed only for the approved bound proposal."
         after = "Verification: Provider truth verified the protected or compliant state."
+    elif status == "NO_FINDINGS" or provider_state == "COMPLIANT":
+        recommendation = "Recommendation: No remediation proposal is required; retain the clean or compliant state."
+        decision = "Human decision: No decision required."
+        action = "Deterministic action: No action required."
+        after = "Verification: Provider truth found a clean or compliant state."
     elif status == "REJECTED" or reason_code == "HUMAN_REJECTED":
         decision = "Human decision: Rejected; no provider change was authorized."
         action = "Deterministic action: Not completed."
@@ -941,7 +947,7 @@ def _governance_timeline(source: str, payload: dict[str, object]) -> dict[str, s
         after = "Verification: Awaiting provider truth after a future approved action."
     return {
         "provider_evidence": before,
-        "recommendation": f"Recommendation: {source_copy[1]}.",
+        "recommendation": recommendation,
         "human_decision": decision,
         "deterministic_action": action,
         "verification": after,

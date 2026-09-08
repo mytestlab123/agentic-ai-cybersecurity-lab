@@ -137,6 +137,9 @@ def test_browser_surface_is_local_and_has_the_gate_controls() -> None:
         ("ecr", {"status": "READY", "state": "NON_COMPLIANT", "reason_code": "SECCOP_ECR_NON_COMPLIANT"}, "Awaiting review", "Not completed", "Awaiting provider truth"),
         ("s3", {"status": "REJECTED", "state": "NON_COMPLIANT", "reason_code": "HUMAN_REJECTED"}, "Rejected", "Not completed", "Not run"),
         ("ec2", {"status": "VERIFIED", "state": "COMPLIANT", "reason_code": "SECCOP_EC2_IMDSV2_REMEDIATED"}, "Approved", "Completed", "verified"),
+        ("ecr", {"status": "NO_FINDINGS", "state": "COMPLIANT", "reason_code": "SECCOP_ECR_COMPLIANT"}, "No decision required", "No action required", "clean or compliant"),
+        ("s3", {"status": "NO_FINDINGS", "state": "COMPLIANT", "reason_code": "SECCOP_S3_COMPLIANT"}, "No decision required", "No action required", "clean or compliant"),
+        ("ec2", {"status": "COMPLIANT", "reason_code": "SECCOP_EC2_IMDSV2_COMPLIANT"}, "No decision required", "No action required", "clean or compliant"),
         ("ec2", {"status": "BLOCKED", "state": "PENDING", "reason_code": "TARGET_NOT_ALLOWED"}, "No decision", "Not completed", "Not complete"),
     ],
 )
