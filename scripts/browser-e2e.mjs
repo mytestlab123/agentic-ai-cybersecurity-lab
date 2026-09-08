@@ -79,7 +79,7 @@ try {
   await shot('SecCop-Scan-01.png');
 
   if (codexUi) {
-    for (const source of ['S3', 'EC2']) {
+    for (const source of ['S3', 'ECR', 'EC2']) {
       await page.getByRole('button', { name: source, exact: true }).click();
       const scanResponse = page.waitForResponse((item) => item.url().endsWith('/api/scan') && item.request().method() === 'POST', { timeout: 30_000 });
       await page.locator('#scan-environment').click();
