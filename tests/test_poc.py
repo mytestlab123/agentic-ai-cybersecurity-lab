@@ -1555,6 +1555,31 @@ def test_ec2_rnd_reopen_already_open_skips_config_wait(monkeypatch: pytest.Monke
     assert result["mutation_performed"] is False
 
 
+@pytest.mark.parametrize(("permissions", "expected_count", "expected_ssh"), [
+    ([{"IpProtocol": "tcp", "FromPort": 22, "ToPort": 22, "IpRanges": [{"CidrIp": "0.0.0.0/0"}]}], 1, True),
+    ([{"IpProtocol": "tcp", "FromPort": 22, "ToPort": 22, "IpRanges": [{"CidrIp": "10.0.0.0/8"}]}, {"IpProtocol": "tcp", "FromPort": 443, "ToPort": 443, "Ipv6Ranges": [{"CidrIpv6": "::/0"}]}], 2, False),
+    ([], 0, False),
+])
+def test_ec2_rnd_sg_read_derives_real_ingress_and_public_ssh(
+    monkeypatch: pytest.MonkeyPatch, permissions: list[dict[str, object]], expected_count: int, expected_ssh: bool,
+) -> None:
+    target = {"SecurityGroups": [{"GroupId": "SG_PRIVATE_01"}], "PublicIpAddress": None}
+    calls: list[tuple[object, ...]] = []
+    monkeypatch.setattr(issue47, "_ec2_rnd_target", lambda *_args, **_kwargs: ("EC2_RESOURCE_01", target))
+
+    def fake_call(*args: object, **_kwargs: object) -> dict[str, object]:
+        calls.append(args)
+        return {"SecurityGroups": [{"IpPermissions": permissions}]}
+
+    monkeypatch.setattr(issue47, "_ec2_call", fake_call)
+    result = issue47._ec2_rnd_sg_read("ihis_dev", "ap-southeast-1", issue47.EC2_RND_ALIAS_LAB01)
+
+    assert result["ingress_rule_count"] == expected_count
+    assert result["ssh_exposed"] is expected_ssh
+    assert result["public_ipv4"] is False
+    assert any("describe-security-groups" in call for call in calls)
+
+
 def test_ecr_reopen_is_idempotent_when_the_finding_is_already_open(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
     monkeypatch.setattr(seccop_demo, "_ecr_scan", lambda *_: {"reason_code": "SECCOP_ECR_NON_COMPLIANT"})
     monkeypatch.setattr(seccop_demo, "_push_image", lambda *_: pytest.fail("unexpected ECR mutation"))
