@@ -51,6 +51,7 @@ For an explicitly approved live App Server presentation check, first start the
 single unified server in the named background lane:
 
 ```bash
+npm ci
 tmux new-session -d -s seccop-unified-2222 \
   -c "$PWD" 'exec ./scripts/start-unified-seccop.sh'
 ```
@@ -59,7 +60,9 @@ Then run the one public entrypoint `./scripts/live-codex-gui-e2e.sh`. Its
 repo-owned JavaScript helper is an implementation detail, not a second operator
 command. The runner refuses any listener not owned by this checkout, performs
 read-only scans and Codex turns only, and saves five sanitized screenshots to
-the Windows Pictures/Screenshots folder. ECR acceptance requires the private
+the Windows Pictures/Screenshots folder. The live sequence proves EC2 IMDSv2,
+security-group, S3, and ECR/Inspector tool selection plus one truthful
+unsupported/no-tool turn. ECR acceptance requires the private
 runtime to select an already-retained vulnerable fixture; a clean ECR provider
 state is useful scanner evidence but is not accepted as Codex investigation
 proof. The runner never clicks Remediate, Approve Once, Reject, or Reopen.

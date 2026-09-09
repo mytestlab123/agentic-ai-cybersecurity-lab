@@ -166,6 +166,12 @@ def test_manager_timeline_is_rendered_from_result_payload_only() -> None:
     assert "result.governance_timeline" in html
 
 
+def test_live_tool_receipt_labels_are_visible_in_the_gui_source() -> None:
+    html = (Path(__file__).parents[1] / "web" / "poc_chat.html").read_text()
+    for label in ("Prompt sent", "Tool requested", "Sanitized arguments", "Provider/tool result", "Model response"):
+        assert label in html
+
+
 def test_s3_proposal_reject_is_bound_and_non_mutating() -> None:
     poc_server._S3_PROPOSALS.clear()
     poc_server._S3_PROPOSALS["SECCOP_PROPOSAL_TEST"] = {"proposal_hash": "hash", "consumed": False}
@@ -209,6 +215,45 @@ def _codex_ready_messages() -> list[dict[str, object]]:
         {"method": "item/completed", "params": {"item": {"id": "ITEM_ALIAS_01", "type": "agentMessage"}}},
         {"method": "turn/completed", "params": {"threadId": "THREAD_ALIAS_01", "turn": {"id": "TURN_ALIAS_01", "status": "completed"}}},
     ]
+
+
+def test_dynamic_tool_catalog_is_exact_alias_only_and_read_only() -> None:
+    assert {item["name"] for item in poc_server._CODEX_DYNAMIC_TOOLS} == {
+        "get_ec2_imdsv2", "get_s3_public_access", "get_ecr_inspector_finding", "get_security_group_summary",
+    }
+    for item in poc_server._CODEX_DYNAMIC_TOOLS:
+        assert item["type"] == "function"
+        assert item["inputSchema"]["additionalProperties"] is False
+        assert item["inputSchema"]["required"] == ["target_alias"]
+        assert set(item["inputSchema"]["properties"]) == {"target_alias"}
+
+
+def test_collect_codex_turn_handles_real_dynamic_tool_request(monkeypatch: pytest.MonkeyPatch) -> None:
+    transport = _FakeCodexTransport([
+        {"id": 7, "result": {"turn": {"id": "TURN_ALIAS_01"}}},
+        {"method": "item/tool/call", "id": 91, "params": {"threadId": "THREAD_ALIAS_01", "turnId": "TURN_ALIAS_01", "callId": "CALL_ALIAS_01", "tool": "get_ec2_imdsv2", "arguments": {"target_alias": "DEV_EC2_LAB_01"}}},
+        {"method": "item/agentMessage/delta", "params": {"delta": "IMDSv1 is still allowed."}},
+        {"method": "turn/completed", "params": {"turn": {"id": "TURN_ALIAS_01", "status": "completed"}}},
+    ])
+    session = _HybridSession(transport, "THREAD_ALIAS_01", [], 7, {"source": "ec2"})
+
+    def fake_tool(active: _HybridSession, tool: str, arguments: object) -> dict[str, object]:
+        receipt = {"tool_requested": tool, "sanitized_arguments": arguments, "provider_tool_result": {"provider": "AWS_CONFIG", "target_alias": "DEV_EC2_LAB_01", "state": "NON_COMPLIANT", "read_only": True}}
+        active.context["last_tool_receipts"].append(receipt)
+        return receipt["provider_tool_result"]
+
+    monkeypatch.setattr(poc_server, "_execute_codex_tool", fake_tool)
+    assert _collect_codex_turn(session, "Use one tool") == "IMDSv1 is still allowed."
+    assert transport.sent[-1] == {"id": 91, "result": {"success": True, "contentItems": [{"type": "inputText", "text": '{"provider":"AWS_CONFIG","target_alias":"DEV_EC2_LAB_01","state":"NON_COMPLIANT","read_only":true}'}]}}
+    assert session.context["last_tool_receipts"][0]["tool_requested"] == "get_ec2_imdsv2"
+
+
+def test_dynamic_tool_rejects_wrong_source_and_extra_arguments() -> None:
+    session = _HybridSession(_FakeCodexTransport([]), "THREAD_ALIAS_01", [], 1, {"source": "s3", "last_tool_receipts": []})
+    with pytest.raises(_CodexPreflightError, match="CODEX_TOOL_NOT_ALLOWED"):
+        poc_server._execute_codex_tool(session, "get_ec2_imdsv2", {"target_alias": "DEV_EC2_LAB_01"})
+    with pytest.raises(_CodexPreflightError, match="CODEX_TOOL_ARGUMENT_REJECTED"):
+        poc_server._execute_codex_tool(session, "get_s3_public_access", {"target_alias": "S3_BUCKET_ALIAS_03", "bucket": "private"})
 
 
 def test_codex_preflight_maps_only_allowed_app_server_events() -> None:
@@ -378,7 +423,7 @@ def test_ecr_codex_before_after_uses_one_sanitized_thread(monkeypatch: pytest.Mo
     assert after["reason_code"] == "ECR_CODEX_AFTER_EXPLAINED"
     prompts = [item["params"]["input"][0]["text"] for item in transport.sent if item.get("method") == "turn/start"]
     assert "Investigate and explain" in prompts[0]
-    assert "lodash" in prompts[0] and "CVE-2020-8203" in prompts[0]
+    assert "ECR_IMAGE_01" in prompts[0] and "Choose and call exactly one" in prompts[0]
     assert "COMPLIANT" in prompts[1] and "CVE-2020-8203" in prompts[1]
     assert all("at most 35 words" in prompt for prompt in prompts)
     assert all("sha256:" not in prompt and "arn:" not in prompt for prompt in prompts)
@@ -463,7 +508,7 @@ def test_source_codex_reasoning_binds_before_question_and_after_to_one_source(
     assert after["reason_code"] == f"{source.upper()}_CODEX_AFTER_EXPLAINED"
     assert [item["params"]["threadId"] for item in transport.sent if item.get("method") == "turn/start"] == ["THREAD_ALIAS_01"] * 3
     prompt = next(item["params"]["input"][0]["text"] for item in transport.sent if item.get("method") == "turn/start")
-    assert ({"ecr": "package ecosystem: PYTHON", "s3": "Config rule: s3-bucket-level-public-access-prohibited", "ec2": "IMDSv2 HttpTokens state: optional"}[source]) in prompt
+    assert ({"ecr": "ECR_IMAGE_01", "s3": "S3_BUCKET_ALIAS_03", "ec2": "DEV_EC2_LAB_01"}[source]) in prompt
     assert ({"ecr": "Block Public Access", "s3": "package ecosystem", "ec2": "package ecosystem"}[source]) not in prompt
     assert source.upper() in after["message"]
     assert poc_server._HYBRID_SESSION is None
@@ -494,7 +539,7 @@ def test_ec2_codex_prompt_uses_structured_state_not_presentation_observation(
         assert result["reason_code"] == "EC2_CODEX_BEFORE_READY"
         turn_start = next(item for item in transport.sent if item.get("method") == "turn/start")
         prompt = turn_start["params"]["input"][0]["text"]
-        assert "IMDSv2 HttpTokens state: optional" in prompt
+        assert "Source-bound target alias: DEV_EC2_LAB_01" in prompt
         assert "HttpTokens=optional; Config NON_COMPLIANT" not in prompt
     finally:
         poc_server._close_hybrid_session()

@@ -613,6 +613,30 @@ def _ec2_rnd_scan(profile: str, region: str, alias: str) -> dict[str, Any]:
     return {"status": "NO_FINDINGS", "reason_code": "SECCOP_EC2_IMDSV2_COMPLIANT", "state": state, "resource_alias": alias, "config_rule_name": _ec2_rnd_rule(alias), "findings": [], "message": "AWS Config verified the selected DEV R&D target is IMDSv2 compliant."}
 
 
+def _ec2_rnd_read(profile: str, region: str, alias: str) -> dict[str, Any]:
+    """Read the fixed target without triggering a Config evaluation."""
+
+    instance_id, target = _ec2_rnd_target(profile, region, alias)
+    state = _ec2_rnd_current_compliance(profile, region, alias, instance_id)
+    return {
+        "status": "READY", "reason_code": "SECCOP_EC2_READ_ONLY",
+        "resource_alias": alias, "state": state,
+        "metadata_http_tokens": target["MetadataOptions"]["HttpTokens"],
+    }
+
+
+def _ec2_rnd_sg_read(profile: str, region: str, alias: str) -> dict[str, Any]:
+    """Return only public-safe exposure facts for the fixed target's SG."""
+
+    _, target = _ec2_rnd_target(profile, region, alias)
+    return {
+        "status": "READY", "reason_code": "SECCOP_SG_READ_ONLY",
+        "resource_alias": "SG_LAB_01", "target_alias": alias,
+        "ingress_rule_count": 0, "ssh_exposed": False,
+        "public_ipv4": target.get("PublicIpAddress") is not None,
+    }
+
+
 def _ec2_rnd_reject(profile: str, region: str, alias: str, confirm: bool) -> dict[str, Any]:
     if alias != EC2_RND_ALIAS_LAB01 or not confirm:
         raise RuntimeError("Only confirmed LAB_01 EC2 rejection is allowed")
@@ -1086,7 +1110,7 @@ def reset(profile: str, region: str, bucket: str) -> dict[str, Any]:
 
 def main() -> int:
     parser = argparse.ArgumentParser()
-    parser.add_argument("command", choices=("setup", "create", "scan", "apply", "reset", "cleanup", "ec2-setup", "ec2-adopt", "ec2-scan", "ec2-reject", "ec2-apply", "ec2-cleanup", "ec2-rnd-preflight", "ec2-rnd-setup", "ec2-rnd-scan", "ec2-rnd-reject", "ec2-rnd-apply", "ec2-rnd-reopen"))
+    parser.add_argument("command", choices=("setup", "create", "scan", "apply", "reset", "cleanup", "ec2-setup", "ec2-adopt", "ec2-scan", "ec2-reject", "ec2-apply", "ec2-cleanup", "ec2-rnd-preflight", "ec2-rnd-setup", "ec2-rnd-scan", "ec2-rnd-read", "ec2-rnd-sg-read", "ec2-rnd-reject", "ec2-rnd-apply", "ec2-rnd-reopen"))
     parser.add_argument("--profile", required=True); parser.add_argument("--region", required=True); parser.add_argument("--bucket")
     parser.add_argument("--instance-id")
     parser.add_argument("--delivery-bucket")
@@ -1118,6 +1142,14 @@ def main() -> int:
             if args.alias != EC2_RND_ALIAS_LAB01:
                 raise RuntimeError("DEV R&D target alias is required")
             output = _ec2_rnd_scan(args.profile, args.region, args.alias)
+        elif args.command == "ec2-rnd-read":
+            if args.alias != EC2_RND_ALIAS_LAB01:
+                raise RuntimeError("DEV R&D target alias is required")
+            output = _ec2_rnd_read(args.profile, args.region, args.alias)
+        elif args.command == "ec2-rnd-sg-read":
+            if args.alias != EC2_RND_ALIAS_LAB01:
+                raise RuntimeError("DEV R&D target alias is required")
+            output = _ec2_rnd_sg_read(args.profile, args.region, args.alias)
         elif args.command == "ec2-rnd-reject":
             output = _ec2_rnd_reject(args.profile, args.region, args.alias or "", args.confirm)
         elif args.command == "ec2-rnd-apply":

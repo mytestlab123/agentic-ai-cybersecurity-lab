@@ -150,10 +150,11 @@ The latest browser proof is in the
 [SecCop DEMO evidence report](docs/evidence/seccop-demo/report.md), with
 sanitized screenshots beside it.
 
-To reproduce the local browser proof with the existing Windows Chrome and
-`playwright-core` installation, run:
+To reproduce the local browser proof with Windows Chrome and the pinned
+repo-owned `playwright-core` dependency, run:
 
 ```bash
+npm ci
 ./scripts/browser-e2e.sh
 ```
 

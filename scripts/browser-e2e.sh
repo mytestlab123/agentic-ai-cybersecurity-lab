@@ -175,14 +175,7 @@ evidence_dir_windows=$(wslpath -w "$evidence_dir")
 runner_windows=$(wslpath -w "$node_runner")
 playwright_core=${PLAYWRIGHT_CORE:-}
 if [[ -z "$playwright_core" ]]; then
-  for candidate in \
-    "$repo_dir/../AgentCore/frontend/node_modules/playwright-core/index.mjs" \
-    "$repo_dir/node_modules/playwright-core/index.mjs"; do
-    if [[ -r "$candidate" ]]; then
-      playwright_core=$candidate
-      break
-    fi
-  done
+  playwright_core="$repo_dir/node_modules/playwright-core/index.mjs"
 fi
 [[ -n "$playwright_core" && -r "$playwright_core" ]] || {
   printf 'playwright-core module not found; set PLAYWRIGHT_CORE\n' >&2

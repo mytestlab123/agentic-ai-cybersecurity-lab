@@ -1,6 +1,6 @@
 # SecCop Phase A — read-only Codex tool calling
 
-Status: **active next direction**
+Status: **implemented on Draft PR #76; review pending**
 
 Recorded: 9 September 2026
 

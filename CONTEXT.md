@@ -29,20 +29,23 @@ remediation state and supersedes this snapshot.
 Current objective: persistent Security Copilot (SecCop) live demo after the
 local visual POC and fake-tested read-only adapter.
 
-Current three-source reasoning contract: ECR, S3, and fixed EC2 LAB_01 use the
-existing no-tool Codex App Server path only for source-bound sanitized BEFORE,
-question, and verified AFTER explanations. AWS/provider evidence, approvals,
-execution, and verification are deterministic. Local fixture proof is not AWS
-proof; retained resources remain untouched unless separately approved.
+Current three-source reasoning contract: ECR, S3, and fixed EC2 LAB_01 expose
+only four typed, alias-only read tools to the Codex App Server. The model selects
+the relevant tool; SecCop privately resolves the alias and returns sanitized
+provider evidence. The GUI displays the prompt, tool, arguments, result, and
+model response. AWS/provider evidence, approvals, execution, and verification
+remain deterministic, and retained resources remain untouched unless separately
+approved.
 
 Current unified runtime ownership: the only operator listener is
 `127.0.0.1:2222`, started from this checkout with
 `./scripts/start-unified-seccop.sh` in the detached tmux session
 `seccop-unified-2222`. `./scripts/live-codex-gui-e2e.sh` is the single
 repo-owned live browser-proof command; its JavaScript file is an internal
-helper. The runner verifies the listener PID, command, checkout, health, and
-three-source mode before using it. It is read-only and does not click any
-approval, remediation, reject, or reopen action.
+helper. Install its pinned repo dependency once with `npm ci`. The runner
+verifies the listener PID, command, checkout, health, and three-source mode,
+then proves four model-selected tools plus one unsupported no-tool result. It is
+read-only and does not click any approval, remediation, reject, or reopen action.
 
 The local harness remains deterministic, default-deny, and no-op on approval.
 The read-only adapter projects constrained Inspector package fields and SSM
