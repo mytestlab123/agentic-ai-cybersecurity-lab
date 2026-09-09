@@ -21,6 +21,7 @@ const codexPreflight = process.env.LIVE_SCAN_ONLY === 'codex';
 const unifiedEc2 = process.env.UNIFIED_EC2 === '1';
 const ec2Rnd = process.env.EC2_RND === '1';
 const goldenGui = process.env.SECCOP_GOLDEN_GUI === '1';
+const codexUi = process.env.SECCOP_CODEX_UI === '1';
 if (!appUrl || !cdpUrl || !evidenceDir || !reviewDir) {
   throw new Error('APP_URL, CDP_URL, EVIDENCE_DIR, and REVIEW_DIR are required');
 }
@@ -74,10 +75,42 @@ try {
   assert(response?.ok(), 'The SecCop page did not return HTTP success');
   await page.locator('#welcome').waitFor({ state: 'visible', timeout: 10_000 });
   const initialText = await page.locator('body').innerText();
-  assert(unifiedEc2 || ec2Rnd ? initialText.includes('review boundary.') : initialText.includes('Safe demo boundary.'), 'Safety banner was not visible');
+  assert(initialText.includes('Safe demo boundary.') || initialText.includes('review boundary.'), 'Safety banner was not visible');
   await shot('SecCop-Scan-01.png');
 
-  if (ec2Rnd) {
+  if (codexUi) {
+    for (const source of ['S3', 'ECR', 'EC2']) {
+      await page.getByRole('button', { name: source, exact: true }).click();
+      const scanResponse = page.waitForResponse((item) => item.url().endsWith('/api/scan') && item.request().method() === 'POST', { timeout: 30_000 });
+      await page.locator('#scan-environment').click();
+      assert((await scanResponse).ok(), `${source} scan failed`);
+      await page.getByRole('button', { name: 'Investigate with Codex', exact: true }).last().waitFor({ state: 'visible', timeout: 10_000 });
+      const investigateResponse = page.waitForResponse((item) => item.url().endsWith('/api/codex-investigate') && item.request().method() === 'POST', { timeout: 75_000 });
+      await page.getByRole('button', { name: 'Investigate with Codex', exact: true }).last().click({ force: true });
+      const investigate = await (await investigateResponse).json();
+      assert(investigate.result?.live_turn_status === 'LIVE_TURN_COMPLETED', `${source} did not return a live receipt`);
+      assert(investigate.result?.prompt_sent && investigate.result?.response_text, `${source} receipt omitted prompt or response`);
+      await page.getByText('Prompt sent', { exact: true }).last().waitFor({ state: 'visible', timeout: 10_000 });
+      await focusedShot(page.locator('.hybrid-agent-card').last(), `SecCop-Codex-${source}-Investigate.png`);
+      if (source === 'S3') {
+        await page.getByRole('button', { name: 'Show Ask SecCop', exact: true }).click();
+        await page.locator('#prompt').fill('What should the operator verify before approval?');
+        const questionResponse = page.waitForResponse((item) => item.url().endsWith('/api/ask') && item.request().method() === 'POST', { timeout: 75_000 });
+        await page.locator('#run-form').evaluate((form) => form.requestSubmit());
+        const question = await (await questionResponse).json();
+        assert(question.result?.live_turn_status === 'LIVE_TURN_COMPLETED', 'S3 follow-up did not return a live receipt');
+      }
+      await page.locator('#new-chat').click();
+      await page.waitForFunction(async () => (await (await fetch('/api/codex-status')).json()).session === 'INACTIVE', null, { timeout: 10_000 });
+    }
+    await page.getByRole('button', { name: 'Show Ask SecCop', exact: true }).click();
+    await page.locator('#prompt').fill('Why is IMDSv2 safer than IMDSv1?');
+    const generalResponse = page.waitForResponse((item) => item.url().endsWith('/api/ask') && item.request().method() === 'POST', { timeout: 75_000 });
+    await page.locator('#run-form').evaluate((form) => form.requestSubmit());
+    const general = await (await generalResponse).json();
+    assert(general.result?.reason_code === 'GENERAL_CODEX_QUESTION_READY' && general.result?.live_turn_status === 'LIVE_TURN_COMPLETED', 'General Codex question did not return a live receipt');
+    await focusedShot(page.locator('.hybrid-agent-card').last(), 'SecCop-Codex-General-Question.png');
+  } else if (ec2Rnd) {
     const health = await page.evaluate(async () => (await fetch('/api/health')).json());
     assert(health.review_mode === 'ECR_S3_EC2_COMBINED', 'The R&D backend did not advertise the unified source set');
     assert(JSON.stringify(health.enabled_sources) === JSON.stringify(['ec2', 'ecr', 's3']), 'The R&D backend source set was incomplete');

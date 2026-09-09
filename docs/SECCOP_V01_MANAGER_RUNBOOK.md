@@ -27,7 +27,7 @@ the repository.
    exact source-bound proposal. **Reject** records no provider change.
 4. Read the returned verification state. `VERIFIED`/`COMPLIANT` is provider
    truth; `PENDING` means reconcile the exact provider state before retrying.
-5. Use **New Chat** to discard local Codex conversation state. It changes no
+5. Use **New investigation** (the New Chat/reset action) to discard local Codex conversation state. It changes no
    provider evidence, approval, target, or remediation state.
 
 Existing sanitized presentation evidence is in
@@ -48,9 +48,14 @@ The UI cannot authorize an unbound source, target, proposal, action, or
 verification result. Submission uncertainty is `PENDING` with
 `RECONCILE_BEFORE_RETRY`; it never becomes a claimed remediation success.
 
+If SecCop reports `CODEX_INVESTIGATION_BUSY` or
+`CODEX_THREAD_CONTINUITY_LOST`, select **New investigation** before another AI
+request. That closes only the local source-bound conversation; provider
+evidence, approval, and remediation state remain unchanged.
+
 ## Reset and cleanup
 
-**New Chat** is the safe local session reset. It closes the local Codex
+**New investigation** is the safe local New Chat/reset action. It closes the local Codex
 investigation and keeps provider and approval state unchanged.
 
 Where the configured demo exposes **Reopen Finding**, it is a deliberate,

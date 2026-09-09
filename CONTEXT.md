@@ -35,6 +35,15 @@ question, and verified AFTER explanations. AWS/provider evidence, approvals,
 execution, and verification are deterministic. Local fixture proof is not AWS
 proof; retained resources remain untouched unless separately approved.
 
+Current unified runtime ownership: the only operator listener is
+`127.0.0.1:2222`, started from this checkout with
+`./scripts/start-unified-seccop.sh` in the detached tmux session
+`seccop-unified-2222`. `./scripts/live-codex-gui-e2e.sh` is the single
+repo-owned live browser-proof command; its JavaScript file is an internal
+helper. The runner verifies the listener PID, command, checkout, health, and
+three-source mode before using it. It is read-only and does not click any
+approval, remediation, reject, or reopen action.
+
 The local harness remains deterministic, default-deny, and no-op on approval.
 The read-only adapter projects constrained Inspector package fields and SSM
 patch state. The browser now accepts a strict Inspector CSV plus an exact EC2

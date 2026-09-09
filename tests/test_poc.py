@@ -278,7 +278,7 @@ def test_hybrid_turn_rejects_command_event() -> None:
         _collect_codex_turn(_HybridSession(transport, "THREAD_ALIAS_01", [], 7), "Safe prompt")
 
 
-def test_hybrid_turn_accepts_idle_thread_status_as_completion() -> None:
+def test_hybrid_turn_does_not_accept_idle_thread_status_as_completion() -> None:
     transport = _FakeCodexTransport([
         {"id": 7, "result": {"turn": {"id": "TURN_ALIAS_02"}}},
         {"method": "item/agentMessage/delta", "params": {"delta": "Idle completion."}},
@@ -286,8 +286,9 @@ def test_hybrid_turn_accepts_idle_thread_status_as_completion() -> None:
     ])
     session = _HybridSession(transport, "THREAD_ALIAS_01", [], 7)
 
-    assert _collect_codex_turn(session, "Safe prompt") == "Idle completion."
-    assert session.turns_completed == 1
+    with pytest.raises(RuntimeError, match="stream exhausted"):
+        _collect_codex_turn(session, "Safe prompt")
+    assert session.turns_completed == 0
 
 
 def test_hybrid_turn_uses_completed_agent_message_text_when_delta_is_empty() -> None:
@@ -315,7 +316,7 @@ def test_hybrid_turn_ignores_buffered_completion_from_prior_turn() -> None:
     assert _collect_codex_turn(_HybridSession(transport, "THREAD_ALIAS_01", [], 7), "Safe prompt") == "Current completion."
 
 
-@pytest.mark.parametrize("completed_text", ["/home/private/path", 42, None])
+@pytest.mark.parametrize("completed_text", ["/home/private/path", "x" * 301, 42, None])
 def test_hybrid_turn_rejects_unsafe_or_missing_completed_agent_message_text(completed_text: object) -> None:
     transport = _FakeCodexTransport([
         {"id": 7, "result": {"turn": {"id": "TURN_ALIAS_02"}}},
@@ -327,6 +328,19 @@ def test_hybrid_turn_rejects_unsafe_or_missing_completed_agent_message_text(comp
 
     with pytest.raises(_CodexPreflightError, match="CODEX_APP_SERVER_OUTPUT_REJECTED"):
         _collect_codex_turn(_HybridSession(transport, "THREAD_ALIAS_01", [], 7), "Safe prompt")
+
+
+def test_hybrid_turn_waits_for_matching_completion_after_idle() -> None:
+    transport = _FakeCodexTransport([
+        {"id": 7, "result": {"turn": {"id": "TURN_ALIAS_02"}}},
+        {"method": "thread/status/changed", "params": {"threadId": "THREAD_ALIAS_01", "status": {"type": "idle"}}},
+        {"method": "item/agentMessage/delta", "params": {"delta": "Real explanation."}},
+        {"method": "item/completed", "params": {"item": {"id": "ITEM_ALIAS_02", "type": "agentMessage", "text": "Real explanation."}}},
+        {"method": "turn/completed", "params": {"threadId": "THREAD_ALIAS_01", "turn": {"id": "TURN_ALIAS_02", "status": "completed"}}},
+    ])
+    session = _HybridSession(transport, "THREAD_ALIAS_01", [], 7)
+    assert _collect_codex_turn(session, "Safe prompt") == "Real explanation."
+    assert session.turns_completed == 1
 
 
 def test_ecr_scan_request_bounds_user_text_without_granting_authority() -> None:
@@ -366,6 +380,7 @@ def test_ecr_codex_before_after_uses_one_sanitized_thread(monkeypatch: pytest.Mo
     assert "Investigate and explain" in prompts[0]
     assert "lodash" in prompts[0] and "CVE-2020-8203" in prompts[0]
     assert "COMPLIANT" in prompts[1] and "CVE-2020-8203" in prompts[1]
+    assert all("at most 35 words" in prompt for prompt in prompts)
     assert all("sha256:" not in prompt and "arn:" not in prompt for prompt in prompts)
     assert [item["params"]["threadId"] for item in transport.sent if item.get("method") == "turn/start"] == ["THREAD_ALIAS_01", "THREAD_ALIAS_01"]
 
@@ -453,6 +468,52 @@ def test_source_codex_reasoning_binds_before_question_and_after_to_one_source(
     assert source.upper() in after["message"]
     assert poc_server._HYBRID_SESSION is None
     assert poc_server._codex_status() == {"status": "OK", "app_server": "ENABLED", "current_source": source.upper(), "session": "INACTIVE", "lifecycle": "AFTER_COMPLETED", "completed_turns": 3}
+
+
+def test_ec2_codex_prompt_uses_structured_state_not_presentation_observation(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    transport = _FakeCodexTransport([
+        {"id": 1, "result": {"userAgent": "codex"}},
+        {"id": 2, "result": {"account": {"type": "chatgpt"}}},
+        {"id": 3, "result": {"thread": {"id": "THREAD_ALIAS_01"}}},
+        {"id": 4, "result": {"turn": {"id": "TURN_ALIAS_01"}}},
+        {"method": "item/agentMessage/delta", "params": {"delta": "Before explanation."}},
+        {"method": "turn/completed", "params": {"turn": {"id": "TURN_ALIAS_01", "status": "completed"}}},
+    ])
+    monkeypatch.setattr(poc_server, "_CodexProcessTransport", lambda: transport)
+    monkeypatch.setattr(poc_server, "_trace_codex", lambda *_args, **_kwargs: None)
+    poc_server._close_hybrid_session()
+
+    result = poc_server._start_source_codex_explanation("ec2", "Explain the safe next step.", {
+        "state": "NON_COMPLIANT",
+        "config_rule_name": "ec2-imdsv2-check-rnd-lab01",
+        "findings": [{"observed_state": "HttpTokens=optional; Config NON_COMPLIANT"}],
+    })
+    try:
+        assert result["reason_code"] == "EC2_CODEX_BEFORE_READY"
+        turn_start = next(item for item in transport.sent if item.get("method") == "turn/start")
+        prompt = turn_start["params"]["input"][0]["text"]
+        assert "IMDSv2 HttpTokens state: optional" in prompt
+        assert "HttpTokens=optional; Config NON_COMPLIANT" not in prompt
+    finally:
+        poc_server._close_hybrid_session()
+
+
+@pytest.mark.parametrize("facts", [
+    {"state": "UNKNOWN"},
+    {"state": "NON_COMPLIANT", "metadata_http_tokens": "optional; Config NON_COMPLIANT"},
+])
+def test_ec2_codex_prompt_fails_closed_before_transport_for_unstructured_state(
+    monkeypatch: pytest.MonkeyPatch, facts: dict[str, object],
+) -> None:
+    monkeypatch.setattr(poc_server, "_CodexProcessTransport", lambda: pytest.fail("transport must not start"))
+    poc_server._close_hybrid_session()
+
+    result = poc_server._start_source_codex_explanation("ec2", "Explain the safe next step.", facts)
+
+    assert result["status"] == "BLOCKED"
+    assert result["reason_code"] == "CODEX_PROMPT_FACTS_REJECTED"
 
 
 def test_codex_status_endpoint_is_readonly_and_excludes_private_fields(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -561,6 +622,17 @@ def test_source_codex_question_rejects_wrong_source_and_missing_scan() -> None:
     finally:
         poc_server._close_hybrid_session()
         poc_server._CODEX_INVESTIGATION_SOURCE = None
+
+
+def test_busy_codex_investigation_gives_the_safe_local_recovery_action() -> None:
+    result = poc_server._hybrid_blocked("CODEX_INVESTIGATION_BUSY", close_session=False)
+
+    assert result["status"] == "BLOCKED"
+    assert result["reason_code"] == "CODEX_INVESTIGATION_BUSY"
+    assert result["message"] == (
+        "A source-bound AI explanation is already active. Select New investigation "
+        "before starting another AI explanation; provider and approval state are unchanged."
+    )
 
 
 def test_source_codex_rejects_busy_malformed_and_wrong_source_without_losing_valid_investigation(
