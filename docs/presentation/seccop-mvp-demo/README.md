@@ -10,7 +10,7 @@ Product development is frozen. This folder exists only to collect truthful, read
 
 ## Collection outcome
 
-This pack contains seven deliberately selected screenshots and one optional
+This pack contains eight deliberately selected screenshots and one optional
 architecture visual. Each asset was visually reviewed at its original
 resolution. The set favors accepted-baseline live Codex evidence and clearly
 labels older provider-state captures as historical. No AWS call, runtime
@@ -28,10 +28,11 @@ change, feature change, or screenshot regeneration was performed for this PR.
 | [`06-ecr-verified-result.png`](06-ecr-verified-result.png) | ECR | Amazon Inspector provider evidence was rendered as compliant/clean with zero active findings and no human decision required. | Existing Issue #69 / merged PR #70 evidence | Historical provider-verification capture | Yes: no registry, account, digest, ARN, or private repository value | ECR verified-result slide; this proves the clean provider state, not a new mutation in PR #80 |
 | [`07-s3-finding.png`](07-s3-finding.png) | S3 | AWS Config reported bucket-level Block Public Access absent for approved alias `S3_BUCKET_ALIAS_03`. | Existing Issue #69 / merged PR #70 evidence | Historical provider-state capture | Yes: alias only; no real bucket name, account, policy, or ARN | S3 exposure-risk finding slide |
 | [`08-s3-codex-investigation.png`](08-s3-codex-investigation.png) | S3 | A completed live Codex App Server turn received sanitized AWS Config facts and explained the exact Block Public Access recommendation without using tools beyond the bounded read. | Existing repo-owned live runner at merged PR #76 | Accepted-baseline live Codex capture | Yes: alias-only facts; no private payload, path, or credential | S3 investigation slide |
+| [`09-s3-verified-result.png`](09-s3-verified-result.png) | S3 | The historical GUI journey shows human approval, Block Public Access remediation wording, and a terminal protected state with zero findings. | Existing local S3 demo evidence from the Issue #47 lineage | Historical local synthetic UI capture; not live AWS provider proof | Yes: approved bucket aliases only; no account, ARN, real bucket name, path, or credential | S3 verified-result slide, with the synthetic-mode limitation stated in speaker notes |
 
 ## Source summary
 
-- `01`, `03`, `06`, and `07` reuse existing recorded provider-state evidence.
+- `01`, `03`, `06`, `07`, and `09` reuse existing recorded state evidence.
 - `02`, `04`, and `08` reuse existing local captures created by the repo-owned
   accepted PR #76 live runner.
 - No screenshot was newly recaptured, generated, or cosmetically altered for
@@ -42,9 +43,10 @@ change, feature change, or screenshot regeneration was performed for this PR.
 
 ## Evidence limits and exclusions
 
-- `09-s3-verified-result.png` is intentionally absent. No readable,
-  public-safe capture of the accepted/current provider-verification state was
-  located, and Issue #79 forbids AWS mutation merely to manufacture one.
+- `09-s3-verified-result.png` completes the visual sequence with an existing
+  historical local synthetic capture. It proves the manager-visible approval
+  and protected terminal UI state only; it does not prove a live AWS provider
+  action or verification at PR #80.
 - No separate ECR investigation image is included. The strongest PR #76 image
   already shows the real sanitized Inspector finding and its matching live
   Codex turn. An available cropped card referred to a synthetic
@@ -105,7 +107,7 @@ ChatGPT-created architecture / what to expect
 → ECR verified result
 → S3 finding
 → S3 Codex investigation
-→ explain the documented S3 AFTER-capture gap
+→ S3 verified result, explicitly labeled historical local synthetic evidence
 → operational value / what was proved and what was not
 ```
 
