@@ -104,13 +104,15 @@ source: **Scan**, **Review one exact proposal**, **human Remediate or Reject**
 optional reopen only after a verified outcome. The browser never authorizes a
 target, action, or provider result.
 
-For every configured ECR, S3, and EC2 source, the existing no-tool Codex App
-Server path may explain only the current source-bound sanitized provider facts,
-one server-issued proposal, a user question, or a verified AFTER result. It
-never authorizes or substitutes for provider evidence, human approval, exact
-target binding, execution, or verification. A missing BEFORE explanation leaves
-provider facts visible but does not create an AI-ready approval state; a missing
-AFTER explanation never hides a verified provider outcome.
+For every configured ECR, S3, and EC2 source, the Codex App Server may choose
+exactly one of four SecCop-owned read-only tools: EC2 IMDSv2, EC2 security-group
+summary, S3 Block Public Access, or ECR Inspector evidence. Every argument is a
+fixed alias, resolved privately by the server, and every returned field is
+sanitized. The GUI shows the exact prompt, selected tool, alias-only arguments,
+provider/tool result, and actual model response. Unsupported questions and
+invalid or wrong-source tool calls fail closed. This investigation path never
+authorizes or substitutes for provider evidence, human approval, exact target
+binding, execution, or verification.
 
 For fixed `DEV_EC2_LAB_01`, the sole EC2 journey is
 `NON_COMPLIANT -> Review -> Remediate/Reject -> StartRemediationExecution ->

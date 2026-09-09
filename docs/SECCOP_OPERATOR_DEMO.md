@@ -105,7 +105,9 @@ Start the configured unified review server with one repo-owned command:
 
 It reads the private, mode-600 runtime file at
 `$HOME/.AGENTS-temp/agentic-ai-cybersecurity-lab/seccop-unified/runtime.env`
-and binds only `127.0.0.1:2222`.
+and starts the single listener in detached tmux session
+`seccop-unified-2222`, bound only to `127.0.0.1:2222`. Repeating the command
+verifies and reports the existing owned listener instead of starting another.
 Use `./scripts/start-unified-seccop.sh --check` for a no-listener, no-AWS
 preflight. Missing or incomplete ECR, S3, or EC2 configuration fails before
 the listener starts as `RUNTIME_CONFIG_INVALID:<field-name>`.

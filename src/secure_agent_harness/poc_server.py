@@ -69,7 +69,7 @@ _EC2_APPROVAL_READY = False
 _EC2_PROPOSALS: dict[str, dict[str, str | bool]] = {}
 _EC2_RND_ALIASES = {"DEV_EC2_LAB_01"}
 _EC2_RND_ALIAS_LAB01 = "DEV_EC2_LAB_01"
-_ECR_TURN_TIMEOUT = 60.0
+_ECR_TURN_TIMEOUT = 180.0
 _CODEX_PREFLIGHT_TURN_TIMEOUT = 30.0
 _CODEX_STDERR_DIR = Path.home() / ".AGENTS-temp" / "agentic-ai-cybersecurity-lab" / "issue53-app-server-observability" / "app-server-stderr"
 _CODEX_TRACE_PATH = Path.home() / ".AGENTS-temp" / "agentic-ai-cybersecurity-lab" / "seccop-codex" / "investigations.jsonl"
@@ -129,11 +129,39 @@ _CODEX_SAFE_NOTIFICATIONS = {
     "thread/tokenUsage/updated",
     "account/rateLimits/updated",
 }
-_CODEX_SAFE_ITEM_TYPES = {"userMessage", "agentMessage", "reasoning"}
+_CODEX_SAFE_ITEM_TYPES = {"userMessage", "agentMessage", "reasoning", "dynamicToolCall"}
 _CODEX_PREFLIGHT_PROMPT = "Reply with exactly: SecCop App Server preflight ready. Do not use tools."
 _AWS_MCP_SAFE_TOOLS = {
     "aws___get_regional_availability", "aws___get_tasks", "aws___list_regions",
     "aws___read_documentation", "aws___retrieve_skill", "aws___search_documentation",
+}
+
+_CODEX_DYNAMIC_TOOLS = [
+    {
+        "type": "function", "name": name, "description": description,
+        "inputSchema": {
+            "type": "object", "additionalProperties": False,
+            "properties": {"target_alias": {"type": "string", "enum": [alias]}},
+            "required": ["target_alias"],
+        },
+    }
+    for name, alias, description in (
+        ("get_ec2_imdsv2", "DEV_EC2_LAB_01", "Read the fixed EC2 target's IMDSv2 and AWS Config posture."),
+        ("get_s3_public_access", "S3_BUCKET_ALIAS_03", "Read the fixed S3 bucket's Block Public Access posture."),
+        ("get_ecr_inspector_finding", "ECR_IMAGE_01", "Read Amazon Inspector evidence for the fixed ECR image."),
+        ("get_security_group_summary", "DEV_EC2_LAB_01", "Read the fixed EC2 target's security-group exposure summary."),
+    )
+]
+_CODEX_TOOL_ALIASES = {
+    "get_ec2_imdsv2": "DEV_EC2_LAB_01",
+    "get_s3_public_access": "S3_BUCKET_ALIAS_03",
+    "get_ecr_inspector_finding": "ECR_IMAGE_01",
+    "get_security_group_summary": "DEV_EC2_LAB_01",
+}
+_CODEX_SOURCE_TOOLS = {
+    "ec2": {"get_ec2_imdsv2", "get_security_group_summary"},
+    "s3": {"get_s3_public_access"},
+    "ecr": {"get_ecr_inspector_finding"},
 }
 
 
@@ -145,6 +173,7 @@ class _CodexPreflightError(RuntimeError):
 
 class _CodexProcessTransport:
     def __init__(self, *, knowledge_only: bool = False, stderr_dir: Path | None = None) -> None:
+        self.supports_dynamic_tools = True
         command = ["codex", "app-server", "--stdio"]
         if knowledge_only:
             profile = os.environ.get("SECCOP_PROFILE", "")
@@ -250,6 +279,76 @@ class _HybridSession:
     turns_completed: int = 0
 
 
+def _codex_tool_process(args: list[str], *, timeout: float) -> dict[str, object]:
+    completed = _run_source_command("codex-tool", "read", args, timeout=timeout, env=os.environ.copy())
+    if completed is None or completed.returncode != 0:
+        raise _CodexPreflightError("CODEX_TOOL_PROVIDER_UNAVAILABLE")
+    try:
+        value = json.loads(completed.stdout)
+    except json.JSONDecodeError as exc:
+        raise _CodexPreflightError("CODEX_TOOL_PROVIDER_UNAVAILABLE") from exc
+    if not isinstance(value, dict) or value.get("status") in {"BLOCKED", "PENDING"}:
+        raise _CodexPreflightError("CODEX_TOOL_PROVIDER_UNAVAILABLE")
+    return value
+
+
+def _execute_codex_tool(session: _HybridSession, tool: str, arguments: object) -> dict[str, object]:
+    """Resolve one typed alias privately and return only public-safe facts."""
+
+    context = session.context if isinstance(session.context, dict) else {}
+    source = context.get("source")
+    expected_alias = _CODEX_TOOL_ALIASES.get(tool)
+    if source not in _CODEX_SOURCE_TOOLS or tool not in _CODEX_SOURCE_TOOLS[source]:
+        raise _CodexPreflightError("CODEX_TOOL_NOT_ALLOWED")
+    if not isinstance(arguments, dict) or set(arguments) != {"target_alias"} or arguments.get("target_alias") != expected_alias:
+        raise _CodexPreflightError("CODEX_TOOL_ARGUMENT_REJECTED")
+    profile = os.environ.get("SECCOP_PROFILE", "")
+    region = os.environ.get("AWS_REGION", "")
+    if profile != "amit" or region != "ap-southeast-1":
+        raise _CodexPreflightError("CODEX_TOOL_PROVIDER_UNAVAILABLE")
+
+    if tool in {"get_ec2_imdsv2", "get_security_group_summary"}:
+        ec2_profile = os.environ.get("SECCOP_EC2_PROFILE", "")
+        ec2_region = os.environ.get("SECCOP_EC2_REGION", "")
+        if ec2_profile != "ihis_dev" or ec2_region != "ap-southeast-1":
+            raise _CodexPreflightError("CODEX_TOOL_PROVIDER_UNAVAILABLE")
+        command = "ec2-rnd-read" if tool == "get_ec2_imdsv2" else "ec2-rnd-sg-read"
+        raw = _codex_tool_process([
+            sys.executable, str(_EC2_COMPLIANCE_SCRIPT), command,
+            "--profile", ec2_profile, "--region", ec2_region, "--alias", expected_alias,
+        ], timeout=120)
+        result = (
+            {"provider": "AWS_CONFIG", "target_alias": expected_alias, "state": raw.get("state"),
+             "http_tokens": raw.get("metadata_http_tokens"), "read_only": True}
+            if tool == "get_ec2_imdsv2" else
+            {"provider": "AMAZON_EC2", "target_alias": "SG_LAB_01",
+             "ingress_rule_count": raw.get("ingress_rule_count"), "ssh_exposed": raw.get("ssh_exposed"),
+             "public_ipv4": raw.get("public_ipv4"), "read_only": True}
+        )
+    elif tool == "get_s3_public_access":
+        raw = _codex_tool_process([
+            sys.executable, str(_S3_COMPLIANCE_SCRIPT), "scan", "--profile", profile,
+            "--region", region, "--bucket", os.environ.get("SECCOP_S3_BUCKET", ""),
+        ], timeout=120)
+        result = {"provider": "AWS_CONFIG", "target_alias": expected_alias, "state": raw.get("state"),
+                  "block_public_access": "ENABLED" if raw.get("state") == "COMPLIANT" else "ABSENT",
+                  "read_only": True}
+    else:
+        raw = _codex_tool_process([
+            sys.executable, str(_DEMO_SCRIPT), "ecr-scan", "--profile", profile, "--region", region,
+            "--ecr-scanner", "inspector", "--ecr-fixture", os.environ.get("SECCOP_ECR_FIXTURE", "current"),
+        ], timeout=180)
+        result = {"provider": "AMAZON_INSPECTOR", "target_alias": expected_alias, "state": raw.get("state"),
+                  "package_ecosystem": raw.get("package_ecosystem"), "cve": raw.get("cve_id"),
+                  "package": raw.get("package_name"), "installed_version": raw.get("installed_version"),
+                  "severity": raw.get("severity"), "read_only": True}
+    if any(value is None for value in result.values()):
+        raise _CodexPreflightError("CODEX_TOOL_PROVIDER_UNAVAILABLE")
+    receipt = {"tool_requested": tool, "sanitized_arguments": {"target_alias": expected_alias}, "provider_tool_result": result}
+    context["last_tool_receipts"].append(receipt)
+    return result
+
+
 def _close_hybrid_session() -> None:
     global _HYBRID_SESSION, _CODEX_INVESTIGATION_SOURCE
     if _CODEX_INVESTIGATION_SOURCE is not None and _HYBRID_SESSION is not None:
@@ -315,6 +414,9 @@ def _collect_codex_turn(session: _HybridSession, prompt: str, *, receive_timeout
     response_parts: list[str] = []
     completed_agent_text: object = None
     completed_agent_seen = False
+    if not isinstance(session.context, dict):
+        session.context = {}
+    session.context["last_tool_receipts"] = []
 
     def response_text() -> str:
         delta_text = "".join(response_parts)
@@ -334,6 +436,16 @@ def _collect_codex_turn(session: _HybridSession, prompt: str, *, receive_timeout
             event = session.transport.receive(remaining)
         method = event.get("method")
         params = event.get("params")
+        if method == "item/tool/call" and "id" in event and isinstance(params, dict):
+            if params.get("threadId") != session.thread_id or params.get("turnId") != turn_id:
+                raise _CodexPreflightError("CODEX_EVENT_REJECTED")
+            try:
+                result = _execute_codex_tool(session, str(params.get("tool", "")), params.get("arguments"))
+                response = {"success": True, "contentItems": [{"type": "inputText", "text": json.dumps(result, separators=(",", ":"))}]}
+            except _CodexPreflightError as error:
+                response = {"success": False, "contentItems": [{"type": "inputText", "text": json.dumps({"status": "BLOCKED", "reason_code": error.reason_code}, separators=(",", ":"))}]}
+            session.transport.send({"id": event["id"], "result": response})
+            continue
         if not isinstance(method, str) or method not in _CODEX_SAFE_NOTIFICATIONS or "id" in event or not isinstance(params, dict):
             raise _CodexPreflightError("CODEX_EVENT_REJECTED")
         if method in {"item/started", "item/completed"}:
@@ -552,15 +664,19 @@ def _source_codex_prompt(source: str, request_text: str, scan: dict[str, object]
     request = " ".join(request_text.split())
     if not request or len(request) > 300 or re.search(r"(?:arn:|sha256:|AKIA|aws\s+cli|(?:secret|credential|token)|/home/|\\\\Users\\\\)", request, re.IGNORECASE):
         raise _CodexPreflightError("REQUEST_REJECTED")
+    _source_codex_facts(source, scan)  # Validate provider facts before starting a model turn.
+    alias = {"ec2": _EC2_RND_ALIAS_LAB01, "s3": "S3_BUCKET_ALIAS_03", "ecr": "ECR_IMAGE_01"}[source]
     return (
         "User request: " + request + "\n\n"
-        "Sanitized BEFORE facts:\n" + _source_codex_facts(source, scan) + "\n\n"
-        "Explain the finding and recommend the safe, approval-gated next step in two short plain-language sentences, at most 35 words total. Do not use tools."
+        f"Source-bound target alias: {alias}\n"
+        "Choose and call exactly one relevant SecCop read-only tool before answering. Use only its returned evidence. "
+        "If no listed tool can answer, say the request is unsupported and do not call a substitute tool. "
+        "Answer in two short plain-language sentences, at most 35 words total."
     )
 
 
 def _start_source_codex_explanation(source: str, request_text: str, scan: dict[str, object]) -> dict[str, object]:
-    """Start one source-bound no-tool Codex investigation from trusted facts."""
+    """Start one source-bound Codex investigation with bounded read-only tools."""
 
     global _HYBRID_SESSION, _CODEX_INVESTIGATION_SOURCE
     if source not in {"ecr", "s3", "ec2"}:
@@ -572,13 +688,17 @@ def _start_source_codex_explanation(source: str, request_text: str, scan: dict[s
         prompt = _source_codex_prompt(source, request_text, scan)
         transport = _CodexProcessTransport()
         pending: list[dict[str, object]] = []
-        _codex_request(transport, 1, "initialize", {"clientInfo": {"name": "seccop_ecr", "version": "0.1.0"}}, pending)
+        _codex_request(transport, 1, "initialize", {
+            "clientInfo": {"name": "seccop_ecr", "version": "0.1.0"},
+            "capabilities": {"experimentalApi": True},
+        }, pending)
         transport.send({"method": "initialized", "params": {}})
         account = _codex_request(transport, 2, "account/read", {"refreshToken": False}, pending)
         if account.get("account") is None and account.get("requiresOpenaiAuth") is True:
             raise _CodexPreflightError("CODEX_NOT_AUTHENTICATED")
         thread = _codex_request(transport, 3, "thread/start", {
             "ephemeral": True, "approvalPolicy": "never", "sandbox": "read-only", "model": "gpt-5.6-luna",
+            "dynamicTools": _CODEX_DYNAMIC_TOOLS,
         }, pending).get("thread")
         if not isinstance(thread, dict) or not isinstance(thread.get("id"), str):
             raise _CodexPreflightError("CODEX_APP_SERVER_OUTPUT_REJECTED")
@@ -588,15 +708,20 @@ def _start_source_codex_explanation(source: str, request_text: str, scan: dict[s
         _CODEX_INVESTIGATION_SOURCE = source
         _record_codex_lifecycle(source, "BEFORE_ACTIVE", session)
         response = _collect_codex_turn(session, prompt, receive_timeout=_ECR_TURN_TIMEOUT)
+        receipts = session.context.get("last_tool_receipts", []) if isinstance(session.context, dict) else []
+        if getattr(transport, "supports_dynamic_tools", False) and len(receipts) != 1:
+            raise _CodexPreflightError("CODEX_TOOL_NOT_USED")
         session.continuity_marker = f"{source.upper()}_BEFORE_COMPLETE"
         _record_codex_lifecycle(source, "BEFORE_COMPLETE", session)
         _trace_codex(source, "BEFORE", "READY", session=session, duration_ms=int((time.monotonic() - started) * 1000))
+        receipt = receipts[0] if receipts else {}
         return {
             "status": "READY", "reason_code": f"{source.upper()}_CODEX_BEFORE_READY",
             "aws_evidence_status": {"ecr": "AMAZON_INSPECTOR", "s3": "AWS_CONFIG", "ec2": "AWS_CONFIG"}[source], "aws_mcp_status": "NOT_USED",
-            "aws_mcp_mode": "READ_ONLY", "tool_activity": ["One read-only Codex thread"],
+            "aws_mcp_mode": "READ_ONLY", "tool_activity": [f"Model selected {receipt.get('tool_requested', 'one read-only tool')}"],
             "response_text": response, "prompt_sent": prompt, "model": "gpt-5.6-luna", "live_turn_status": "LIVE_TURN_COMPLETED", "continuity_marker": session.continuity_marker,
-            "message": "Codex explained the source-bound provider finding from sanitized BEFORE facts.",
+            **receipt,
+            "message": "Codex explained the source-bound finding using one bounded read-only provider tool.",
         }
     except (OSError, _CodexPreflightError) as error:
         _record_codex_lifecycle(source, "FAILED")
@@ -661,12 +786,23 @@ def _ask_source_codex(source: str, question: str) -> dict[str, object]:
         return _hybrid_blocked("CODEX_SCAN_REQUIRED", close_session=False)
     if _CODEX_INVESTIGATION_SOURCE != source or session.continuity_marker != f"{source.upper()}_BEFORE_COMPLETE":
         return _hybrid_blocked("CODEX_THREAD_CONTINUITY_LOST", close_session=False)
-    prompt = "Question about the same sanitized evidence: " + request + "\nAnswer in at most 35 words. Do not use tools."
+    prompt = (
+        "Question about the same source-bound target: " + request + "\n"
+        "Choose and call exactly one relevant SecCop read-only tool before answering. If no listed tool can answer, "
+        "say the request is unsupported and do not call a substitute tool. Answer in at most 35 words."
+    )
     try:
         response = _collect_codex_turn(session, prompt, receive_timeout=_ECR_TURN_TIMEOUT)
         _record_codex_lifecycle(source, "QUESTION_COMPLETE", session)
         _trace_codex(source, "QUESTION", "READY", session=session)
-        return {"status": "READY", "reason_code": f"{source.upper()}_CODEX_QUESTION_READY", "response_text": response, "prompt_sent": prompt, "model": "gpt-5.6-luna", "live_turn_status": "LIVE_TURN_COMPLETED", "message": "Codex answered from the current source-bound investigation."}
+        receipts = session.context.get("last_tool_receipts", []) if isinstance(session.context, dict) else []
+        if not receipts and getattr(session.transport, "supports_dynamic_tools", False):
+            return {"status": "BLOCKED", "reason_code": "CODEX_TOOL_NOT_USED", "response_text": response, "prompt_sent": prompt, "model": "gpt-5.6-luna", "live_turn_status": "LIVE_TURN_COMPLETED_NO_TOOL", "message": "Codex completed the turn without calling a SecCop tool; no provider-backed answer is claimed."}
+        if len(receipts) > 1:
+            raise _CodexPreflightError("CODEX_TOOL_OUTPUT_REJECTED")
+        receipt = receipts[0] if receipts else {}
+        provider = receipt.get("provider_tool_result", {}).get("provider", "SECCOP_ADAPTER") if isinstance(receipt.get("provider_tool_result"), dict) else "SECCOP_ADAPTER"
+        return {"status": "READY", "reason_code": f"{source.upper()}_CODEX_QUESTION_READY", "response_text": response, "prompt_sent": prompt, "model": "gpt-5.6-luna", "live_turn_status": "LIVE_TURN_COMPLETED", "aws_evidence_status": provider, "aws_mcp_status": "NOT_USED", "aws_mcp_mode": "READ_ONLY", "tool_activity": [f"Model selected {receipt.get('tool_requested', 'one read-only tool')}"] , "message": "Codex answered from one bounded read-only provider tool.", **receipt}
     except _CodexPreflightError as error:
         _record_codex_lifecycle(source, "FAILED")
         _trace_codex(source, "QUESTION", "BLOCKED")
@@ -760,7 +896,8 @@ def _codex_request(
         message = transport.receive(min(timeout, remaining))
         if message.get("id") != request_id:
             event_method = message.get("method")
-            if "id" in message or event_method not in _CODEX_SAFE_NOTIFICATIONS:
+            is_dynamic_tool_request = event_method == "item/tool/call" and "id" in message and isinstance(message.get("params"), dict)
+            if ("id" in message and not is_dynamic_tool_request) or ("id" not in message and event_method not in _CODEX_SAFE_NOTIFICATIONS):
                 raise _CodexPreflightError("CODEX_EVENT_REJECTED")
             pending.append(message)
             continue

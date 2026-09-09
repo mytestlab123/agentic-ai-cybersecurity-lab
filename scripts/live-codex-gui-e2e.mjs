@@ -49,16 +49,25 @@ const scan = async (source) => {
   timingsMs[`${source.toLowerCase()}Scan`] = Date.now() - started;
   return result;
 };
-const investigate = async (source) => {
+const assertToolReceipt = (result, tool, alias, source) => {
+  assert(result.tool_requested === tool, `${source} selected ${result.tool_requested || 'no tool'} instead of ${tool}`);
+  assert(JSON.stringify(result.sanitized_arguments) === JSON.stringify({ target_alias: alias }), `${source} arguments were not alias-only`);
+  assert(result.provider_tool_result?.target_alias === (tool === 'get_security_group_summary' ? 'SG_LAB_01' : alias), `${source} provider result alias mismatch`);
+  assert(result.provider_tool_result?.read_only === true, `${source} provider result was not read-only`);
+  const expectedProvider = tool === 'get_ecr_inspector_finding' ? 'AMAZON_INSPECTOR' : tool === 'get_security_group_summary' ? 'AMAZON_EC2' : 'AWS_CONFIG';
+  assert(result.provider_tool_result?.provider === expectedProvider, `${source} provider evidence label mismatch`);
+};
+const investigate = async (source, tool, alias) => {
   const started = Date.now();
   const button = page.getByRole('button', { name: 'Investigate with Codex', exact: true }).last();
   await button.waitFor({ state: 'visible', timeout: 15_000 });
-  const response = page.waitForResponse((item) => item.url().endsWith('/api/codex-investigate'), { timeout: 90_000 });
+  const response = page.waitForResponse((item) => item.url().endsWith('/api/codex-investigate'), { timeout: 210_000 });
   await button.click();
   const result = (await (await response).json()).result;
   assert(result.live_turn_status === 'LIVE_TURN_COMPLETED', `${source} live turn did not complete`);
   assert(typeof result.prompt_sent === 'string' && result.prompt_sent.length > 0, `${source} prompt missing`);
   assert(typeof result.response_text === 'string' && result.response_text.length > 0, `${source} response missing`);
+  assertToolReceipt(result, tool, alias, source);
   assertPublicSafe(result, `${source} live receipt`);
   await page.getByText('Prompt sent', { exact: true }).last().waitFor({ state: 'visible', timeout: 15_000 });
   await page.getByText('Model response', { exact: true }).last().waitFor({ state: 'visible', timeout: 15_000 });
@@ -66,6 +75,16 @@ const investigate = async (source) => {
   assert(!body.includes('optional AI explanation was unavailable'), `${source} showed deterministic fallback`);
   assert(!body.includes('Codex investigation was blocked'), `${source} showed blocked investigation`);
   timingsMs[`${source.toLowerCase()}Investigate`] = Date.now() - started;
+  return result;
+};
+const ask = async (question) => {
+  if (!await page.locator('#prompt').isVisible()) {
+    await page.getByRole('button', { name: 'Show Ask SecCop', exact: true }).click();
+  }
+  await page.locator('#prompt').fill(question);
+  const response = page.waitForResponse((item) => item.url().endsWith('/api/ask'), { timeout: 120_000 });
+  await page.locator('#run-form').evaluate((form) => form.requestSubmit());
+  return (await (await response).json()).result;
 };
 const screenshot = (name) => page.screenshot({ path: `${outputDir}/${name}`, fullPage: true });
 
@@ -80,53 +99,36 @@ try {
   await reset();
   const ec2 = await scan('EC2');
   assert(ec2.state === 'NON_COMPLIANT' && ec2.findings?.length === 1, 'EC2 finding missing');
-  await investigate('EC2');
-  await screenshot('SecCop-PR74-01-EC2-Live-Codex-Investigation.png');
+  await investigate('EC2', 'get_ec2_imdsv2', 'DEV_EC2_LAB_01');
+  await screenshot('SecCop-PR76-01-EC2-Codex-Tool-Call.png');
+  const sgStarted = Date.now();
+  const sg = await ask('Does its security group expose SSH?');
+  assert(sg.live_turn_status === 'LIVE_TURN_COMPLETED', 'SG follow-up did not complete');
+  assertToolReceipt(sg, 'get_security_group_summary', 'DEV_EC2_LAB_01', 'SG');
+  assertPublicSafe(sg, 'SG follow-up');
+  timingsMs.sgFollowup = Date.now() - sgStarted;
+  await screenshot('SecCop-PR76-02-Security-Group-Codex-Tool-Call.png');
+  const unsupported = await ask('List the GuardDuty malware findings for this account.');
+  assert(unsupported.status === 'BLOCKED' && unsupported.reason_code === 'CODEX_TOOL_NOT_USED', 'unsupported request was not truthful no-tool');
+  assert(!unsupported.tool_requested && !unsupported.provider_tool_result, 'unsupported request silently substituted a tool');
+  assertPublicSafe(unsupported, 'unsupported result');
+  await screenshot('SecCop-PR76-03-Unsupported-No-Tool.png');
 
   await reset();
   const s3 = await scan('S3');
   assert(s3.state === 'NON_COMPLIANT' && s3.findings?.length === 1, 'S3 finding missing');
-  await investigate('S3');
-  await screenshot('SecCop-PR74-02-S3-Live-Codex-Investigation.png');
-  await page.getByRole('button', { name: 'Show Ask SecCop', exact: true }).click();
-  await page.locator('#prompt').fill('What should the operator verify before approval?');
-  const followupStarted = Date.now();
-  const followupResponse = page.waitForResponse((item) => item.url().endsWith('/api/ask'), { timeout: 90_000 });
-  await page.locator('#run-form').evaluate((form) => form.requestSubmit());
-  const followup = (await (await followupResponse).json()).result;
-  assert(followup.live_turn_status === 'LIVE_TURN_COMPLETED', 'S3 follow-up did not complete');
-  assert(typeof followup.prompt_sent === 'string' && followup.prompt_sent.length > 0, 'S3 follow-up prompt missing');
-  assert(typeof followup.response_text === 'string' && followup.response_text.length > 0, 'S3 follow-up response missing');
-  assertPublicSafe(followup, 'S3 follow-up');
-  timingsMs.s3Followup = Date.now() - followupStarted;
-  await page.getByText('Model response', { exact: true }).last().waitFor({ state: 'visible', timeout: 15_000 });
-  await screenshot('SecCop-PR74-03-S3-Live-Codex-Follow-Up.png');
+  await investigate('S3', 'get_s3_public_access', 'S3_BUCKET_ALIAS_03');
+  await screenshot('SecCop-PR76-04-S3-Codex-Tool-Call.png');
 
   await reset();
   const ecr = await scan('ECR');
   assert(ecr.state === 'NON_COMPLIANT' && ecr.findings?.length === 1, 'ECR finding missing; a clean provider state is not Codex investigation proof');
-  await investigate('ECR');
-  await screenshot('SecCop-PR74-04-ECR-Live-Codex-Investigation.png');
-
-  await reset();
-  await page.getByRole('button', { name: 'Show Ask SecCop', exact: true }).click();
-  await page.locator('#prompt').fill('Why is IMDSv2 safer than IMDSv1?');
-  const generalStarted = Date.now();
-  const generalResponse = page.waitForResponse((item) => item.url().endsWith('/api/ask'), { timeout: 90_000 });
-  await page.locator('#run-form').evaluate((form) => form.requestSubmit());
-  const general = (await (await generalResponse).json()).result;
-  assert(general.reason_code === 'GENERAL_CODEX_QUESTION_READY', 'general question route failed');
-  assert(general.live_turn_status === 'LIVE_TURN_COMPLETED', 'general live turn did not complete');
-  assert(typeof general.prompt_sent === 'string' && general.prompt_sent.length > 0, 'general prompt missing');
-  assert(typeof general.response_text === 'string' && general.response_text.length > 0, 'general response missing');
-  assertPublicSafe(general, 'general live receipt');
-  timingsMs.generalQuestion = Date.now() - generalStarted;
-  await page.getByText('Model response', { exact: true }).last().waitFor({ state: 'visible', timeout: 15_000 });
-  await screenshot('SecCop-PR74-05-General-Live-Codex-Question.png');
+  await investigate('ECR', 'get_ecr_inspector_finding', 'ECR_IMAGE_01');
+  await screenshot('SecCop-PR76-05-ECR-Codex-Tool-Call.png');
 
   assert(consoleErrors.length === 0, `console errors: ${consoleErrors.join(' | ')}`);
   assert(externalRequests.length === 0, `external requests: ${externalRequests.join(' | ')}`);
-  console.log(JSON.stringify({ status: 'PASS', screenshots: 5, consoleErrors: 0, externalRequests: 0, timingsMs }));
+  console.log(JSON.stringify({ status: 'PASS', screenshots: 5, tools: 4, unsupportedNoTool: true, awsWrites: 0, consoleErrors: 0, externalRequests: 0, timingsMs }));
 } finally {
   await browser.close();
 }

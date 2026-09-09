@@ -467,7 +467,7 @@ def _ec2_rnd_rule(alias: str) -> str:
     raise RuntimeError("DEV R&D target alias is not approved")
 
 
-def _ec2_rnd_target(profile: str, region: str, alias: str) -> tuple[str, dict[str, Any]]:
+def _ec2_rnd_target(profile: str, region: str, alias: str, *, require_zero_ingress: bool = True) -> tuple[str, dict[str, Any]]:
     targets = _ec2_rnd_targets()
     if alias not in targets:
         raise RuntimeError("DEV R&D target alias is not approved")
@@ -485,10 +485,14 @@ def _ec2_rnd_target(profile: str, region: str, alias: str) -> tuple[str, dict[st
     if len(groups) != 1 or not isinstance(groups[0], dict) or not isinstance(groups[0].get("GroupId"), str):
         raise RuntimeError("DEV R&D target security-group shape is invalid")
     sg = _ec2_call(profile, region, "ec2", "describe-security-groups", "--group-ids", groups[0]["GroupId"])
-    if len(sg.get("SecurityGroups", [])) != 1 or sg["SecurityGroups"][0].get("IpPermissions") != []:
+    security_groups = sg.get("SecurityGroups", [])
+    if len(security_groups) != 1 or not isinstance(security_groups[0].get("IpPermissions"), list):
+        raise RuntimeError("DEV R&D target security group evidence is invalid")
+    zero_ingress = security_groups[0]["IpPermissions"] == []
+    if require_zero_ingress and not zero_ingress:
         raise RuntimeError("DEV R&D target security group is not zero-ingress")
     _ec2_wait_ssm(profile, region, instance_id)
-    _ec2_evidence("rnd-target-" + alias.lower(), {"resource_alias": alias, "state": "running", "metadata_tokens": target["MetadataOptions"]["HttpTokens"], "ssm": "Online", "public_ipv4": False, "zero_ingress": True})
+    _ec2_evidence("rnd-target-" + alias.lower(), {"resource_alias": alias, "state": "running", "metadata_tokens": target["MetadataOptions"]["HttpTokens"], "ssm": "Online", "public_ipv4": False, "zero_ingress": zero_ingress})
     return instance_id, target
 
 
@@ -611,6 +615,51 @@ def _ec2_rnd_scan(profile: str, region: str, alias: str) -> dict[str, Any]:
     if state == "NON_COMPLIANT":
         return _ec2_rnd_noncompliant_result(alias)
     return {"status": "NO_FINDINGS", "reason_code": "SECCOP_EC2_IMDSV2_COMPLIANT", "state": state, "resource_alias": alias, "config_rule_name": _ec2_rnd_rule(alias), "findings": [], "message": "AWS Config verified the selected DEV R&D target is IMDSv2 compliant."}
+
+
+def _ec2_rnd_read(profile: str, region: str, alias: str) -> dict[str, Any]:
+    """Read the fixed target without triggering a Config evaluation."""
+
+    instance_id, target = _ec2_rnd_target(profile, region, alias)
+    state = _ec2_rnd_current_compliance(profile, region, alias, instance_id)
+    return {
+        "status": "READY", "reason_code": "SECCOP_EC2_READ_ONLY",
+        "resource_alias": alias, "state": state,
+        "metadata_http_tokens": target["MetadataOptions"]["HttpTokens"],
+    }
+
+
+def _ec2_rnd_sg_read(profile: str, region: str, alias: str) -> dict[str, Any]:
+    """Return only public-safe exposure facts for the fixed target's SG."""
+
+    _, target = _ec2_rnd_target(profile, region, alias, require_zero_ingress=False)
+    group_id = target["SecurityGroups"][0]["GroupId"]
+    response = _ec2_call(profile, region, "ec2", "describe-security-groups", "--group-ids", group_id)
+    groups = response.get("SecurityGroups", [])
+    if len(groups) != 1 or not isinstance(groups[0].get("IpPermissions"), list):
+        raise RuntimeError("DEV R&D target security group evidence is invalid")
+    permissions = groups[0]["IpPermissions"]
+
+    def exposes_public_ssh(permission: dict[str, Any]) -> bool:
+        protocol = str(permission.get("IpProtocol", ""))
+        covers_ssh = protocol == "-1" or (
+            protocol in {"tcp", "6"}
+            and isinstance(permission.get("FromPort"), int)
+            and isinstance(permission.get("ToPort"), int)
+            and permission["FromPort"] <= 22 <= permission["ToPort"]
+        )
+        public_source = any(item.get("CidrIp") == "0.0.0.0/0" for item in permission.get("IpRanges", []) if isinstance(item, dict)) or any(
+            item.get("CidrIpv6") == "::/0" for item in permission.get("Ipv6Ranges", []) if isinstance(item, dict)
+        )
+        return covers_ssh and public_source
+
+    return {
+        "status": "READY", "reason_code": "SECCOP_SG_READ_ONLY",
+        "resource_alias": "SG_LAB_01", "target_alias": alias,
+        "ingress_rule_count": len(permissions),
+        "ssh_exposed": any(exposes_public_ssh(item) for item in permissions if isinstance(item, dict)),
+        "public_ipv4": target.get("PublicIpAddress") is not None,
+    }
 
 
 def _ec2_rnd_reject(profile: str, region: str, alias: str, confirm: bool) -> dict[str, Any]:
@@ -1086,7 +1135,7 @@ def reset(profile: str, region: str, bucket: str) -> dict[str, Any]:
 
 def main() -> int:
     parser = argparse.ArgumentParser()
-    parser.add_argument("command", choices=("setup", "create", "scan", "apply", "reset", "cleanup", "ec2-setup", "ec2-adopt", "ec2-scan", "ec2-reject", "ec2-apply", "ec2-cleanup", "ec2-rnd-preflight", "ec2-rnd-setup", "ec2-rnd-scan", "ec2-rnd-reject", "ec2-rnd-apply", "ec2-rnd-reopen"))
+    parser.add_argument("command", choices=("setup", "create", "scan", "apply", "reset", "cleanup", "ec2-setup", "ec2-adopt", "ec2-scan", "ec2-reject", "ec2-apply", "ec2-cleanup", "ec2-rnd-preflight", "ec2-rnd-setup", "ec2-rnd-scan", "ec2-rnd-read", "ec2-rnd-sg-read", "ec2-rnd-reject", "ec2-rnd-apply", "ec2-rnd-reopen"))
     parser.add_argument("--profile", required=True); parser.add_argument("--region", required=True); parser.add_argument("--bucket")
     parser.add_argument("--instance-id")
     parser.add_argument("--delivery-bucket")
@@ -1118,6 +1167,14 @@ def main() -> int:
             if args.alias != EC2_RND_ALIAS_LAB01:
                 raise RuntimeError("DEV R&D target alias is required")
             output = _ec2_rnd_scan(args.profile, args.region, args.alias)
+        elif args.command == "ec2-rnd-read":
+            if args.alias != EC2_RND_ALIAS_LAB01:
+                raise RuntimeError("DEV R&D target alias is required")
+            output = _ec2_rnd_read(args.profile, args.region, args.alias)
+        elif args.command == "ec2-rnd-sg-read":
+            if args.alias != EC2_RND_ALIAS_LAB01:
+                raise RuntimeError("DEV R&D target alias is required")
+            output = _ec2_rnd_sg_read(args.profile, args.region, args.alias)
         elif args.command == "ec2-rnd-reject":
             output = _ec2_rnd_reject(args.profile, args.region, args.alias or "", args.confirm)
         elif args.command == "ec2-rnd-apply":

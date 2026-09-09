@@ -8,7 +8,7 @@ runner="$repo_dir/scripts/live-codex-gui-e2e.mjs"
 powershell_bin=${POWERSHELL_WSL:-'/mnt/c/Windows/System32/WindowsPowerShell/v1.0/powershell.exe'}
 chrome_bin=${CHROME_WSL:-'/mnt/c/Program Files/Google/Chrome/Application/chrome.exe'}
 node_bin=${WINDOWS_NODE:-'/mnt/c/Program Files/nodejs/node.exe'}
-playwright_core=${PLAYWRIGHT_CORE:-"$repo_dir/../AgentCore/frontend/node_modules/playwright-core/index.mjs"}
+playwright_core=${PLAYWRIGHT_CORE:-"$repo_dir/node_modules/playwright-core/index.mjs"}
 review_dir=${REVIEW_DIR:-}
 chrome_pid=''
 profile_dir=''
@@ -42,7 +42,7 @@ done
 for command_name in curl jq readlink sed ss tr wslpath; do
   command -v "$command_name" >/dev/null 2>&1 || fail MISSING_RUNTIME
 done
-[[ -r "$playwright_core" && -r "$runner" ]] || fail MISSING_PLAYWRIGHT
+[[ -r "$playwright_core" && -r "$runner" ]] || fail 'MISSING_PLAYWRIGHT_RUN_NPM_CI'
 
 mapfile -t listener_pids < <(ss -ltnp '( sport = :2222 )' | sed -n 's/.*pid=\([0-9][0-9]*\).*/\1/p')
 [[ ${#listener_pids[@]} -eq 1 ]] || fail LISTENER_COUNT

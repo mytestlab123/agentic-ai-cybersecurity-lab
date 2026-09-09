@@ -9,6 +9,7 @@ htmlcov/
 !.env.example
 dist/
 build/
+node_modules/
 *.egg-info/
 **/.terraform/
 *.tfstate

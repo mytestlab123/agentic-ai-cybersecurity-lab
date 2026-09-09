@@ -630,6 +630,18 @@
         card.appendChild(node('div', 'evidence-label', 'Prompt sent'));
         card.appendChild(node('div', 'approval-copy', agent.prompt_sent));
       }
+      if (agent.tool_requested) {
+        card.appendChild(node('div', 'evidence-label', 'Tool requested'));
+        card.appendChild(node('div', 'approval-copy', agent.tool_requested));
+      }
+      if (agent.sanitized_arguments) {
+        card.appendChild(node('div', 'evidence-label', 'Sanitized arguments'));
+        card.appendChild(node('div', 'approval-copy', JSON.stringify(agent.sanitized_arguments, null, 2)));
+      }
+      if (agent.provider_tool_result) {
+        card.appendChild(node('div', 'evidence-label', 'Provider/tool result'));
+        card.appendChild(node('div', 'approval-copy', JSON.stringify(agent.provider_tool_result, null, 2)));
+      }
       if (agent.response_text) {
         card.appendChild(node('div', 'evidence-label', agent.live_turn_status === 'LIVE_TURN_COMPLETED' ? 'Model response' : 'Fallback response'));
         card.appendChild(node('div', 'approval-copy', agent.response_text));
@@ -1219,7 +1231,12 @@
         const payload = await post('/api/ask', { source, question });
         thinking.parentElement.remove();
         const result = payload.result || {};
-        renderHybridAgent(result, result.live_turn_status === 'LIVE_TURN_COMPLETED' ? 'Codex App Server — live turn' : 'Deterministic fallback');
+        const title = result.live_turn_status === 'LIVE_TURN_COMPLETED'
+          ? 'Codex App Server — live turn'
+          : result.live_turn_status === 'LIVE_TURN_COMPLETED_NO_TOOL'
+            ? 'Codex App Server — unsupported / no tool'
+            : 'Deterministic fallback';
+        renderHybridAgent(result, title);
       } catch (error) {
         thinking.textContent = error.message === 'CODEX_SCAN_REQUIRED' ? 'Scan this source before asking SecCop.' : 'Ask SecCop was blocked.';
         thinking.classList.add('error-copy');

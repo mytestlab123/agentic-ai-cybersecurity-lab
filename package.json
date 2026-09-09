@@ -1,0 +1,10 @@
+{
+  "name": "seccop-browser-proof",
+  "private": true,
+  "scripts": {
+    "test:live-codex": "bash scripts/live-codex-gui-e2e.sh"
+  },
+  "devDependencies": {
+    "playwright-core": "1.62.1"
+  }
+}
