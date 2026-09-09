@@ -39,8 +39,9 @@ approved.
 
 Current unified runtime ownership: the only operator listener is
 `127.0.0.1:2222`, started from this checkout with
-`./scripts/start-unified-seccop.sh` in the detached tmux session
-`seccop-unified-2222`. `./scripts/live-codex-gui-e2e.sh` is the single
+`./scripts/start-unified-seccop.sh`. That one command creates or verifies the
+detached tmux session `seccop-unified-2222`, refuses a foreign listener/session,
+and waits for EC2/ECR/S3 health before returning. `./scripts/live-codex-gui-e2e.sh` is the single
 repo-owned live browser-proof command; its JavaScript file is an internal
 helper. Install its pinned repo dependency once with `npm ci`. The runner
 verifies the listener PID, command, checkout, health, and three-source mode,

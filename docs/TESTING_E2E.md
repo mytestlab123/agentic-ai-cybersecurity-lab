@@ -52,9 +52,12 @@ single unified server in the named background lane:
 
 ```bash
 npm ci
-tmux new-session -d -s seccop-unified-2222 \
-  -c "$PWD" 'exec ./scripts/start-unified-seccop.sh'
+./scripts/start-unified-seccop.sh
 ```
+
+The launcher owns the detached `seccop-unified-2222` tmux lifecycle, refuses
+foreign port/session ownership, and returns only after the three-source health
+check passes. Repeating it is safe and reports the already-running listener.
 
 Then run the one public entrypoint `./scripts/live-codex-gui-e2e.sh`. Its
 repo-owned JavaScript helper is an implementation detail, not a second operator

@@ -7,7 +7,9 @@ fixtures.
 ## Current unified SecCop operator path
 
 The current three-source operator server starts only through
-`./scripts/start-unified-seccop.sh` and listens on `127.0.0.1:2222`. Its
+`./scripts/start-unified-seccop.sh` in the detached tmux session
+`seccop-unified-2222` and listens on `127.0.0.1:2222`. Repeating the command
+returns the existing healthy listener rather than starting a second one. Its
 private runtime file is required and is never committed. Scan one configured
 ECR, S3, or fixed EC2 LAB_01 source; provider facts and exact proposal remain
 deterministic, while the existing no-tool Codex App Server explains the same
