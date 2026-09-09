@@ -1,6 +1,6 @@
 # SecCop MVP presentation evidence pack
 
-Status: **collection in progress**
+Status: **ready for ChatGPT review**
 
 Owning Issue: #79
 
@@ -8,34 +8,74 @@ Accepted MVP baseline: merged PR #76 (`92702f27bf7b129c7e1010a98b8fabe883ea991c`
 
 Product development is frozen. This folder exists only to collect truthful, readable, public-safe evidence for a later ChatGPT-created presentation.
 
-## Codex collection task
+## Collection outcome
 
-Follow Issue #79 exactly.
+This pack contains seven deliberately selected screenshots and one optional
+architecture visual. Each asset was visually reviewed at its original
+resolution. The set favors accepted-baseline live Codex evidence and clearly
+labels older provider-state captures as historical. No AWS call, runtime
+change, feature change, or screenshot regeneration was performed for this PR.
 
-Priority order:
-
-1. Reuse existing local screenshots from `C:\Users\ISSUser\Pictures\Screenshots\` and existing repo evidence.
-2. Rename/copy only the strongest, readable, truthful screenshots into this folder.
-3. Recapture with the existing repo-owned runner only when necessary; do not change application behavior for presentation purposes.
-4. Do not perform new AWS mutation merely to obtain an AFTER screenshot.
-5. Do not create PowerPoint files in this PR.
-
-## Target evidence map
+## Evidence map
 
 | File | Story | What it proves | Source/PR | Live vs historical | Public-safety checked | Suggested slide use |
 | --- | --- | --- | --- | --- | --- | --- |
-| `00-architecture-overview.png` or `.svg` | Architecture | TODO | TODO | TODO | TODO | Opening architecture/demo flow |
-| `01-ec2-finding.png` | EC2 | TODO | TODO | TODO | TODO | EC2 issue found |
-| `02-ec2-codex-investigation.png` | EC2 | TODO | TODO | TODO | TODO | Codex explanation/investigation |
-| `03-ec2-verified-result.png` | EC2 | TODO | TODO | TODO | TODO | EC2 verified result |
-| `04-ecr-finding.png` | ECR | TODO | TODO | TODO | TODO | Inspector vulnerability found |
-| `05-ecr-codex-investigation.png` | ECR | TODO | TODO | TODO | TODO | Codex explanation/investigation |
-| `06-ecr-verified-result.png` | ECR | TODO | TODO | TODO | TODO | ECR verified result |
-| `07-s3-finding.png` | S3 | TODO | TODO | TODO | TODO | S3 compliance issue found |
-| `08-s3-codex-investigation.png` | S3 | TODO | TODO | TODO | TODO | Codex explanation/investigation |
-| `09-s3-verified-result.png` | S3 | TODO | TODO | TODO | TODO | S3 verified result |
+| [`00-architecture-overview.svg`](00-architecture-overview.svg) | Architecture | Separates read-only provider evidence and Codex explanation from human approval, deterministic action, and provider verification. | Current repository contracts and merged PR #76 | New documentation-only visual; no live call | Yes: service names and public aliases only; accessible, portable SVG | Optional starting point for ChatGPT; ChatGPT may revise or replace it in the approved storyboard |
+| [`01-ec2-finding.png`](01-ec2-finding.png) | EC2 | AWS Config reported fixed `DEV_EC2_LAB_01` as IMDSv2 `NON_COMPLIANT` and exposed one exact remediation proposal. | Existing Issue #69 / merged PR #70 evidence | Historical provider-state capture | Yes: approved aliases only; no account, ARN, or raw resource ID | EC2 issue-found slide |
+| [`02-ec2-codex-investigation.png`](02-ec2-codex-investigation.png) | EC2 | A completed live Codex App Server turn received the exact sanitized EC2 prompt and explained the bounded next step; model and read-only status are visible. | Existing repo-owned live runner at merged PR #76 | Accepted-baseline live Codex capture | Yes: alias-only facts; no private payload, path, or credential | EC2 investigation slide |
+| [`03-ec2-verified-result.png`](03-ec2-verified-result.png) | EC2 | The GUI displayed fresh AWS Config evidence as IMDSv2 compliant with zero findings. | Existing Issue #55 provider E2E evidence / PR #56 lineage | Historical provider-verification capture | Yes: no raw instance ID, account, ARN, IP, or hostname | EC2 verified-result slide; note that it predates the final cosmetic cleanup |
+| [`04-ecr-finding-and-codex-investigation.png`](04-ecr-finding-and-codex-investigation.png) | ECR | One accepted-baseline screen shows the sanitized Inspector finding and the completed source-bound Codex tool call for that same image alias and CVE. | Existing repo-owned live runner at merged PR #76 | Accepted-baseline live Inspector read and live Codex capture | Yes: `ECR_IMAGE_01` alias only; provider payload is sanitized | Two-step ECR story in one image: finding first, then zoom to Codex evidence |
+| [`06-ecr-verified-result.png`](06-ecr-verified-result.png) | ECR | Amazon Inspector provider evidence was rendered as compliant/clean with zero active findings and no human decision required. | Existing Issue #69 / merged PR #70 evidence | Historical provider-verification capture | Yes: no registry, account, digest, ARN, or private repository value | ECR verified-result slide; this proves the clean provider state, not a new mutation in PR #80 |
+| [`07-s3-finding.png`](07-s3-finding.png) | S3 | AWS Config reported bucket-level Block Public Access absent for approved alias `S3_BUCKET_ALIAS_03`. | Existing Issue #69 / merged PR #70 evidence | Historical provider-state capture | Yes: alias only; no real bucket name, account, policy, or ARN | S3 exposure-risk finding slide |
+| [`08-s3-codex-investigation.png`](08-s3-codex-investigation.png) | S3 | A completed live Codex App Server turn received sanitized AWS Config facts and explained the exact Block Public Access recommendation without using tools beyond the bounded read. | Existing repo-owned live runner at merged PR #76 | Accepted-baseline live Codex capture | Yes: alias-only facts; no private payload, path, or credential | S3 investigation slide |
 
-Delete rows for screenshots that cannot be supported truthfully. Do not fabricate missing states.
+## Source summary
+
+- `01`, `03`, `06`, and `07` reuse existing recorded provider-state evidence.
+- `02`, `04`, and `08` reuse existing local captures created by the repo-owned
+  accepted PR #76 live runner.
+- No screenshot was newly recaptured, generated, or cosmetically altered for
+  this PR; files were copied and given descriptive presentation names only.
+- `00` is a new documentation-only, public-safe visual retained at Amit's
+  request after a two-pass render review. ChatGPT owns the final presentation
+  diagram and may revise or replace it.
+
+## Evidence limits and exclusions
+
+- `09-s3-verified-result.png` is intentionally absent. No readable,
+  public-safe capture of the accepted/current provider-verification state was
+  located, and Issue #79 forbids AWS mutation merely to manufacture one.
+- No separate ECR investigation image is included. The strongest PR #76 image
+  already shows the real sanitized Inspector finding and its matching live
+  Codex turn. An available cropped card referred to a synthetic
+  `CVE-2099-0001`, so combining it with the real Inspector finding would have
+  created a false sequence.
+- Screenshots showing deterministic fallback, `NOT_FOUND`, unavailable AI,
+  stale synthetic UI, or failed/blocked investigations were excluded from the
+  positive demo sequence.
+- Captures containing account identifiers, raw AWS resource identifiers,
+  private environment names, local paths, or unrelated customer/work material
+  were excluded.
+- Historical verified-state images demonstrate manager-visible provider truth
+  from the recorded milestone. They are not evidence that PR #80 performed an
+  AWS action or that the three screenshots form one newly executed transaction.
+
+## Architecture facts for ChatGPT
+
+These are the source-grounded facts behind the optional SVG. ChatGPT retains
+ownership of the final presentation diagram and storyboard:
+
+1. The operator uses one unified SecCop GUI and selects EC2, ECR, or S3.
+2. Deterministic adapters obtain provider truth: AWS Config for EC2 IMDSv2 and
+   S3 Block Public Access; Amazon Inspector for ECR package findings.
+3. Only sanitized, source-bound facts are exposed to an allow-listed,
+   read-only Codex App Server tool call.
+4. Codex explains evidence and recommends a safe next step; it does not
+   authorize or execute AWS changes.
+5. A human reviews one exact proposal and chooses Remediate/Approve Once or
+   Reject.
+6. Any approved action and the fresh provider verification are deterministic;
+   the manager-visible result must reflect provider truth.
 
 ## Public-safety contract
 
@@ -52,29 +92,28 @@ Do not commit screenshots containing:
 - tokens, credentials, auth/session material;
 - customer/private environment data.
 
-## Presentation intent
+## Suggested presentation sequence
 
 The later deck should feel like a live demo:
 
 ```text
-Architecture / what to expect
+ChatGPT-created architecture / what to expect
 → EC2 finding
 → EC2 Codex investigation
 → EC2 verified result
-→ ECR finding
-→ ECR Codex investigation
+→ ECR finding + Codex investigation
 → ECR verified result
 → S3 finding
 → S3 Codex investigation
-→ S3 verified result
-→ operational value / what was proved
+→ explain the documented S3 AFTER-capture gap
+→ operational value / what was proved and what was not
 ```
 
 ChatGPT will discuss 2-3 storyboard options with Amit after this PR is reviewed. No PPTX should be created before that approval.
 
-## Handoff
+## Handoff contract
 
-When complete, replace `collection in progress` with `ready for ChatGPT review`, fill the evidence table, note excluded/stale screenshots, then leave on the PR:
+The PR handoff must name the exact committed HEAD:
 
 ```text
 HANDOFF: CHATGPT
