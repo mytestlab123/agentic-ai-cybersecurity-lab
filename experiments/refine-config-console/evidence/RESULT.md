@@ -95,8 +95,14 @@ table, and the read-only detail drawer. The drawer scrolls for lower content.
 
 ## Local review runtime / rollback
 
+Owner-requested port correction: moved the same owned console from 2231 to
+1111 after checking the shared local port protocol and registry. Verified the
+new listener command/cwd, HTTP 200 page and health, and old 2231 release;
+registered 1111. ESLint and all 8 focused tests passed again. No AWS reread,
+browser rerun, or screenshot regeneration was needed for this port-only change.
+
 The experiment launcher is healthy in `AWS_READ_ONLY` mode at
-**http://localhost:2231/**, in dedicated tmux session `refine-config-console`.
+**http://localhost:1111/**, in dedicated tmux session `refine-config-console`.
 Its command is the repo-owned `npm start` from this experiment directory.
 Listener process/cwd and `/api/health` were checked. No external exposure or
 existing-port takeover was used. Health proof is not a substitute for the live

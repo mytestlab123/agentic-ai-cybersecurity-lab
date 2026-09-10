@@ -6,6 +6,11 @@ This does not replace or change the existing SecCop server on port 2222.
 
 ## Run
 
+On the shared host, read `~/.codex/port.md` before configuring or starting a
+listener. Check its registry and live listeners, verify process ownership before
+stopping anything, and register the actual loopback port after startup. Prefer
+the memorable default 1111; existing SecCop retains 2222.
+
 From this directory, with Node 22.12+ and AWS CLI v2 available:
 
 ```bash
@@ -14,7 +19,7 @@ npm run build
 npm start -- --fixture
 ```
 
-Open **http://localhost:2231/**. `--fixture` uses invented local data and
+Open **http://localhost:1111/**. `--fixture` uses invented local data and
 never calls AWS. Stop this process with Ctrl-C. A busy port is an error;
 the launcher never stops another process. `PORT` may select another free
 unprivileged port, but 2222 is rejected.
@@ -90,7 +95,7 @@ Browser proof uses the root repo's existing `playwright-core` and installed
 Chromium. If its default browser revision is absent, set `CHROMIUM_EXECUTABLE`
 to an existing compatible executable; the runner installs nothing. It starts
 and closes only its own ephemeral **synthetic** server/browser, never the live
-2231 or existing 2222 listener. Optional `SCREENSHOT_DIR=./evidence` captures
+1111 or existing 2222 listener. Optional `SCREENSHOT_DIR=./evidence` captures
 synthetic screenshots only. Browser checks are explicit, not a startup action.
 
 Explicit live proof (read-only, sanitized booleans/API counts only):

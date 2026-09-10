@@ -95,9 +95,9 @@ if (
   process.argv[1] &&
   path.resolve(process.argv[1]) === fileURLToPath(import.meta.url)
 ) {
-  const port = Number(process.env.PORT || 2231);
+  const port = Number(process.env.PORT || 1111);
   if (!Number.isInteger(port) || port < 1024 || port > 65535 || port === 2222)
-    throw Error("Use a free experiment port (default 2231), never SecCop 2222");
+    throw Error("Use a free experiment port (default 1111), never SecCop 2222");
   const fixture = process.argv.includes("--fixture");
   const server = createServer(
     createProvider(fixture ? fixtureRead : undefined),
