@@ -141,3 +141,11 @@ action, and provider verification as separate facts. A compact golden browser
 mode reuses the existing Playwright Core runner with one local synthetic
 server, no pass-path screenshots, and no AWS calls. This keeps browser proof a
 cheap final check after typed and API tests rather than a replacement for them.
+
+## Issue 81 - lazy read-only Config explorer
+
+One Config rule is one control row. Count complete paginated inventory rather
+than capped summary results, and load resource evaluations only on detail open.
+Keep provider health, missing evidence, capped counts, and compliance separate.
+Synthetic browser proof must never be described as a screenshot of live company
+data; live read-only proof can retain booleans and API counts without identities.
