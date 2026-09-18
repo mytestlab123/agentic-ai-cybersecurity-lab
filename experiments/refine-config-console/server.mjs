@@ -4,8 +4,11 @@ import { fileURLToPath } from "node:url";
 import path from "node:path";
 import { createProvider } from "./provider.mjs";
 import { fixtureRead } from "./fixtures.mjs";
+import { createMultiAccountProvider, fourAccountFixtureRead } from "./multi-account.mjs";
 const root = path.dirname(fileURLToPath(import.meta.url));
 export function createServer(provider, { fixture = false } = {}) {
+  const environments = provider.environments || ["DEV", "PROD"];
+  const allAccounts = provider.allAccounts === true;
   return http.createServer(async (req, res) => {
     const port = req.socket.localPort;
     const hosts = [`127.0.0.1:${port}`, `localhost:${port}`];
@@ -38,12 +41,14 @@ export function createServer(provider, { fixture = false } = {}) {
         return json(200, {
           mode: fixture ? "SYNTHETIC" : "AWS_READ_ONLY",
           region: "ap-southeast-1",
-          environments: ["DEV", "PROD"],
+          environments,
+          allAccounts,
         });
       if (url.pathname.startsWith("/api/")) {
         const environment = url.searchParams.get("environment");
-        if (!["DEV", "PROD"].includes(environment))
-          return json(400, { error: "Choose DEV or PROD" });
+        const aggregate = allAccounts && environment === "ALL" && url.pathname === "/api/controls";
+        if (!aggregate && !environments.includes(environment))
+          return json(400, { error: "Choose one configured account; All Accounts is inventory-only" });
         if (url.pathname === "/api/controls")
           return json(
             200,
@@ -98,9 +103,13 @@ if (
   const port = Number(process.env.PORT || 1111);
   if (!Number.isInteger(port) || port < 1024 || port > 65535 || port === 2222)
     throw Error("Use a free experiment port (default 1111), never SecCop 2222");
-  const fixture = process.argv.includes("--fixture");
+  if (process.argv.slice(2).some((arg) => !["--fixture", "--four-account-fixture"].includes(arg)))
+    throw Error("Unknown mode; live four-account mapping is not configured");
+  const fourAccountFixture = process.argv.includes("--four-account-fixture");
+  const fixture = fourAccountFixture || process.argv.includes("--fixture");
   const server = createServer(
-    createProvider(fixture ? fixtureRead : undefined),
+    fourAccountFixture ? createMultiAccountProvider(fourAccountFixtureRead)
+      : createProvider(fixture ? fixtureRead : undefined),
     { fixture },
   );
   server.on("error", () => {
@@ -109,7 +118,7 @@ if (
   });
   server.listen(port, "127.0.0.1", () =>
     console.log(
-      `Config console http://localhost:${port}/ · ${fixture ? "SYNTHETIC" : "AWS READ ONLY"}`,
+      `Config console http://localhost:${port}/ \u00b7 ${fixture ? "SYNTHETIC" : "AWS READ ONLY"}`,
     ),
   );
 }
