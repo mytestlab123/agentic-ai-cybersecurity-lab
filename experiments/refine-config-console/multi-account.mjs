@@ -11,7 +11,7 @@ const keyFor = (...parts) => createHash("sha256").update(JSON.stringify(parts)).
 // Provider descriptions and annotations are text, never identity transport.
 function publicValue(value) {
   if (typeof value === "string") return value
-    .replace(/arn:[^\s,\"<>]+/g, "[identifier hidden]")
+    .replace(/arn:[^\s,"<>]+/g, "[identifier hidden]")
     .replace(/\b\d{12}\b/g, "[account hidden]");
   if (Array.isArray(value)) return value.map(publicValue);
   if (value && typeof value === "object") return Object.fromEntries(
