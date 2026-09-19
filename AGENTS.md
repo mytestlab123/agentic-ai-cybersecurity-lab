@@ -34,6 +34,23 @@ This is a public personal-learning repository.
 
 ## AWS and cost boundary
 
+### Issue #83 personal-LAB standing authority
+
+Amit explicitly authorized the hosted Config Console / SecCop personal-LAB work to continue without repeated approval prompts.
+
+Within active Issue #83 / PR #84 and directly related personal-LAB demo follow-ups, G may execute, validate, fix, retest and deploy bounded reversible work without asking again when it is:
+- personal LAB only;
+- deterministic and evidence-backed;
+- read-only AWS Config exploration or minimal read-only IAM needed for that exploration;
+- GUI/build/test/deployment work;
+- DNS/TLS/reverse-proxy configuration for the named demo endpoints;
+- service restart/reload needed to deploy the approved demo;
+- bounded demo re-arm using already-approved repo-owned controls.
+
+Do not stop the retained demo host or ask to stop it unless Amit explicitly requests a cost-saving shutdown.
+
+Still stop for termination, irreversible deletion, secrets exposure, company/PROD scope, arbitrary mutation expansion, or a genuine safety/validation failure.
+
 - Local fixtures and mocks are the default.
 - Current SecCop AWS work is explicitly pinned to the `amit` profile in
   `ap-southeast-1`. Set `AWS_PROFILE=amit`, `AWS_DEFAULT_PROFILE=amit`,
