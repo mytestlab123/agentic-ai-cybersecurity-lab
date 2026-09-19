@@ -50,3 +50,23 @@ jobs:
         run: npm run lint
       - name: Whitespace
         run: git diff --check
+      - name: Install existing repository browser dependency
+        working-directory: .
+        run: npm ci
+      - name: Synthetic browser checks
+        env:
+          SCREENSHOT_DIR: ${{ runner.temp }}/config-console-synthetic
+        run: |
+          set -eu
+          browser="$(command -v google-chrome || command -v chromium || true)"
+          test -n "$browser" && test -x "$browser"
+          export CHROMIUM_EXECUTABLE="$browser"
+          node test/browser.mjs
+          node test/theme-browser.mjs
+      - name: Upload synthetic preview only
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: config-console-synthetic-preview
+          path: ${{ runner.temp }}/config-console-synthetic/*.png
+          if-no-files-found: error
+          retention-days: 3
