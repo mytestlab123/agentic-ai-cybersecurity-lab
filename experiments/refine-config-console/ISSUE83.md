@@ -1,7 +1,8 @@
 # Issue #83 / PR #84 implementation checkpoint
 
-Status: four-account model and themed UI implemented with synthetic data.
-The PR remains Draft. This is not a live four-account deployment.
+Status: four-account model and themed UI implemented. A bounded live reader now
+uses the existing personal-LAB AWS Config organization aggregator. The PR remains
+Draft until hosted deployment and authenticated live acceptance are complete.
 
 ## Implemented
 
@@ -78,3 +79,31 @@ restrictions are unchanged. No retained-host process or SecCop port 2222 changed
 The theme checkpoint does not deploy hosting or widen AWS authority. No AWS calls,
 IAM/Config changes, remediation, resize, stop or termination were performed.
 The instruction to keep the LAB host running remains in force.
+
+
+## Live personal-LAB source
+
+Amit explicitly authorized connecting the console to the same four personal-LAB
+accounts already used by aws-secops. The live mode is:
+
+```bash
+npm start -- --org-aggregator
+```
+
+This mode:
+
+- reads only `aws-secops-issue88-org` in `ap-southeast-1`;
+- requires the existing private `SECOPS_MULTI_ACCOUNT_TARGETS_JSON` runtime mapping;
+- exposes only `lab-dev`, `lab-poc`, `lab-qa`, and `lab-sec`;
+- maps raw account IDs to aliases server-side only;
+- aliases resource identifiers before browser output;
+- uses read-only organization/aggregate Config APIs only;
+- never falls back to DEV/PROD profiles or initiates AWS login.
+
+The current LAB aggregator truth contains the two organization controls used by
+the demo across all four aliases, so the truthful live console scope is eight
+account/control checks. It does not fabricate the larger historical office DEV
+inventory from PR #82 screenshots.
+
+Hosting remains separate: port 1111 stays loopback-only and is intended to sit
+behind authenticated Nginx at `config.astromedicomp.org`.
