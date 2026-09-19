@@ -105,3 +105,24 @@ test("detail lookup is account-bound and aliases resource identifiers", async ()
   assert.ok(detailCalls[0].includes(ids[0]));
   assert.ok(detailCalls[1].includes("provider-secret-page"));
 });
+
+
+test("aggregate detail access denial is explicit and never looks like an empty successful read", async () => {
+  const calls = [];
+  const base = fakeRun(calls);
+  const run = async (args) => {
+    if (args[1] === "get-aggregate-compliance-details-by-config-rule") {
+      const error = new Error("denied");
+      error.stderr = "AccessDeniedException";
+      throw error;
+    }
+    return base(args);
+  };
+  const provider = createOrgAggregatorProvider({ run, targets });
+  const all = await provider.list("ALL");
+  const row = all.rules.find((x) => x.accountAlias === "lab-dev" && x.ConfigRuleName === "restricted-ssh");
+  const detail = await provider.details("lab-dev", row.id);
+  assert.equal(detail.unavailable, true);
+  assert.deepEqual(detail.resources, []);
+  assert.match(detail.message, /unavailable under the current read-only host role/);
+});
