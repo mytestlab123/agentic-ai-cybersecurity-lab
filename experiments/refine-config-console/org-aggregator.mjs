@@ -181,7 +181,22 @@ export function createOrgAggregatorProvider({
         "--limit", "100",
       ];
       if (rawToken) args.push("--next-token", rawToken);
-      const page = await run(args);
+      let page;
+      try {
+        page = await run(args);
+      } catch (error) {
+        const message = String(error?.stderr || error?.message || "");
+        if (message.includes("AccessDenied"))
+          return {
+            accountAlias: alias,
+            controlId: id,
+            nextToken: undefined,
+            resources: [],
+            unavailable: true,
+            message: "Affected resource detail is unavailable under the current read-only host role.",
+          };
+        throw error;
+      }
       if (!Array.isArray(page.AggregateEvaluationResults))
         throw Error("unexpected aggregate detail response");
       let nextToken;
