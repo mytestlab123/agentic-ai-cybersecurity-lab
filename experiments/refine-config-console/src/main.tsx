@@ -27,20 +27,28 @@ type DemoPreview = {
 };
 const SYNTHETIC_ACCOUNTS = ["ACCOUNT_A", "ACCOUNT_B", "ACCOUNT_C", "ACCOUNT_D"];
 const LAB_ACCOUNTS = ["lab-dev", "lab-poc", "lab-qa", "lab-sec"];
+async function jsonBody(response: Response, fallback: string) {
+  const contentType = response.headers.get("content-type") || "";
+  if (!contentType.toLowerCase().includes("application/json")) {
+    const label = response.status ? `HTTP ${response.status}` : "Gateway error";
+    throw Error(`${label}: ${response.statusText || fallback}`);
+  }
+  let body: any;
+  try { body = await response.json(); }
+  catch { throw Error(`HTTP ${response.status || "?"}: invalid JSON response`); }
+  if (!response.ok) throw Error(body?.error || `HTTP ${response.status}: ${fallback}`);
+  return body;
+}
 async function request(url: string) {
   const response = await fetch(url, { cache: "no-store" });
-  const body = await response.json();
-  if (!response.ok) throw Error(body.error || "Read failed");
-  return body;
+  return jsonBody(response, "Read failed");
 }
 async function post(url: string, value: Record<string, any>) {
   const response = await fetch(url, {
     method: "POST", cache: "no-store", headers: { "Content-Type": "application/json" },
     body: JSON.stringify(value),
   });
-  const body = await response.json();
-  if (!response.ok) throw Error(body.error || "Request failed");
-  return body;
+  return jsonBody(response, "Request failed");
 }
 const blocked = async (): Promise<never> => { throw Error("Read-only data provider"); };
 const dataProvider: DataProvider = {
