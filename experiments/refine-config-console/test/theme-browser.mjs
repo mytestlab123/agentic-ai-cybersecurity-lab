@@ -102,7 +102,7 @@ try {
   await heatmap.waitFor();
   assert.ok(await heatmap.locator(".heatmap-cell").count() > 0);
   assert.equal(await page.locator("thead th").first().evaluate((node) => getComputedStyle(node).position), "sticky");
-  const quick = page.getByLabel("Quick compliance filters", { exact: true });
+  const quick = page.getByLabel("Quick views", { exact: true });
   await quick.getByRole("button", { name: /Non-compliant/ }).click();
   assert.ok(await page.locator("tbody tr").count() > 0);
   assert.ok((await page.locator("tbody").innerText()).includes("NON COMPLIANT"));
