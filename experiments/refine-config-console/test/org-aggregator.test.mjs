@@ -67,7 +67,7 @@ test("runtime mapping requires fixed four aliases and distinct account ids", () 
   const raw = JSON.stringify(ACCOUNT_ALIASES.map((alias, i) => ({ alias, account_id: ids[i] })));
   assert.deepEqual([...parseTargets(raw)], [...targets]);
   assert.throws(() => parseTargets("[]"), /four/);
-  assert.throws(() => parseTargets(JSON.stringify([...ACCOUNT_ALIASES].reverse().map((alias, i) => ({alias,account_id:ids[i]}))), /mapping/);
+  assert.throws(() => parseTargets(JSON.stringify([...ACCOUNT_ALIASES].reverse().map((alias, i) => ({ alias, account_id: ids[i] })))), /mapping/);
 });
 
 test("live aggregator projects exactly four aliases and hides raw account ids", async () => {
