@@ -86,7 +86,16 @@ try {
   await rows(page, 22);
   await theme(page, "light");
   assert.equal(await page.getByLabel("Account", { exact: true }).locator("option").count(), 5);
-  assert.equal(await page.getByLabel("Control summary", { exact: true }).locator(":scope > div").count(), 4);
+  assert.equal(await page.getByLabel("Executive summary", { exact: true }).locator(":scope > div").count(), 4);
+  assert.equal(await page.getByRole("link", { name: /Admin Control Center/ }).getAttribute("href"), "https://ops.astromedicomp.org/");
+  assert.equal((await page.locator("body").innerText()).includes("Singapore"), false);
+  assert.equal((await page.locator("body").innerText()).includes("ap-southeast-1"), false);
+  await page.getByRole("button", { name: /Security/ }).first().click();
+  await page.getByText("Control risk by account coverage").waitFor();
+  await page.reload();
+  await page.getByText("Control risk by account coverage").waitFor();
+  await page.getByRole("button", { name: /Management/ }).click();
+  await page.getByText("Compliance coverage").waitFor();
   assert.equal(calls.filter((call) => call.operation.startsWith("get-")).length, 0);
   await noPageOverflow(page);
   await contrast(page);
@@ -146,7 +155,7 @@ try {
   await page.getByRole("button", { name: "Refresh", exact: true }).click();
   await rows(page, 18);
   await page.getByRole("alert").filter({ hasText: "3 of 4 accounts available" }).waitFor();
-  assert.ok((await page.getByLabel("Control summary", { exact: true }).innerText()).includes("Available accounts only"));
+  assert.ok((await page.getByLabel("Executive summary", { exact: true }).innerText()).includes("Available accounts only"));
   for (const alias of ["ACCOUNT_A", "ACCOUNT_C", "ACCOUNT_D"]) unavailable.add(alias);
   clock += 5000;
   await page.getByRole("button", { name: "Refresh", exact: true }).click();
@@ -192,7 +201,7 @@ try {
   assert.ok(requests.every((request) => request.method === "GET"));
   assert.ok(calls.every((call) => /^(describe-|get-compliance-details)/.test(call.operation)));
   console.log(JSON.stringify({ result: "PASS", mode: "SYNTHETIC", viewports: [1600, 390, 320],
-    checks: ["icons", "light/dark contrast", "Enter/Space", "saved reload", "denied storage", "no theme API calls", "account switch", "filters/sort", "lazy details/pagination", "partial/all failures/recovery", "mobile navigation", "drawer focus restoration", "no page overflow", "no external requests"],
+    checks: ["icons", "saved dashboard", "admin navigation", "no visible region text", "light/dark contrast", "Enter/Space", "saved reload", "denied storage", "no theme API calls", "account switch", "filters/sort", "lazy details/pagination", "partial/all failures/recovery", "mobile navigation", "drawer focus restoration", "no page overflow", "no external requests"],
     awsCalls: 0, pageErrors: errors.length, screenshots: screenshotDir ? 4 : 0 }));
 } finally {
   await browser?.close();
