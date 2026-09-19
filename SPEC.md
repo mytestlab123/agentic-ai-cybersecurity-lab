@@ -30,6 +30,22 @@ deterministic read-only tools backed by synthetic fixtures.
 - No real identifiers or private data.
 - Human review is required before widening beyond Issue 1.
 
+## Issue #87 unified hosted product
+
+The active hosted product is **Config Dashboard** at `config.astromedicomp.org`.
+
+- It is the single dashboard for multi-account Config evidence, management/security/operations views, accounts, controls, affected-resource drill-down, operational-domain grouping, and sanitized historical snapshots.
+- The separate **Compliance Agent** at `sec.astromedicomp.org` remains the governed agent/remediation surface.
+- The former `ops.astromedicomp.org` product surface is retired and redirects to Config Dashboard.
+- A small **Demo controls** drawer exists only for the personal LAB demonstration. It can re-arm exactly one supported four-account family at a time through the fixed `aws-secops-four-account-executor` CodeBuild path.
+- S3 re-arm means exactly four retained Issue #82 demo buckets: one per `lab-dev`, `lab-poc`, `lab-qa`, and `lab-sec`.
+- Restricted SSH re-arm means exactly four retained unattached Issue #82 Security Groups: one per alias.
+- The legacy 100-S3 / 10-SG Operator preparation path is not part of the active hosted product.
+- Historical dashboard data is sanitized aggregate state only; raw account IDs and resource IDs are not persisted in dashboard history.
+- Control grouping is operational only: Storage, Network, Compute, Identity, Other. Do not invent CIS/NIST/ISO mapping or severity.
+
+The Config evidence path remains read-only. Demo controls are a separate bounded personal-LAB preparation path and must not become a generic AWS mutation surface.
+
 ## Issue #83 hosted personal-LAB execution authority
 
 For the active hosted Config Console and directly related SecCop demo work, Amit approved continuous execution without repeated permission prompts.
