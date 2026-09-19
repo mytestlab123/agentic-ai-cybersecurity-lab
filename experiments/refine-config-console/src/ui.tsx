@@ -4,7 +4,7 @@ import { Slot } from "@radix-ui/react-slot";
 import { cva, type VariantProps } from "class-variance-authority";
 import { clsx, type ClassValue } from "clsx";
 import { twMerge } from "tailwind-merge";
-import { useEffect, useState, type ComponentProps, type ReactNode } from "react";
+import { useEffect, useRef, useState, type ComponentProps, type ReactNode } from "react";
 import { Icon } from "./icons";
 
 export const cn = (...inputs: ClassValue[]) => twMerge(clsx(inputs));
@@ -39,10 +39,17 @@ export function ThemeToggle() {
 export function Sheet({ open, onOpenChange, title, children }: {
   open: boolean; onOpenChange: (value: boolean) => void; title: string; children: ReactNode;
 }) {
+  const previousFocus = useRef<HTMLElement | null>(null);
   return <Dialog.Root open={open} onOpenChange={onOpenChange}>
     <Dialog.Portal>
       <Dialog.Overlay className="sheet-overlay" />
-      <Dialog.Content className="sheet-content">
+      <Dialog.Content className="sheet-content"
+        onOpenAutoFocus={() => { previousFocus.current = document.activeElement instanceof HTMLElement ? document.activeElement : null; }}
+        onCloseAutoFocus={(event) => {
+          event.preventDefault();
+          const target = previousFocus.current?.isConnected ? previousFocus.current : document.getElementById("main-content");
+          target?.focus({ preventScroll: true });
+        }}>
         <header className="sheet-header">
           <div><div className="eyebrow">Control details</div>
             <Dialog.Title className="sheet-title">{title}</Dialog.Title></div>
