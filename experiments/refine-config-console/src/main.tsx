@@ -54,6 +54,18 @@ function App() {
     [observed, setObserved] = useState<Record<string, string[]>>({});
   const [mode, setMode] = useState("Checking mode");
   const [navigationOpen, setNavigationOpen] = useState(false);
+  const [section, setSection] = useState<"dashboard" | "controls" | "accounts">("dashboard");
+  const [dashboard, setDashboard] = useState<"management" | "security" | "operations">(() => {
+    try {
+      const saved = localStorage.getItem("seccop-config-dashboard");
+      if (saved === "management" || saved === "security" || saved === "operations") return saved;
+    } catch {}
+    return "management";
+  });
+  const chooseDashboard = (value: "management" | "security" | "operations") => {
+    setDashboard(value); setSection("dashboard");
+    try { localStorage.setItem("seccop-config-dashboard", value); } catch {}
+  };
   const detailGeneration = useRef(0);
   const { query } = useOne<Snapshot>({ resource: "controls", id: environment || "UNSELECTED", meta: { refresh },
     queryOptions: { enabled: Boolean(environment), retry: false, refetchOnWindowFocus: false,
@@ -115,6 +127,7 @@ function App() {
   filtered.sort((a, b) => {
     let comparison = 0;
     if (sort === "name") comparison = a.ConfigRuleName.localeCompare(b.ConfigRuleName);
+    else if (sort === "account") comparison = (a.accountAlias || "").localeCompare(b.accountAlias || "");
     else if (sort === "count") comparison = (b.count ?? -1) - (a.count ?? -1);
     else if (sort === "time") comparison = (Date.parse(b.health.LastSuccessfulEvaluationTime) || 0) - (Date.parse(a.health.LastSuccessfulEvaluationTime) || 0);
     else comparison = (ranks[a.status] ?? 5) - (ranks[b.status] ?? 5);
@@ -132,12 +145,34 @@ function App() {
     } catch (error) { if (generation === detailGeneration.current) setDetailError((error as Error).message); }
     finally { if (generation === detailGeneration.current) setLoading(false); }
   };
+  const compliant = rules.filter((r) => r.status === "COMPLIANT").length;
+  const noncompliant = rules.filter((r) => r.status === "NON_COMPLIANT").length;
+  const attention = rules.filter((r) => ["INSUFFICIENT_DATA", "NOT_REPORTED"].includes(r.status) || r.warning).length;
+  const evaluated = compliant + noncompliant;
+  const compliancePct = evaluated ? Math.round((compliant / evaluated) * 100) : 0;
+  const affectedResources = rules.filter((r) => r.status === "NON_COMPLIANT").reduce((sum, r) => sum + (r.count ?? 0), 0);
+  const accountsAtRisk = new Set(rules.filter((r) => r.status === "NON_COMPLIANT").map((r) => r.accountAlias).filter(Boolean)).size;
   const metrics = [
-    { label: allAccounts ? "Total account/control checks" : "Total controls", count: rules.length, icon: "grid", tone: "neutral" },
-    { label: "Non-compliant", count: rules.filter((r) => r.status === "NON_COMPLIANT").length, icon: "alert", tone: "danger" },
-    { label: "Compliant", count: rules.filter((r) => r.status === "COMPLIANT").length, icon: "check", tone: "good" },
-    { label: "Insufficient data / evaluation attention", count: rules.filter((r) => ["INSUFFICIENT_DATA", "NOT_REPORTED"].includes(r.status) || r.warning).length, icon: "clock", tone: "warning" },
+    { label: allAccounts ? "Account / control checks" : "Controls", count: rules.length, icon: "grid", tone: "neutral" },
+    { label: "Compliance", count: hasEvidence ? compliancePct + "%" : "--", icon: "check", tone: "good" },
+    { label: "Non-compliant checks", count: noncompliant, icon: "alert", tone: "danger" },
+    { label: "Affected resources", count: affectedResources, icon: "layers", tone: "warning" },
   ];
+  const controlGroups = Object.values(rules.reduce((acc: Record<string, any>, r) => {
+    const key = r.ConfigRuleName;
+    acc[key] ||= { name: key, category: r.category, total: 0, compliant: 0, noncompliant: 0, affected: 0 };
+    acc[key].total++;
+    if (r.status === "COMPLIANT") acc[key].compliant++;
+    if (r.status === "NON_COMPLIANT") { acc[key].noncompliant++; acc[key].affected += r.count ?? 0; }
+    return acc;
+  }, {})).sort((a: any, b: any) => b.noncompliant - a.noncompliant || a.name.localeCompare(b.name)) as any[];
+  const accountGroups = environments.map((alias) => {
+    const group = rules.filter((r) => r.accountAlias === alias);
+    const account = snapshot?.accounts?.find((item) => item.alias === alias);
+    return { alias, available: account?.available !== false, total: group.length,
+      compliant: group.filter((r) => r.status === "COMPLIANT").length,
+      noncompliant: group.filter((r) => r.status === "NON_COMPLIANT").length };
+  });
   return <div className="app-shell">
     <a href="#main-content" className="skip-link">Skip to controls</a>
     <aside className="sidebar">
@@ -147,10 +182,17 @@ function App() {
           aria-controls="category-list" onClick={() => setNavigationOpen((value) => !value)}><Icon name={navigationOpen ? "close" : "menu"} /></button>
       </div>
       <div id="category-list" className={`sidebar-content ${navigationOpen ? "is-open" : ""}`}>
-        <div className="sidebar-label">Control library</div>
+        <div className="sidebar-label">Workspace</div>
+        <nav aria-label="Primary navigation">
+          <button className="category-button" aria-pressed={section === "dashboard"} onClick={() => { setSection("dashboard"); setNavigationOpen(false); }}><Icon name="dashboard" /><span>Dashboard</span></button>
+          <button className="category-button" aria-pressed={section === "controls"} onClick={() => { setSection("controls"); setCategory("All Controls"); setNavigationOpen(false); }}><Icon name="shield" /><span>Controls</span><span className="category-count">{hasEvidence ? rules.length : "--"}</span></button>
+          <button className="category-button" aria-pressed={section === "accounts"} onClick={() => { setSection("accounts"); setNavigationOpen(false); }}><Icon name="layers" /><span>Accounts</span><span className="category-count">{environments.length || "--"}</span></button>
+          <a className="category-button nav-link" href="https://ops.astromedicomp.org/"><Icon name="settings" /><span>Admin Control Center</span><Icon name="external" size={14} /></a>
+        </nav>
+        <div className="sidebar-label secondary-label">Control library</div>
         <nav aria-label="Control categories">{["All Controls", ...categories].map((c) => {
           const group = rules.filter((r) => c === "All Controls" || r.category === c);
-          return <button key={c} onClick={() => { setCategory(c); setNavigationOpen(false); }} aria-pressed={category === c}
+          return <button key={c} onClick={() => { setCategory(c); setSection("controls"); setNavigationOpen(false); }} aria-pressed={section === "controls" && category === c}
             className="category-button"><Icon name={categoryIcon[c]} /><span>{c}</span>
             <span className="category-count" title={`${group.filter((r) => r.status === "NON_COMPLIANT").length} non-compliant`}>
               {hasEvidence ? `${group.length} / ${group.filter((r) => r.status === "NON_COMPLIANT").length}` : "--"}
@@ -162,8 +204,9 @@ function App() {
     </aside>
     <main id="main-content" className="main-content" tabIndex={-1}>
       <header className="page-header">
-        <div><div className="eyebrow">AWS Config <span aria-hidden="true">/</span> Singapore</div>
-          <h1>Config controls</h1><p className="muted page-intro">{allAccounts ? "One account and control per row. The same rule in four accounts counts as four checks." : "One control per row. Open a control to inspect its affected resources."}</p></div>
+        <div><div className="eyebrow">AWS Config · Multi-account security</div>
+          <h1>{section === "dashboard" ? "Compliance dashboard" : section === "accounts" ? "Account fleet" : "Config controls"}</h1>
+          <p className="muted page-intro">{section === "dashboard" ? "A concise view of compliance posture, risk concentration and operational readiness." : section === "accounts" ? "Scalable account scope and per-account compliance posture." : allAccounts ? "One account and control per row. The same rule in multiple accounts counts as separate checks." : "One control per row. Open a control to inspect its affected resources."}</p></div>
         <div className="header-actions"><ThemeToggle />
           <label className="selector-label">{allAccounts ? "Account" : "Environment"}
             <select aria-label={allAccounts ? "Account" : "Environment"} value={environment} disabled={!environments.length} onChange={(e) => changeEnvironment(e.target.value)}>
@@ -177,43 +220,106 @@ function App() {
         </div>
       </header>
       <div className="evidence-bar"><span className={`mode-label ${mode === "SYNTHETIC" ? "synthetic" : ""}`}><Icon name="shield" size={15} />{mode}</span>
-        <span className="muted">ap-southeast-1 · provider reads only</span>
+        <span className="muted">Provider reads only</span>
         <span className="fetch-time"><Icon name="clock" size={14} />{allAccounts ? "Oldest included fetch" : "Fetched"}: {date(snapshot?.fetchedAt)}</span>
       </div>
       {mode === "Unavailable" && <p role="alert" className="notice danger">Account configuration unavailable. No provider read has been started.</p>}
-      {allAccounts && <section aria-label="Account availability" className="account-grid">{environments.map((alias) => {
-        const account = snapshot?.accounts?.find((item) => item.alias === alias);
-        const label = query.isFetching ? "Loading" : account ? account.available ? "Read available" : "Unavailable" : "Not in current view";
-        return <Button key={alias} variant="outline" className="account-card" onClick={() => changeEnvironment(alias)} aria-pressed={environment === alias}>
-          <span className="account-symbol"><Icon name="layers" size={19} /></span>
-          <span><strong>{alias}</strong><small className={account?.available === false ? "danger-text" : "muted"}>{label}</small></span>
-          <Icon name="chevron" size={15} />
-        </Button>;
-      })}</section>}
+      {section === "dashboard" && <section className="dashboard-switcher" aria-label="Dashboard view">
+        <div><strong>Dashboard view</strong><span className="muted">Saved as your landing view on this browser</span></div>
+        <div className="dashboard-tabs">
+          <Button variant={dashboard === "management" ? "default" : "outline"} onClick={() => chooseDashboard("management")}><Icon name="chart" />Management</Button>
+          <Button variant={dashboard === "security" ? "default" : "outline"} onClick={() => chooseDashboard("security")}><Icon name="shield" />Security</Button>
+          <Button variant={dashboard === "operations" ? "default" : "outline"} onClick={() => chooseDashboard("operations")}><Icon name="server" />Operations</Button>
+        </div>
+      </section>}
       {snapshot?.partial && <p role="alert" className="notice warning"><Icon name="alert" />
         Partial evidence: {snapshot.availableAccounts} of {snapshot.totalAccounts} accounts available. Counts exclude unavailable accounts; they are not compliant.</p>}
       {query.isError && <div role="alert" className="notice danger"><Icon name="alert" />{query.error?.message}. No successful inventory is asserted.</div>}
       {query.isFetching && <p role="status" className="loading-note"><Icon name="refresh" className="spinning" />Reading inventory...</p>}
-      <section aria-label="Control summary" className="summary-grid">{metrics.map(({ label, count, icon, tone }) =>
-        <div key={label} className={`summary-card ${tone}`}><div className="summary-top"><span>{label}</span><span className="metric-symbol"><Icon name={icon} size={20} /></span></div>
-          <strong className="summary-count">{hasEvidence ? count : "--"}</strong>
-          <small>{snapshot?.partial ? "Available accounts only" : tone === "warning" ? "May overlap compliance totals" : "Current inventory snapshot"}</small>
-        </div>)}</section>
+      {section === "dashboard" && <>
+        <section aria-label="Executive summary" className="summary-grid">{metrics.map(({ label, count, icon, tone }) =>
+          <div key={label} className={`summary-card ${tone}`}><div className="summary-top"><span>{label}</span><span className="metric-symbol"><Icon name={icon} size={20} /></span></div>
+            <strong className="summary-count">{hasEvidence ? count : "--"}</strong>
+            <small>{snapshot?.partial ? "Available accounts only" : label === "Compliance" ? compliant + " compliant / " + noncompliant + " non-compliant" : "Current inventory snapshot"}</small>
+          </div>)}</section>
+        {dashboard === "management" && <section className="dashboard-grid">
+          <article className="insight-card hero-card">
+            <div className="card-heading"><div><span className="eyebrow">Overall posture</span><h2>Compliance coverage</h2></div><span className="status-chip good">{compliancePct}% compliant</span></div>
+            <div className="compliance-visual">
+              <div className="donut" style={{ "--pct": compliancePct } as React.CSSProperties}><div><strong>{compliancePct}%</strong><span>compliant</span></div></div>
+              <div className="legend">
+                <span><i className="dot good-dot" />Compliant <b>{compliant}</b></span>
+                <span><i className="dot danger-dot" />Non-compliant <b>{noncompliant}</b></span>
+                <span><i className="dot warning-dot" />Attention <b>{attention}</b></span>
+              </div>
+            </div>
+          </article>
+          <article className="insight-card">
+            <div className="card-heading"><div><span className="eyebrow">Risk concentration</span><h2>Controls needing attention</h2></div><span className="big-number">{controlGroups.filter((x:any)=>x.noncompliant).length}</span></div>
+            <div className="rank-list">{controlGroups.slice(0,5).map((g:any) => <button key={g.name} onClick={() => { setSection("controls"); setSearch(g.name); }} className="rank-row">
+              <span><b>{g.name}</b><small>{g.noncompliant} of {g.total} checks non-compliant</small></span>
+              <span className="risk-count">{g.affected} resources</span>
+            </button>)}</div>
+          </article>
+          <article className="insight-card wide-card">
+            <div className="card-heading"><div><span className="eyebrow">Fleet</span><h2>Accounts needing attention</h2></div><span className="big-number">{accountsAtRisk}/{environments.length}</span></div>
+            <div className="fleet-strip">{accountGroups.map((a) => <button key={a.alias} className="fleet-pill" onClick={() => { changeEnvironment(a.alias); setSection("controls"); }}>
+              <span className={`fleet-state ${!a.available ? "warning" : a.noncompliant ? "danger" : "good"}`} />
+              <b>{a.alias}</b><small>{!a.available ? "Unavailable" : a.noncompliant ? a.noncompliant + " issue" + (a.noncompliant===1?"":"s") : "Compliant"}</small>
+            </button>)}</div>
+          </article>
+        </section>}
+        {dashboard === "security" && <section className="dashboard-grid">
+          <article className="insight-card wide-card">
+            <div className="card-heading"><div><span className="eyebrow">Security view</span><h2>Control risk by account coverage</h2></div><span className="status-chip danger">{noncompliant} open checks</span></div>
+            <div className="control-bars">{controlGroups.map((g:any) => <button key={g.name} className="control-bar" onClick={() => { setSection("controls"); setSearch(g.name); }}>
+              <span className="bar-label"><b>{g.name}</b><small>{g.affected} affected resources</small></span>
+              <span className="bar-track"><i style={{ width: (g.total ? Math.round(g.noncompliant/g.total*100) : 0) + "%" }} /></span>
+              <span className="bar-value">{g.noncompliant}/{g.total}</span>
+            </button>)}</div>
+          </article>
+          <article className="insight-card">
+            <div className="card-heading"><div><span className="eyebrow">Priority</span><h2>Open findings</h2></div><span className="big-number">{affectedResources}</span></div>
+            <p className="muted">Affected-resource count is based on current Config contributor counts. It is not a severity score.</p>
+          </article>
+        </section>}
+        {dashboard === "operations" && <section className="dashboard-grid">
+          <article className="insight-card wide-card">
+            <div className="card-heading"><div><span className="eyebrow">Operations view</span><h2>Account fleet health</h2></div><span className="status-chip good">{snapshot?.availableAccounts ?? environments.length}/{snapshot?.totalAccounts ?? environments.length} readable</span></div>
+            <div className="account-table">{accountGroups.map((a) => <button key={a.alias} className="account-row" onClick={() => { changeEnvironment(a.alias); setSection("controls"); }}>
+              <span><b>{a.alias}</b><small>{a.total} checks</small></span><span>{a.compliant} compliant</span><span className={a.noncompliant ? "danger-text" : "good-text"}>{a.noncompliant} non-compliant</span><Icon name="chevron" size={14}/>
+            </button>)}</div>
+          </article>
+          <article className="insight-card">
+            <div className="card-heading"><div><span className="eyebrow">Evidence</span><h2>Inventory freshness</h2></div><Icon name="clock" size={22}/></div>
+            <strong className="freshness-value">{date(snapshot?.fetchedAt)}</strong><p className="muted">Oldest included successful fetch for the current scope.</p>
+          </article>
+        </section>}
+      </>}
+      {section === "accounts" && <section className="account-fleet-panel">
+        <div className="card-heading"><div><span className="eyebrow">Account fleet</span><h2>{environments.length} connected accounts</h2></div><span className="muted">Designed to scale beyond four accounts</span></div>
+        <div className="fleet-grid">{accountGroups.map((a) => <button key={a.alias} className="fleet-card" onClick={() => { changeEnvironment(a.alias); setSection("controls"); }}>
+          <span className="account-symbol"><Icon name="layers" size={19}/></span><span><b>{a.alias}</b><small>{a.available ? "Read available" : "Unavailable"}</small></span>
+          <span className="fleet-metrics"><b>{a.compliant}</b> compliant · <b className={a.noncompliant ? "danger-text":""}>{a.noncompliant}</b> non-compliant</span><Icon name="chevron" size={15}/>
+        </button>)}</div>
+      </section>}
       <details className="recorder-health"><summary><Icon name="clock" size={16} />Recorder health <span className="muted">Read-only provider status</span></summary>
         <div>{hasEvidence && snapshot ? snapshot.recorders.length ? snapshot.recorders.map((r) =>
           <p key={r.accountAlias || r.name || "recorder"}>{r.accountAlias ? `${r.accountAlias}: ` : ""}{r.recording === true ? "Recording" : r.recording === false ? "Not recording" : "Not reported"} · {r.lastStatus || "Not reported"} · {date(r.lastStatusChangeTime)}{r.lastErrorCode ? ` · ${r.lastErrorCode}: ${r.lastErrorMessage || ""}` : ""}</p>)
           : "No recorder status returned" : "Not loaded"}</div>
       </details>
-      <section className="table-panel" aria-label="Control inventory">
+      <section className={`table-panel ${section === "controls" ? "" : "section-secondary"}`} aria-label="Control inventory">
         <div className="table-heading"><h2>{category}</h2><span className="muted">{hasEvidence ? filtered.length : "--"} shown</span></div>
         <div className="table-toolbar">
           <label className="search-field"><Icon name="search" /><input aria-label="Search controls" placeholder={allAccounts ? "Search account, control or AWS rule" : "Search controls and AWS rules"} value={search} onChange={(e) => setSearch(e.target.value)} /></label>
           <label className="filter-field"><Icon name="filter" /><select aria-label="Compliance filter" value={status} onChange={(e) => setStatus(e.target.value)}>
             {["ALL", "NON_COMPLIANT", "COMPLIANT", "INSUFFICIENT_DATA", "NOT_APPLICABLE", "NOT_REPORTED"].map((x) => <option key={x} value={x}>{x === "ALL" ? "All statuses" : x.replaceAll("_", " ")}</option>)}
           </select></label>
-          <select aria-label="Sort controls" value={sort} onChange={(e) => setSort(e.target.value)}><option value="status">Sort: compliance</option><option value="name">Control name</option><option value="count">Non-compliant count</option><option value="time">Last evaluated</option></select>
-          <Button variant="outline" onClick={() => setDescending((x) => !x)} aria-label="Reverse sort order" title={descending ? "Use default sort direction" : "Reverse sort direction"}>
-            <Icon name="sort" /><span>{descending ? "Ascending" : "Descending"}</span>
+          <select aria-label="Sort controls" value={sort} onChange={(e) => setSort(e.target.value)}>
+            <option value="status">Compliance priority</option><option value="count">Affected resources</option><option value="name">Control</option>{allAccounts && <option value="account">Account</option>}<option value="time">Last evaluated</option>
+          </select>
+          <Button className="sort-direction" variant="outline" onClick={() => setDescending((x) => !x)} aria-label={descending ? "Sort ascending" : "Sort descending"} title={descending ? "Sort ascending" : "Sort descending"}>
+            <Icon name="sort" /><span>{descending ? "Asc" : "Desc"}</span>
           </Button>
         </div>
         <div className="table-scroll" role="region" aria-label="Scrollable controls table" tabIndex={0}>
