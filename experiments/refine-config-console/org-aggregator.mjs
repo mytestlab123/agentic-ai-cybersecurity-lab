@@ -30,7 +30,10 @@ export function parseTargets(raw = process.env.SECOPS_MULTI_ACCOUNT_TARGETS_JSON
 export async function awsJson(args) {
   const env = { ...process.env };
   for (const name of Object.keys(env))
-    if (name.startsWith("AWS_ENDPOINT_URL")) delete env[name];
+    if (name.startsWith("AWS_ENDPOINT_URL") ||
+        ["AWS_PROFILE", "AWS_DEFAULT_PROFILE", "AWS_ACCESS_KEY_ID", "AWS_SECRET_ACCESS_KEY",
+         "AWS_SESSION_TOKEN", "AWS_WEB_IDENTITY_TOKEN_FILE", "AWS_ROLE_ARN"].includes(name))
+      delete env[name];
   Object.assign(env, {
     AWS_REGION: REGION,
     AWS_DEFAULT_REGION: REGION,
