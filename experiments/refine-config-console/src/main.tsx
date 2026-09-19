@@ -1,7 +1,8 @@
 import React, { useEffect, useState, useRef } from "react";
 import { createRoot } from "react-dom/client";
 import { Refine, useOne, type DataProvider } from "@refinedev/core";
-import { Button, Sheet } from "./ui";
+import { Button, Sheet, ThemeToggle } from "./ui";
+import { Icon, categoryIcon } from "./icons";
 import { categories, category as classify, frequency } from "../model.mjs";
 import "./style.css";
 
@@ -33,7 +34,8 @@ const dataProvider: DataProvider = {
 const date = (value?: string | null) => value && Number.isFinite(Date.parse(value))
   ? new Date(value).toLocaleString() : "Not reported";
 function Status({ value }: { value: string }) {
-  return <span className={`inline-block rounded px-2 py-1 text-[10px] font-semibold whitespace-nowrap ${value === "NON_COMPLIANT" ? "bg-red-50 text-red-800" : value === "COMPLIANT" ? "bg-emerald-50 text-emerald-800" : "bg-amber-50 text-amber-900"}`}>{value.replaceAll("_", " ")}</span>;
+  const kind = value === "COMPLIANT" ? "good" : value === "NON_COMPLIANT" ? "danger" : "warning";
+  return <span className={`status-chip ${kind}`}><Icon name={kind === "good" ? "check" : kind === "danger" ? "alert" : "clock"} size={14} />{value.replaceAll("_", " ")}</span>;
 }
 function Fields({ value }: { value: Record<string, any> }) {
   return <dl>{Object.entries(value).map(([key, val]) => <React.Fragment key={key}>
@@ -49,6 +51,7 @@ function App() {
     [token, setToken] = useState<string | undefined>(), [detailError, setDetailError] = useState(""),
     [loading, setLoading] = useState(false), [observed, setObserved] = useState<Record<string, string[]>>({});
   const [mode, setMode] = useState("Checking mode");
+  const [navigationOpen, setNavigationOpen] = useState(false);
   const detailGeneration = useRef(0);
   const { query } = useOne<Snapshot>({ resource: "controls", id: environment || "UNSELECTED", meta: { refresh },
     queryOptions: { enabled: Boolean(environment), retry: false, refetchOnWindowFocus: false,
@@ -125,96 +128,123 @@ function App() {
     } catch (error) { if (generation === detailGeneration.current) setDetailError((error as Error).message); }
     finally { if (generation === detailGeneration.current) setLoading(false); }
   };
-  return <div className="min-h-screen flex">
-    <aside className="w-52 shrink-0 border-r bg-white p-4">
-      <div className="text-lg font-bold mb-1">SecCop</div><div className="text-xs text-slate-500 mb-9">Config control explorer</div>
-      <div className="text-[10px] uppercase tracking-widest text-slate-400 mb-3">Controls</div>
-      <nav aria-label="Control categories">{["All Controls", ...categories].map((c) => {
-        const group = rules.filter((r) => c === "All Controls" || r.category === c);
-        return <button key={c} onClick={() => setCategory(c)} aria-pressed={category === c}
-          className={`flex w-full justify-between items-center rounded px-3 py-3 text-sm mb-1 ${category === c ? "bg-slate-900 text-white" : "hover:bg-slate-100"}`}>
-          <span>{c}</span><span title={`${group.filter((r) => r.status === "NON_COMPLIANT").length} non-compliant`} className="text-xs opacity-70">
-            {hasEvidence ? `${group.length} / ${group.filter((r) => r.status === "NON_COMPLIANT").length}` : "--"}
-          </span></button>;
-      })}</nav>
-      <p className="text-xs text-slate-400 mt-6">Counts: total / non-compliant</p>
-      <p className="text-xs text-slate-500 mt-12">Read-only exploration<br />No remediation actions</p>
+  const metrics = [
+    { label: allAccounts ? "Total account/control checks" : "Total controls", count: rules.length, icon: "grid", tone: "neutral" },
+    { label: "Non-compliant", count: rules.filter((r) => r.status === "NON_COMPLIANT").length, icon: "alert", tone: "danger" },
+    { label: "Compliant", count: rules.filter((r) => r.status === "COMPLIANT").length, icon: "check", tone: "good" },
+    { label: "Insufficient data / evaluation attention", count: rules.filter((r) => ["INSUFFICIENT_DATA", "NOT_REPORTED"].includes(r.status) || r.warning).length, icon: "clock", tone: "warning" },
+  ];
+  return <div className="app-shell">
+    <a href="#main-content" className="skip-link">Skip to controls</a>
+    <aside className="sidebar">
+      <div className="brand"><span className="brand-mark"><Icon name="shield" size={25} /></span>
+        <div><strong>SecCop</strong><small>CONFIG EXPLORER</small></div>
+        <button type="button" className="nav-toggle" aria-label="Toggle categories" aria-expanded={navigationOpen}
+          aria-controls="category-list" onClick={() => setNavigationOpen((value) => !value)}><Icon name={navigationOpen ? "close" : "menu"} /></button>
+      </div>
+      <div id="category-list" className={`sidebar-content ${navigationOpen ? "is-open" : ""}`}>
+        <div className="sidebar-label">Control library</div>
+        <nav aria-label="Control categories">{["All Controls", ...categories].map((c) => {
+          const group = rules.filter((r) => c === "All Controls" || r.category === c);
+          return <button key={c} onClick={() => { setCategory(c); setNavigationOpen(false); }} aria-pressed={category === c}
+            className="category-button"><Icon name={categoryIcon[c]} /><span>{c}</span>
+            <span className="category-count" title={`${group.filter((r) => r.status === "NON_COMPLIANT").length} non-compliant`}>
+              {hasEvidence ? `${group.length} / ${group.filter((r) => r.status === "NON_COMPLIANT").length}` : "--"}
+            </span></button>;
+        })}</nav>
+        <p className="sidebar-hint">Counts: total / non-compliant</p>
+        <div className="sidebar-footer"><Icon name="shield" /><div>Read-only exploration<small>No remediation actions</small></div></div>
+      </div>
     </aside>
-    <main className="min-w-0 flex-1 p-7">
-      <header className="flex flex-wrap justify-between items-start gap-4 mb-6">
-        <div><p className="text-xs text-slate-500 mb-1">AWS CONFIG - SINGAPORE</p><h1 className="text-2xl font-semibold">Config controls</h1>
-          <p className="text-sm text-slate-500 mt-1">{allAccounts ? "One account and control per row. The same rule in four accounts counts as four checks." : "One control per row. Open a control to inspect its affected resources."}</p></div>
-        <div className="flex flex-wrap items-center gap-3"><label className="text-xs">{allAccounts ? "Account" : "Environment"}{" "}
-          <select aria-label={allAccounts ? "Account" : "Environment"} value={environment} disabled={!environments.length} onChange={(e) => changeEnvironment(e.target.value)}>
-            {!environments.length && <option value="">Loading accounts</option>}
-            {allAccounts && <option value="ALL">All Accounts</option>}
-            {environments.map((alias) => <option key={alias} value={alias}>{alias}</option>)}
-          </select></label>
-          <Button disabled={!environment || query.isFetching} onClick={() => { closeDetail(); setObserved({}); setRefresh((x) => x + 1); }}>Refresh</Button>
+    <main id="main-content" className="main-content" tabIndex={-1}>
+      <header className="page-header">
+        <div><div className="eyebrow">AWS Config <span aria-hidden="true">/</span> Singapore</div>
+          <h1>Config controls</h1><p className="muted page-intro">{allAccounts ? "One account and control per row. The same rule in four accounts counts as four checks." : "One control per row. Open a control to inspect its affected resources."}</p></div>
+        <div className="header-actions"><ThemeToggle />
+          <label className="selector-label">{allAccounts ? "Account" : "Environment"}
+            <select aria-label={allAccounts ? "Account" : "Environment"} value={environment} disabled={!environments.length} onChange={(e) => changeEnvironment(e.target.value)}>
+              {!environments.length && <option value="">Loading accounts</option>}
+              {allAccounts && <option value="ALL">All Accounts</option>}
+              {environments.map((alias) => <option key={alias} value={alias}>{alias}</option>)}
+            </select></label>
+          <Button disabled={!environment || query.isFetching} onClick={() => { closeDetail(); setObserved({}); setRefresh((x) => x + 1); }}>
+            <Icon name="refresh" className={query.isFetching ? "spinning" : ""} />Refresh
+          </Button>
         </div>
       </header>
-      <div className="flex flex-wrap justify-between text-xs text-slate-500 mb-5"><span>{mode} - ap-southeast-1 - provider reads only</span>
-        <span>{allAccounts ? "Oldest included fetch" : "Fetched"}: {date(snapshot?.fetchedAt)}</span></div>
-      {mode === "Unavailable" && <p role="alert" className="text-red-700 mb-4">Account configuration unavailable. No provider read has been started.</p>}
-      {allAccounts && <section aria-label="Account availability" className="flex flex-wrap gap-2 mb-4">{environments.map((alias) => {
+      <div className="evidence-bar"><span className={`mode-label ${mode === "SYNTHETIC" ? "synthetic" : ""}`}><Icon name="shield" size={15} />{mode}</span>
+        <span className="muted">ap-southeast-1 · provider reads only</span>
+        <span className="fetch-time"><Icon name="clock" size={14} />{allAccounts ? "Oldest included fetch" : "Fetched"}: {date(snapshot?.fetchedAt)}</span>
+      </div>
+      {mode === "Unavailable" && <p role="alert" className="notice danger">Account configuration unavailable. No provider read has been started.</p>}
+      {allAccounts && <section aria-label="Account availability" className="account-grid">{environments.map((alias) => {
         const account = snapshot?.accounts?.find((item) => item.alias === alias);
-        return <Button key={alias} variant="outline" onClick={() => changeEnvironment(alias)} aria-pressed={environment === alias}>
-          {alias}: {query.isFetching ? "Loading" : account ? account.available ? "Read available" : "Unavailable" : "Not in current view"}
+        const label = query.isFetching ? "Loading" : account ? account.available ? "Read available" : "Unavailable" : "Not in current view";
+        return <Button key={alias} variant="outline" className="account-card" onClick={() => changeEnvironment(alias)} aria-pressed={environment === alias}>
+          <span className="account-symbol"><Icon name="layers" size={19} /></span>
+          <span><strong>{alias}</strong><small className={account?.available === false ? "danger-text" : "muted"}>{label}</small></span>
+          <Icon name="chevron" size={15} />
         </Button>;
       })}</section>}
-      {snapshot?.partial && <p role="alert" className="border border-amber-200 bg-amber-50 p-4 rounded mb-5">
+      {snapshot?.partial && <p role="alert" className="notice warning"><Icon name="alert" />
         Partial evidence: {snapshot.availableAccounts} of {snapshot.totalAccounts} accounts available. Counts exclude unavailable accounts; they are not compliant.</p>}
-      {query.isError && <div role="alert" className="border border-red-200 bg-red-50 p-4 rounded mb-5">{query.error?.message}. No successful inventory is asserted.</div>}
-      {query.isFetching && <p role="status" className="mb-3 text-sm">Reading inventory...</p>}
-      <section aria-label="Control summary" className="grid grid-cols-2 xl:grid-cols-4 gap-4 mb-5">{[
-        [allAccounts ? "Total account/control checks" : "Total controls", rules.length],
-        ["Non-compliant", rules.filter((r) => r.status === "NON_COMPLIANT").length],
-        ["Compliant", rules.filter((r) => r.status === "COMPLIANT").length],
-        ["Insufficient data / evaluation attention", rules.filter((r) => ["INSUFFICIENT_DATA", "NOT_REPORTED"].includes(r.status) || r.warning).length],
-      ].map(([label, count]) => <div key={label} className="rounded-lg border border-slate-200 bg-white p-4">
-        <div className="text-xs text-slate-500 min-h-8">{label}</div><div className="text-2xl font-semibold">{hasEvidence ? count : "--"}</div>
-        {snapshot?.partial && <div className="text-xs text-amber-800">Available accounts only</div>}
-      </div>)}</section>
-      <div className="text-xs text-slate-500 mb-5">Recorder: {hasEvidence && snapshot
-        ? snapshot.recorders.length ? snapshot.recorders.map((r) => `${r.accountAlias ? r.accountAlias + ": " : ""}${r.recording === true ? "Recording" : r.recording === false ? "Not recording" : "Not reported"} - ${r.lastStatus || "Not reported"} - ${date(r.lastStatusChangeTime)}${r.lastErrorCode ? ` - ${r.lastErrorCode}: ${r.lastErrorMessage || ""}` : ""}`).join("; ")
+      {query.isError && <div role="alert" className="notice danger"><Icon name="alert" />{query.error?.message}. No successful inventory is asserted.</div>}
+      {query.isFetching && <p role="status" className="loading-note"><Icon name="refresh" className="spinning" />Reading inventory...</p>}
+      <section aria-label="Control summary" className="summary-grid">{metrics.map(({ label, count, icon, tone }) =>
+        <div key={label} className={`summary-card ${tone}`}><div className="summary-top"><span>{label}</span><span className="metric-symbol"><Icon name={icon} size={20} /></span></div>
+          <strong className="summary-count">{hasEvidence ? count : "--"}</strong>
+          <small>{snapshot?.partial ? "Available accounts only" : tone === "warning" ? "May overlap compliance totals" : "Current inventory snapshot"}</small>
+        </div>)}</section>
+      <details className="recorder-health"><summary><Icon name="clock" size={16} />Recorder health <span className="muted">Read-only provider status</span></summary>
+        <div>{hasEvidence && snapshot ? snapshot.recorders.length ? snapshot.recorders.map((r) =>
+          <p key={r.accountAlias || r.name || "recorder"}>{r.accountAlias ? `${r.accountAlias}: ` : ""}{r.recording === true ? "Recording" : r.recording === false ? "Not recording" : "Not reported"} · {r.lastStatus || "Not reported"} · {date(r.lastStatusChangeTime)}{r.lastErrorCode ? ` · ${r.lastErrorCode}: ${r.lastErrorMessage || ""}` : ""}</p>)
           : "No recorder status returned" : "Not loaded"}</div>
-      <section className="rounded-lg border border-slate-200 bg-white overflow-hidden">
-        <div className="flex flex-wrap items-center gap-3 p-4 border-b border-slate-200">
-          <input aria-label="Search controls" placeholder={allAccounts ? "Search account, name, AWS rule, description" : "Search name, AWS rule, description"} value={search} onChange={(e) => setSearch(e.target.value)} className="min-w-64 flex-1" />
-          <select aria-label="Compliance filter" value={status} onChange={(e) => setStatus(e.target.value)}>{["ALL", "NON_COMPLIANT", "COMPLIANT", "INSUFFICIENT_DATA", "NOT_APPLICABLE", "NOT_REPORTED"].map((x) => <option key={x} value={x}>{x.replaceAll("_", " ")}</option>)}</select>
-          <select aria-label="Sort controls" value={sort} onChange={(e) => setSort(e.target.value)}><option value="status">Compliance</option><option value="name">Control name</option><option value="count">Non-compliant count</option><option value="time">Last evaluated</option></select>
-          <Button variant="outline" onClick={() => setDescending((x) => !x)} aria-label="Reverse sort order">{descending ? "Ascending" : "Descending"}</Button>
+      </details>
+      <section className="table-panel" aria-label="Control inventory">
+        <div className="table-heading"><h2>{category}</h2><span className="muted">{hasEvidence ? filtered.length : "--"} shown</span></div>
+        <div className="table-toolbar">
+          <label className="search-field"><Icon name="search" /><input aria-label="Search controls" placeholder={allAccounts ? "Search account, control or AWS rule" : "Search controls and AWS rules"} value={search} onChange={(e) => setSearch(e.target.value)} /></label>
+          <label className="filter-field"><Icon name="filter" /><select aria-label="Compliance filter" value={status} onChange={(e) => setStatus(e.target.value)}>
+            {["ALL", "NON_COMPLIANT", "COMPLIANT", "INSUFFICIENT_DATA", "NOT_APPLICABLE", "NOT_REPORTED"].map((x) => <option key={x} value={x}>{x === "ALL" ? "All statuses" : x.replaceAll("_", " ")}</option>)}
+          </select></label>
+          <select aria-label="Sort controls" value={sort} onChange={(e) => setSort(e.target.value)}><option value="status">Sort: compliance</option><option value="name">Control name</option><option value="count">Non-compliant count</option><option value="time">Last evaluated</option></select>
+          <Button variant="outline" onClick={() => setDescending((x) => !x)} aria-label="Reverse sort order" title={descending ? "Use default sort direction" : "Reverse sort direction"}>
+            <Icon name="sort" /><span>{descending ? "Ascending" : "Descending"}</span>
+          </Button>
         </div>
-        <div className="overflow-x-auto"><table className="w-full"><thead><tr>{[
-          "Status", ...(allAccounts ? ["Account"] : []), "Control", "Category", "AWS rule", "Scope", "Trigger", "Mode", "Non-compliant", "Last evaluated", "Health",
-        ].map((x) => <th key={x}>{x}</th>)}</tr></thead><tbody>{filtered.map((r) => <tr key={r.id} className="hover:bg-slate-50">
-          <td><Status value={r.status} /></td>{allAccounts && <td>{r.accountAlias}</td>}
-          <td><button className="text-blue-700 text-left font-medium hover:underline" title={r.Description} onClick={() => openRule(r)}>{r.ConfigRuleName}</button></td>
-          <td>{r.category}</td><td className="max-w-48 break-words">{r.Source?.SourceIdentifier}<div className="text-slate-400 text-[10px]">{r.Source?.Owner}</div></td>
-          <td>{r.Scope?.ComplianceResourceTypes?.join(", ") || "Not scoped by type"}</td><td>{r.trigger}</td>
-          <td>{r.EvaluationModes?.map((m: any) => m.Mode).join(", ") || "Not reported"}</td>
-          <td>{r.count == null ? "--" : `${r.count}${r.capped ? "+" : ""}`}</td><td className="whitespace-nowrap">{date(r.health.LastSuccessfulEvaluationTime)}</td>
-          <td>{r.warning ? <span className="text-amber-800" title={r.health.LastErrorMessage}>Recent failure</span> : "--"}</td>
-        </tr>)}</tbody></table>
-        {!filtered.length && !query.isFetching && <p className="p-8 text-center text-slate-500">{!hasEvidence ? "Inventory unavailable" : "No matching controls"}</p>}</div>
-        <footer className="p-3 border-t text-xs text-slate-500">{hasEvidence ? `${filtered.length} of ${rules.length}` : "No current"} {allAccounts ? "account/control checks" : "controls"} - "+" is a capped provider count, not an exact total.{snapshot?.partial ? " Partial scope." : ""}</footer>
+        <div className="table-scroll" role="region" aria-label="Scrollable controls table" tabIndex={0}>
+          <table><thead><tr>{["Status", ...(allAccounts ? ["Account"] : []), "Control", "Category", "AWS rule", "Scope", "Trigger", "Mode", "Non-compliant", "Last evaluated", "Health"].map((x) => <th scope="col" key={x}>{x}</th>)}</tr></thead>
+            <tbody>{filtered.map((r) => <tr key={r.id}><td><Status value={r.status} /></td>{allAccounts && <td><span className="account-tag">{r.accountAlias}</span></td>}
+              <td><button className="control-link" title={r.Description} onClick={() => openRule(r)}>{r.ConfigRuleName}<Icon name="chevron" size={14} /></button></td>
+              <td><span className="category-cell"><Icon name={categoryIcon[r.category]} size={15} />{r.category}</span></td>
+              <td className="aws-rule">{r.Source?.SourceIdentifier}<small className="muted">{r.Source?.Owner}</small></td>
+              <td className="scope-cell">{r.Scope?.ComplianceResourceTypes?.join(", ") || "Not scoped by type"}</td><td>{r.trigger}</td>
+              <td>{r.EvaluationModes?.map((m: any) => m.Mode).join(", ") || "Not reported"}</td>
+              <td className="numeric">{r.count == null ? "--" : `${r.count}${r.capped ? "+" : ""}`}</td><td className="timestamp">{date(r.health.LastSuccessfulEvaluationTime)}</td>
+              <td>{r.warning ? <span className="warning-text" title={r.health.LastErrorMessage}>Recent failure</span> : "--"}</td>
+            </tr>)}</tbody>
+          </table>
+          {!filtered.length && !query.isFetching && <p className="empty-state"><Icon name="search" size={28} />{!hasEvidence ? "Inventory unavailable" : "No matching controls"}</p>}
+        </div>
+        <footer className="table-footer">{hasEvidence ? `${filtered.length} of ${rules.length}` : "No current"} {allAccounts ? "account/control checks" : "controls"} · "+" is a capped provider count, not an exact total.{snapshot?.partial ? " Partial scope." : ""}</footer>
       </section>
+      <p className="page-footer"><Icon name="shield" size={14} />Explore evidence only. No evaluation triggers or remediation actions.</p>
     </main>
     <Sheet open={Boolean(selected)} onOpenChange={(open) => { if (!open) closeDetail(); }} title={selected ? `${selected.accountAlias ? selected.accountAlias + " / " : ""}${selected.ConfigRuleName}` : "Control"}>
-      {selected && <div className="detail"><h3>Overview</h3><p className="text-sm mb-4">{selected.Description || "No description reported"}</p>
-        <Fields value={{ ...(selected.accountAlias ? {Account: selected.accountAlias} : {}), Compliance: selected.status,
+      {selected && <div className="detail"><div className="detail-status"><Status value={selected.status} /></div><h3>Overview</h3><p>{selected.Description || "No description reported"}</p>
+        <Fields value={{ ...(selected.accountAlias ? { Account: selected.accountAlias } : {}), Compliance: selected.status,
           [selected.accountAlias ? "Console key" : "Rule ID"]: selected.ConfigRuleId,
           Owner: selected.Source?.Owner, "AWS rule": selected.Source?.SourceIdentifier, State: selected.ConfigRuleState,
           Scope: selected.Scope, Category: classify(selected, observed[selected.id] || []), Trigger: selected.trigger,
           Frequency: frequency(selected), Mode: selected.EvaluationModes, Visibility: selected.RuleEvaluationVisibility, Creator: selected.CreatedBy }} />
         <h3>Input parameters</h3><pre>{(() => { try { return JSON.stringify(JSON.parse(selected.InputParameters || "{}"), null, 2); } catch { return selected.InputParameters; } })()}</pre>
-        <h3>Affected resources - NON_COMPLIANT</h3><p className="text-xs text-slate-500 mb-3">Fetched only on opening this control. Empty results do not override the inventory compliance state.{allAccounts ? " Resource identifiers are shown as account-scoped aliases." : ""}</p>
-        {loading && <p role="status">Reading resource page...</p>}{detailError && <p role="alert" className="text-red-700">{detailError}</p>}
-        {resources.map((r, i) => <div className="border rounded p-3 mb-3" key={`${r.ResourceId}-${i}`}><Fields value={r} /></div>)}
+        <h3><Icon name="layers" />Affected resources · NON_COMPLIANT</h3><p className="muted">Fetched only on opening this control. Empty results do not override the inventory compliance state.{allAccounts ? " Resource identifiers are shown as account-scoped aliases." : ""}</p>
+        {loading && <p role="status">Reading resource page...</p>}{detailError && <p role="alert" className="danger-text">{detailError}</p>}
+        {resources.map((r, i) => <div className="resource-card" key={`${r.ResourceId}-${i}`}><Fields value={r} /></div>)}
         {!loading && !detailError && !resources.length && <p>No non-compliant resource evaluations returned.</p>}
-        {token && <Button onClick={loadMore} disabled={loading}>Load more resources</Button>}
-        <h3>Evaluation health</h3><Fields value={Object.fromEntries(["FirstActivatedTime", "LastSuccessfulInvocationTime", "LastFailedInvocationTime", "LastSuccessfulEvaluationTime", "LastFailedEvaluationTime", "LastErrorCode", "LastErrorMessage"].map((key) => [key, selected.health[key]]))} />
-        <p className="mt-4 text-xs text-slate-500">Latest provider timestamps only; this is not historical timeline data.</p>
+        {token && <Button onClick={loadMore} disabled={loading}><Icon name="layers" />Load more resources</Button>}
+        <h3><Icon name="clock" />Evaluation health</h3><Fields value={Object.fromEntries(["FirstActivatedTime", "LastSuccessfulInvocationTime", "LastFailedInvocationTime", "LastSuccessfulEvaluationTime", "LastFailedEvaluationTime", "LastErrorCode", "LastErrorMessage"].map((key) => [key, selected.health[key]]))} />
+        <p className="muted">Latest provider timestamps only; this is not historical timeline data.</p>
       </div>}
     </Sheet>
   </div>;
