@@ -1,4 +1,5 @@
 import http from "node:http";
+import { randomUUID } from "node:crypto";
 import { readFile } from "node:fs/promises";
 import { fileURLToPath } from "node:url";
 import path from "node:path";
@@ -6,10 +7,47 @@ import { createProvider } from "./provider.mjs";
 import { fixtureRead } from "./fixtures.mjs";
 import { createMultiAccountProvider, fourAccountFixtureRead } from "./multi-account.mjs";
 import { createOrgAggregatorProvider } from "./org-aggregator.mjs";
+import { createHistoryStore, createMemoryHistoryStore } from "./history.mjs";
+import { createDemoAdmin, CONTROLS as DEMO_CONTROLS } from "./demo-admin.mjs";
 const root = path.dirname(fileURLToPath(import.meta.url));
-export function createServer(provider, { fixture = false } = {}) {
+export function createServer(provider, { fixture = false, historyStore = createMemoryHistoryStore(), demoAdmin = null } = {}) {
   const environments = provider.environments || ["DEV", "PROD"];
   const allAccounts = provider.allAccounts === true;
+  const confirmations = new Map();
+  const readBody = async (req) => {
+    const chunks = [];
+    let size = 0;
+    for await (const chunk of req) {
+      size += chunk.length;
+      if (size > 8192) throw Error("request body too large");
+      chunks.push(chunk);
+    }
+    const value = JSON.parse(Buffer.concat(chunks).toString("utf8") || "{}");
+    if (!value || typeof value !== "object" || Array.isArray(value)) throw Error("invalid request body");
+    return value;
+  };
+  const previewDemo = async (control) => {
+    if (!demoAdmin || !DEMO_CONTROLS.includes(control)) throw Error("demo control unavailable");
+    const snapshot = await provider.list("ALL", true);
+    if (snapshot.partial || snapshot.availableAccounts !== 4 || snapshot.totalAccounts !== 4)
+      throw Error("all four LAB accounts must be readable before demo re-arm");
+    const rows = snapshot.rules.filter((rule) => rule.ConfigRuleName === control);
+    const aliases = rows.map((rule) => rule.accountAlias).sort();
+    const expected = [...environments].sort();
+    if (rows.length !== 4 || JSON.stringify(aliases) !== JSON.stringify(expected))
+      throw Error("four-account control evidence is incomplete");
+    const token = randomUUID();
+    confirmations.set(token, { control, expiresAt: Date.now() + 120000 });
+    return {
+      control,
+      confirmationToken: token,
+      aliases: environments,
+      current: rows.map((rule) => ({ alias: rule.accountAlias, status: rule.status })),
+      targetState: "NON_COMPLIANT",
+      resourceCount: 4,
+      note: "Exactly one retained Issue #82 demo resource per registered LAB account.",
+    };
+  };
   return http.createServer(async (req, res) => {
     const port = req.socket.localPort;
     const hosts = [`127.0.0.1:${port}`, `localhost:${port}`];
@@ -30,7 +68,6 @@ export function createServer(provider, { fixture = false } = {}) {
       req.headers["sec-fetch-site"] === "cross-site"
     )
       return json(403, { error: "Local same-origin access only" });
-    if (req.method !== "GET") return json(405, { error: "Read-only console" });
     let url;
     try {
       url = new URL(req.url, `http://${req.headers.host}`);
@@ -38,26 +75,47 @@ export function createServer(provider, { fixture = false } = {}) {
       return json(400, { error: "Invalid URL" });
     }
     try {
+      if (req.method === "POST" && url.pathname === "/api/demo/preview") {
+        if (!demoAdmin || fixture) return json(403, { error: "Demo controls unavailable" });
+        const body = await readBody(req);
+        return json(200, await previewDemo(body.control));
+      }
+      if (req.method === "POST" && url.pathname === "/api/demo/rearm") {
+        if (!demoAdmin || fixture) return json(403, { error: "Demo controls unavailable" });
+        const body = await readBody(req);
+        const item = confirmations.get(body.confirmationToken);
+        confirmations.delete(body.confirmationToken);
+        if (!item || item.control !== body.control || item.expiresAt < Date.now())
+          return json(409, { error: "Demo confirmation expired or mismatched" });
+        return json(200, await demoAdmin.prepare(item.control));
+      }
+      if (req.method !== "GET") return json(405, { error: "Unsupported method" });
       if (url.pathname === "/api/health")
         return json(200, {
           mode: fixture ? "SYNTHETIC" : "AWS_READ_ONLY",
           region: "ap-southeast-1",
           environments,
           allAccounts,
+          demoControls: Boolean(demoAdmin && !fixture),
         });
+      if (url.pathname === "/api/history") {
+        const limit = Math.max(1, Math.min(365, Number(url.searchParams.get("limit")) || 60));
+        return json(200, { snapshots: await historyStore.list(limit) });
+      }
       if (url.pathname.startsWith("/api/")) {
         const environment = url.searchParams.get("environment");
         const aggregate = allAccounts && environment === "ALL" && url.pathname === "/api/controls";
         if (!aggregate && !environments.includes(environment))
           return json(400, { error: "Choose one configured account; All Accounts is inventory-only" });
-        if (url.pathname === "/api/controls")
-          return json(
-            200,
-            await provider.list(
-              environment,
-              url.searchParams.get("refresh") === "1",
-            ),
+        if (url.pathname === "/api/controls") {
+          const snapshot = await provider.list(
+            environment,
+            url.searchParams.get("refresh") === "1",
           );
+          if (environment === "ALL" && snapshot.available !== false && !snapshot.partial)
+            await historyStore.record(snapshot);
+          return json(200, snapshot);
+        }
         if (url.pathname === "/api/resources") {
           const name = url.searchParams.get("rule"),
             token = url.searchParams.get("token");
@@ -115,7 +173,9 @@ if (
   const provider = orgAggregator ? createOrgAggregatorProvider()
     : fourAccountFixture ? createMultiAccountProvider(fourAccountFixtureRead)
       : createProvider(legacyFixture ? fixtureRead : undefined);
-  const server = createServer(provider, { fixture });
+  const historyStore = orgAggregator ? createHistoryStore() : createMemoryHistoryStore();
+  const demoAdmin = orgAggregator ? createDemoAdmin() : null;
+  const server = createServer(provider, { fixture, historyStore, demoAdmin });
   server.on("error", () => {
     console.error("Listener unavailable; no existing process was stopped.");
     process.exitCode = 1;
