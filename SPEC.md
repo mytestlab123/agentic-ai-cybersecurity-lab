@@ -30,6 +30,23 @@ deterministic read-only tools backed by synthetic fixtures.
 - No real identifiers or private data.
 - Human review is required before widening beyond Issue 1.
 
+## Issue #83 hosted personal-LAB execution authority
+
+For the active hosted Config Console and directly related SecCop demo work, Amit approved continuous execution without repeated permission prompts.
+
+Allowed inside the active bounded milestone:
+- personal-LAB read-only Config inventory, aggregate compliance and affected-resource detail;
+- minimal IAM expansion limited to read-only Config actions needed by the approved console;
+- build/test/deploy of the Config Console;
+- named demo DNS/TLS/authenticated reverse-proxy work;
+- service reload/restart required for deployment;
+- UI polish, dashboards, aggregation, saved local display preferences and cross-navigation;
+- existing bounded demo re-arm paths already defined by SecCop.
+
+This authority does not include terminate, destructive deletion, secrets publication, production/company resources, generic AWS mutation, or unrelated IAM expansion.
+
+The retained demo host stays running unless Amit explicitly requests a cost-saving shutdown. Do not repeatedly ask for stop approval during active demo work.
+
 ## Current SecCop DEV authority
 
 SecCop is now a working real-AWS MVP. Repo-owned disposable SecCop DEV
