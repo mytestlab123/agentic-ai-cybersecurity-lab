@@ -142,6 +142,35 @@ pre { white-space: pre-wrap; overflow-wrap: anywhere; background: var(--subtle);
 .resource-card { border: 1px solid var(--line); border-radius: 8px; padding: 3px 14px; margin: 12px 0; background: var(--subtle); }
 
 
+/* Issue #87 unified dashboard */
+.domain-grid { display:grid; grid-template-columns:repeat(auto-fit,minmax(170px,1fr)); gap:10px; }
+.domain-card { display:grid; gap:4px; padding:12px; border:1px solid var(--line); border-radius:9px; background:var(--subtle); }
+.domain-card > span { color:var(--muted); font-size:9px; text-transform:uppercase; letter-spacing:.06em; }
+.domain-card > b { font-size:16px; }
+.domain-card > small { color:var(--muted); font-size:10px; line-height:1.45; }
+.demo-panel { display:grid; gap:14px; }
+.demo-scope { display:grid; grid-template-columns:auto 1fr; gap:12px; padding:13px; border:1px solid var(--line); border-radius:10px; background:var(--accent-soft); }
+.demo-scope > div { display:grid; gap:3px; }
+.demo-scope span,.demo-scope small { color:var(--muted); font-size:10px; line-height:1.45; }
+.demo-control-card { display:flex; align-items:center; justify-content:space-between; gap:16px; padding:14px; border:1px solid var(--line); border-radius:10px; background:var(--surface); }
+.demo-control-card > div { display:grid; gap:4px; }
+.demo-control-card span,.demo-control-card small { color:var(--muted); font-size:10px; }
+.demo-confirm { border:1px solid var(--warning); background:var(--warning-soft); border-radius:10px; padding:14px; }
+.demo-confirm h3 { margin:5px 0 8px; }
+.demo-confirm p { font-size:11px; line-height:1.5; }
+.demo-state-grid { display:grid; grid-template-columns:repeat(4,minmax(0,1fr)); gap:7px; margin:12px 0; }
+.demo-state-grid span { display:grid; gap:2px; padding:8px; border:1px solid var(--line); border-radius:7px; background:var(--surface); }
+.demo-state-grid small { color:var(--muted); font-size:9px; }
+.demo-actions { display:flex; justify-content:flex-end; gap:8px; margin-top:12px; }
+.notice.good { border-color:var(--good); color:var(--good); background:var(--good-soft); }
+.notice.good > div { display:grid; gap:2px; }
+@media (max-width:700px) {
+  .demo-control-card { align-items:stretch; flex-direction:column; }
+  .demo-state-grid { grid-template-columns:1fr 1fr; }
+  .demo-actions { flex-direction:column-reverse; }
+  .demo-actions .ui-button { width:100%; }
+}
+
 /* Issue #85 dashboard polish */
 .trend-strip { display:grid; grid-template-columns:minmax(220px,1.2fr) repeat(3,minmax(150px,1fr)); gap:10px; align-items:stretch; margin:0 0 18px; }
 .trend-intro,.trend-item { border:1px solid var(--line); background:var(--surface); border-radius:10px; padding:12px 14px; }

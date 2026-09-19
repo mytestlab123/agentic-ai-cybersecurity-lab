@@ -87,7 +87,9 @@ try {
   await theme(page, "light");
   assert.equal(await page.getByLabel("Account", { exact: true }).locator("option").count(), 5);
   assert.equal(await page.getByLabel("Executive summary", { exact: true }).locator(":scope > div").count(), 4);
-  assert.equal(await page.getByRole("link", { name: /Admin Control Center/ }).getAttribute("href"), "https://ops.astromedicomp.org/");
+  assert.equal(await page.getByRole("link", { name: /Admin Control Center/ }).count(), 0);
+  assert.equal(await page.getByRole("link", { name: "Compliance Agent", exact: true }).getAttribute("href"), "https://sec.astromedicomp.org/");
+  assert.equal(await page.getByRole("button", { name: /Demo controls/ }).count(), 0);
   assert.equal((await page.locator("body").innerText()).includes("Singapore"), false);
   assert.equal((await page.locator("body").innerText()).includes("ap-southeast-1"), false);
   await page.getByRole("button", { name: "Security", exact: true }).click();
@@ -96,8 +98,8 @@ try {
   await page.getByText("Control risk by account coverage").waitFor();
   await page.getByRole("button", { name: "Management", exact: true }).click();
   await page.getByText("Compliance coverage").waitFor();
-  await page.getByLabel("Browser session changes", { exact: true }).waitFor();
-  assert.ok((await page.getByLabel("Browser session changes", { exact: true }).innerText()).includes("not historical AWS trend data"));
+  await page.getByLabel("Historical changes", { exact: true }).waitFor();
+  assert.ok((await page.getByLabel("Historical changes", { exact: true }).innerText()).includes("Persisted sanitized server history"));
   const heatmap = page.getByLabel("Account control heatmap", { exact: true });
   await heatmap.waitFor();
   assert.ok(await heatmap.locator(".heatmap-cell").count() > 0);
@@ -220,7 +222,7 @@ try {
   assert.ok(requests.every((request) => request.method === "GET"));
   assert.ok(calls.every((call) => /^(describe-|get-compliance-details)/.test(call.operation)));
   console.log(JSON.stringify({ result: "PASS", mode: "SYNTHETIC", viewports: [1600, 390, 320],
-    checks: ["icons", "saved dashboard", "session-only trend labels", "account/control heatmap", "sticky table header", "quick compliance filters", "admin navigation", "no visible region text", "light/dark contrast", "Enter/Space", "saved reload", "denied storage", "no theme API calls", "account switch", "filters/sort", "lazy details/pagination", "partial/all failures/recovery", "mobile navigation", "drawer focus restoration", "no page overflow", "no external requests"],
+    checks: ["icons", "saved dashboard", "persisted history labels", "account/control heatmap", "sticky table header", "quick compliance filters", "single dashboard navigation", "no visible region text", "light/dark contrast", "Enter/Space", "saved reload", "denied storage", "no theme API calls", "account switch", "filters/sort", "lazy details/pagination", "partial/all failures/recovery", "mobile navigation", "drawer focus restoration", "no page overflow", "no external requests"],
     awsCalls: 0, pageErrors: errors.length, screenshots: screenshotDir ? 4 : 0 }));
 } finally {
   await browser?.close();

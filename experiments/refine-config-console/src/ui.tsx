@@ -36,8 +36,10 @@ export function ThemeToggle() {
     <span className="theme-state" aria-hidden="true">{dark ? "On" : "Off"}</span>
   </Button>;
 }
-export function Sheet({ open, onOpenChange, title, children }: {
+export function Sheet({ open, onOpenChange, title, children, eyebrow = "Control details",
+  description = "Read-only AWS Config evidence. No remediation action is available.", closeLabel = "Close details" }: {
   open: boolean; onOpenChange: (value: boolean) => void; title: string; children: ReactNode;
+  eyebrow?: string; description?: string; closeLabel?: string;
 }) {
   const previousFocus = useRef<HTMLElement | null>(null);
   return <Dialog.Root open={open} onOpenChange={onOpenChange}>
@@ -51,14 +53,14 @@ export function Sheet({ open, onOpenChange, title, children }: {
           target?.focus({ preventScroll: true });
         }}>
         <header className="sheet-header">
-          <div><div className="eyebrow">Control details</div>
+          <div><div className="eyebrow">{eyebrow}</div>
             <Dialog.Title className="sheet-title">{title}</Dialog.Title></div>
-          <Dialog.Close asChild><Button variant="outline" aria-label="Close details">
+          <Dialog.Close asChild><Button variant="outline" aria-label={closeLabel}>
             <Icon name="close" /><span>Close</span>
           </Button></Dialog.Close>
         </header>
         <Dialog.Description className="muted sheet-description">
-          Read-only AWS Config evidence. No remediation action is available.
+          {description}
         </Dialog.Description>
         {children}
       </Dialog.Content>
