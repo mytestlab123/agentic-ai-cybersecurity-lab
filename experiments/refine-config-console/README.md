@@ -4,6 +4,25 @@ Isolated, deletable **Refine + shadcn/ui** control explorer. One row is one
 AWS Config rule; affected resources load only when its detail drawer opens.
 This does not replace or change the existing SecCop server on port 2222.
 
+## Current hosted mode
+
+The active hosted surface is `config.astromedicomp.org`. Config evidence remains
+read-only, with one separate personal-LAB-only **Demo controls** drawer for the
+two bounded four-account re-arm families.
+
+Hosted reverse proxy requirements:
+
+- ordinary Config UI/API reads may use a 60-second upstream read timeout;
+- exact `POST /api/demo/rearm` must allow up to **360 seconds** because the fixed
+  CodeBuild four-account PREPARE run can exceed 60 seconds;
+- keep that longer timeout scoped to the exact re-arm route, not the whole console;
+- HTML gateway/proxy errors must not be interpreted as JSON by the browser;
+- the backend still validates exactly four aliases and the exact retained Issue #82
+  demo resources before reporting success.
+
+The former `ops.astromedicomp.org` product surface is retired and redirects to
+Config Dashboard. The separate Compliance Agent remains at `sec.astromedicomp.org`.
+
 ## Run
 
 On the shared host, read `~/.codex/port.md` before configuring or starting a
@@ -46,9 +65,12 @@ Do not run synthetic and live listeners on the same port or repurpose port 2222.
 - React/Refine `useOne` and the read-only data provider load a complete inventory
   snapshot. shadcn Button/Sheet are local adapted Radix compositions; see
   [NOTICE.md](NOTICE.md). Tailwind styles and dependencies stay here.
-- Loopback-only Node HTTP backend, same-origin/Host checks, GET-only API,
-  no CORS, no telemetry, no credentials or provider dumps written to disk.
-  This is a trusted-local-operator POC, not a multi-user authenticated service.
+- Loopback-only Node HTTP backend with same-origin/Host checks and no CORS.
+  Config evidence APIs are read-only. The only POST mutation extension is the
+  separately bounded personal-LAB Demo controls PREVIEW/REARM flow for the exact
+  four-account retained resources. No credentials or provider dumps are written
+  to disk. This is a trusted-local-operator demo, not a generic multi-user AWS
+  administration service.
 - Initial load / explicit Refresh reads all pages of `DescribeConfigRules`,
   `DescribeComplianceByConfigRule`, `DescribeConfigRuleEvaluationStatus`, and
   `DescribeConfigurationRecorderStatus`. A 30-second per-environment process
