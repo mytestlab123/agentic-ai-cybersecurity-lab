@@ -17,7 +17,8 @@ type Snapshot = {
   availableAccounts?: number; totalAccounts?: number; accounts?: AccountStatus[];
 };
 type Resource = Record<string, string>;
-const FOUR_ACCOUNTS = ["ACCOUNT_A", "ACCOUNT_B", "ACCOUNT_C", "ACCOUNT_D"];
+const SYNTHETIC_ACCOUNTS = ["ACCOUNT_A", "ACCOUNT_B", "ACCOUNT_C", "ACCOUNT_D"];
+const LAB_ACCOUNTS = ["lab-dev", "lab-poc", "lab-qa", "lab-sec"];
 async function request(url: string) {
   const response = await fetch(url, { cache: "no-store" });
   const body = await response.json();
@@ -62,7 +63,9 @@ function App() {
   useEffect(() => {
     let cancelled = false;
     request("/api/health").then((health) => {
-      const aliases = health.allAccounts === true ? FOUR_ACCOUNTS : ["DEV", "PROD"];
+      const aliases = health.allAccounts === true
+        ? (health.mode === "SYNTHETIC" ? SYNTHETIC_ACCOUNTS : LAB_ACCOUNTS)
+        : ["DEV", "PROD"];
       if (health.region !== "ap-southeast-1" || !["SYNTHETIC", "AWS_READ_ONLY"].includes(health.mode) ||
           !Array.isArray(health.environments) || health.environments.length !== aliases.length ||
           !aliases.every((alias) => health.environments.filter((x: string) => x === alias).length === 1))
