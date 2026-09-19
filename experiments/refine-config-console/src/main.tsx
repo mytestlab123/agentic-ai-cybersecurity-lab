@@ -48,6 +48,7 @@ function App() {
     [allAccounts, setAllAccounts] = useState(false), [category, setCategory] = useState("All Controls"),
     [search, setSearch] = useState(""), [status, setStatus] = useState("ALL"), [sort, setSort] = useState("status"),
     [descending, setDescending] = useState(false), [refresh, setRefresh] = useState(0);
+  const [previousMetrics, setPreviousMetrics] = useState<{ compliant: number; noncompliant: number; affected: number; fetchedAt: string | null } | null>(null);
   const [selected, setSelected] = useState<Rule | null>(null), [resources, setResources] = useState<Resource[]>([]),
     [token, setToken] = useState<string | undefined>(), [detailError, setDetailError] = useState(""),
     [detailNotice, setDetailNotice] = useState(""), [loading, setLoading] = useState(false),
@@ -121,7 +122,9 @@ function App() {
   }, [environment, selected]);
   const rules: Rule[] = (hasEvidence ? snapshot?.rules || [] : []).map((r) => ({ ...r, category: classify(r, observed[r.id] || []) }));
   const filtered = rules.filter((r) => (category === "All Controls" || r.category === category) &&
-    (status === "ALL" || r.status === status) &&
+    (status === "ALL" || (status === "ATTENTION"
+      ? ["INSUFFICIENT_DATA", "NOT_REPORTED"].includes(r.status) || r.warning
+      : r.status === status)) &&
     `${r.accountAlias || ""} ${r.ConfigRuleName} ${r.Source?.SourceIdentifier} ${r.Description || ""}`.toLowerCase().includes(search.toLowerCase()));
   const ranks: Record<string, number> = { NON_COMPLIANT: 0, INSUFFICIENT_DATA: 1, NOT_REPORTED: 2, COMPLIANT: 3, NOT_APPLICABLE: 4 };
   filtered.sort((a, b) => {
@@ -173,6 +176,40 @@ function App() {
       compliant: group.filter((r) => r.status === "COMPLIANT").length,
       noncompliant: group.filter((r) => r.status === "NON_COMPLIANT").length };
   });
+  const heatmapRows = controlGroups.map((group: any) => ({
+    name: group.name,
+    cells: environments.map((alias) => {
+      const rule = rules.find((item) => item.accountAlias === alias && item.ConfigRuleName === group.name);
+      const account = accountGroups.find((item) => item.alias === alias);
+      return { alias, available: account?.available !== false, status: rule?.status || "UNAVAILABLE" };
+    }),
+  }));
+  useEffect(() => {
+    if (!hasEvidence || environment !== "ALL" || snapshot?.partial || !snapshot?.fetchedAt) return;
+    const current = { compliant, noncompliant, affected: affectedResources, fetchedAt: snapshot.fetchedAt };
+    try {
+      const key = "seccop-config-session-metrics";
+      const raw = sessionStorage.getItem(key);
+      const prior = raw ? JSON.parse(raw) : null;
+      if (prior && prior.fetchedAt !== current.fetchedAt) setPreviousMetrics(prior);
+      sessionStorage.setItem(key, JSON.stringify(current));
+    } catch { setPreviousMetrics(null); }
+  }, [environment, snapshot?.fetchedAt, snapshot?.partial, hasEvidence, compliant, noncompliant, affectedResources]);
+  const trend = (current: number, previous: number | undefined, inverse = false) => {
+    if (previous === undefined) return { text: "Baseline captured", kind: "neutral" };
+    const delta = current - previous;
+    if (delta === 0) return { text: "No change", kind: "neutral" };
+    const good = inverse ? delta < 0 : delta > 0;
+    return { text: (delta > 0 ? "+" : "") + delta + " since last refresh", kind: good ? "good" : "danger" };
+  };
+  const trends = [
+    { label: "Compliant checks", value: compliant, ...trend(compliant, previousMetrics?.compliant) },
+    { label: "Non-compliant checks", value: noncompliant, ...trend(noncompliant, previousMetrics?.noncompliant, true) },
+    { label: "Affected resources", value: affectedResources, ...trend(affectedResources, previousMetrics?.affected, true) },
+  ];
+  const openHeatmapCell = (alias: string, control: string) => {
+    changeEnvironment(alias); setCategory("All Controls"); setStatus("ALL"); setSearch(control); setSection("controls");
+  };
   return <div className="app-shell">
     <a href="#main-content" className="skip-link">Skip to controls</a>
     <aside className="sidebar">
@@ -242,6 +279,10 @@ function App() {
             <strong className="summary-count">{hasEvidence ? count : "--"}</strong>
             <small>{snapshot?.partial ? "Available accounts only" : label === "Compliance" ? compliant + " compliant / " + noncompliant + " non-compliant" : "Current inventory snapshot"}</small>
           </div>)}</section>
+        {environment === "ALL" && !snapshot?.partial && <section className="trend-strip" aria-label="Browser session changes">
+          <div className="trend-intro"><span className="eyebrow">Since previous full refresh</span><small>Browser session comparison only · not historical AWS trend data</small></div>
+          {trends.map((item) => <div key={item.label} className="trend-item"><span>{item.label}</span><b>{item.value}</b><small className={"trend-chip " + item.kind}>{item.text}</small></div>)}
+        </section>}
         {dashboard === "management" && <section className="dashboard-grid">
           <article className="insight-card hero-card">
             <div className="card-heading"><div><span className="eyebrow">Overall posture</span><h2>Compliance coverage</h2></div><span className="status-chip good">{compliancePct}% compliant</span></div>
@@ -264,9 +305,27 @@ function App() {
           <article className="insight-card wide-card">
             <div className="card-heading"><div><span className="eyebrow">Fleet</span><h2>Accounts needing attention</h2></div><span className="big-number">{accountsAtRisk}/{environments.length}</span></div>
             <div className="fleet-strip">{accountGroups.map((a) => <button key={a.alias} className="fleet-pill" onClick={() => { changeEnvironment(a.alias); setSection("controls"); }}>
-              <span className={`fleet-state ${!a.available ? "warning" : a.noncompliant ? "danger" : "good"}`} />
+              <span className={"fleet-state " + (!a.available ? "warning" : a.noncompliant ? "danger" : "good")} />
               <b>{a.alias}</b><small>{!a.available ? "Unavailable" : a.noncompliant ? a.noncompliant + " issue" + (a.noncompliant===1?"":"s") : "Compliant"}</small>
             </button>)}</div>
+          </article>
+          <article className="insight-card wide-card heatmap-card">
+            <div className="card-heading"><div><span className="eyebrow">Control × account</span><h2>Compliance heatmap</h2></div><span className="muted">Select a cell to investigate</span></div>
+            <div className="heatmap-scroll" role="region" aria-label="Account control heatmap" tabIndex={0}>
+              <div className="heatmap" style={{ gridTemplateColumns: "minmax(220px,1.4fr) repeat(" + Math.max(environments.length,1) + ",minmax(105px,1fr))" }}>
+                <div className="heatmap-head">Control</div>{environments.map((alias) => <div className="heatmap-head" key={alias}>{alias}</div>)}
+                {heatmapRows.flatMap((row:any) => [
+                  <div className="heatmap-control" key={row.name+"-label"} title={row.name}>{row.name}</div>,
+                  ...row.cells.map((cell:any) => {
+                    const kind = !cell.available || cell.status === "UNAVAILABLE" ? "unavailable" : cell.status === "COMPLIANT" ? "good" : cell.status === "NON_COMPLIANT" ? "danger" : "warning";
+                    return <button key={row.name+"-"+cell.alias} className={"heatmap-cell " + kind} onClick={() => openHeatmapCell(cell.alias,row.name)} aria-label={[cell.alias,row.name,cell.status].join(" ")}>
+                      <span>{cell.status === "COMPLIANT" ? "Compliant" : cell.status === "NON_COMPLIANT" ? "Non-compliant" : cell.status.replaceAll("_"," ")}</span>
+                    </button>;
+                  }),
+                ])}
+              </div>
+            </div>
+            <div className="heatmap-legend"><span><i className="dot good-dot"/>Compliant</span><span><i className="dot danger-dot"/>Non-compliant</span><span><i className="dot warning-dot"/>Attention</span><span><i className="dot neutral-dot"/>Unavailable</span></div>
           </article>
         </section>}
         {dashboard === "security" && <section className="dashboard-grid">
@@ -310,10 +369,16 @@ function App() {
       </details>
       <section className={`table-panel ${section === "controls" ? "" : "section-secondary"}`} aria-label="Control inventory">
         <div className="table-heading"><h2>{category}</h2><span className="muted">{hasEvidence ? filtered.length : "--"} shown</span></div>
+        <div className="quick-filters" aria-label="Quick compliance filters">
+          <span className="muted">Quick view</span>
+          <button aria-pressed={status === "ALL"} onClick={() => setStatus("ALL")}>All <b>{rules.length}</b></button>
+          <button aria-pressed={status === "NON_COMPLIANT"} onClick={() => setStatus("NON_COMPLIANT")}>Non-compliant <b>{noncompliant}</b></button>
+          <button aria-pressed={status === "ATTENTION"} onClick={() => setStatus("ATTENTION")}>Attention <b>{attention}</b></button>
+        </div>
         <div className="table-toolbar">
           <label className="search-field"><Icon name="search" /><input aria-label="Search controls" placeholder={allAccounts ? "Search account, control or AWS rule" : "Search controls and AWS rules"} value={search} onChange={(e) => setSearch(e.target.value)} /></label>
           <label className="filter-field"><Icon name="filter" /><select aria-label="Compliance filter" value={status} onChange={(e) => setStatus(e.target.value)}>
-            {["ALL", "NON_COMPLIANT", "COMPLIANT", "INSUFFICIENT_DATA", "NOT_APPLICABLE", "NOT_REPORTED"].map((x) => <option key={x} value={x}>{x === "ALL" ? "All statuses" : x.replaceAll("_", " ")}</option>)}
+            {["ALL", "NON_COMPLIANT", "ATTENTION", "COMPLIANT", "INSUFFICIENT_DATA", "NOT_APPLICABLE", "NOT_REPORTED"].map((x) => <option key={x} value={x}>{x === "ALL" ? "All statuses" : x === "ATTENTION" ? "Attention / evaluation issues" : x.replaceAll("_", " ")}</option>)}
           </select></label>
           <select aria-label="Sort controls" value={sort} onChange={(e) => setSort(e.target.value)}>
             <option value="status">Compliance priority</option><option value="count">Affected resources</option><option value="name">Control</option>{allAccounts && <option value="account">Account</option>}<option value="time">Last evaluated</option>
