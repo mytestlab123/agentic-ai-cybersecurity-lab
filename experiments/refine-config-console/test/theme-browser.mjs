@@ -96,6 +96,24 @@ try {
   await page.getByText("Control risk by account coverage").waitFor();
   await page.getByRole("button", { name: "Management", exact: true }).click();
   await page.getByText("Compliance coverage").waitFor();
+  await page.getByLabel("Browser session changes", { exact: true }).waitFor();
+  assert.ok((await page.getByLabel("Browser session changes", { exact: true }).innerText()).includes("not historical AWS trend data"));
+  const heatmap = page.getByLabel("Account control heatmap", { exact: true });
+  await heatmap.waitFor();
+  assert.ok(await heatmap.locator(".heatmap-cell").count() > 0);
+  assert.equal(await page.locator("thead th").first().evaluate((node) => getComputedStyle(node).position), "sticky");
+  const quick = page.getByLabel("Quick compliance filters", { exact: true });
+  await quick.getByRole("button", { name: /Non-compliant/ }).click();
+  assert.ok(await page.locator("tbody tr").count() > 0);
+  assert.ok((await page.locator("tbody").innerText()).includes("NON COMPLIANT"));
+  await quick.getByRole("button", { name: /All/ }).click();
+  const firstHeatmap = heatmap.locator(".heatmap-cell").first();
+  await firstHeatmap.click();
+  assert.notEqual(await page.getByLabel("Account", { exact: true }).inputValue(), "ALL");
+  assert.notEqual(await page.getByLabel("Search controls").inputValue(), "");
+  await page.getByLabel("Account", { exact: true }).selectOption("ALL");
+  await page.getByLabel("Search controls").fill("");
+  await page.getByRole("button", { name: "Dashboard", exact: true }).click();
   assert.equal(calls.filter((call) => call.operation.startsWith("get-")).length, 0);
   await noPageOverflow(page);
   await contrast(page);
@@ -202,7 +220,7 @@ try {
   assert.ok(requests.every((request) => request.method === "GET"));
   assert.ok(calls.every((call) => /^(describe-|get-compliance-details)/.test(call.operation)));
   console.log(JSON.stringify({ result: "PASS", mode: "SYNTHETIC", viewports: [1600, 390, 320],
-    checks: ["icons", "saved dashboard", "admin navigation", "no visible region text", "light/dark contrast", "Enter/Space", "saved reload", "denied storage", "no theme API calls", "account switch", "filters/sort", "lazy details/pagination", "partial/all failures/recovery", "mobile navigation", "drawer focus restoration", "no page overflow", "no external requests"],
+    checks: ["icons", "saved dashboard", "session-only trend labels", "account/control heatmap", "sticky table header", "quick compliance filters", "admin navigation", "no visible region text", "light/dark contrast", "Enter/Space", "saved reload", "denied storage", "no theme API calls", "account switch", "filters/sort", "lazy details/pagination", "partial/all failures/recovery", "mobile navigation", "drawer focus restoration", "no page overflow", "no external requests"],
     awsCalls: 0, pageErrors: errors.length, screenshots: screenshotDir ? 4 : 0 }));
 } finally {
   await browser?.close();
