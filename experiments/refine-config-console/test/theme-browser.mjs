@@ -90,11 +90,11 @@ try {
   assert.equal(await page.getByRole("link", { name: /Admin Control Center/ }).getAttribute("href"), "https://ops.astromedicomp.org/");
   assert.equal((await page.locator("body").innerText()).includes("Singapore"), false);
   assert.equal((await page.locator("body").innerText()).includes("ap-southeast-1"), false);
-  await page.getByRole("button", { name: /Security/ }).first().click();
+  await page.getByRole("button", { name: "Security", exact: true }).click();
   await page.getByText("Control risk by account coverage").waitFor();
   await page.reload();
   await page.getByText("Control risk by account coverage").waitFor();
-  await page.getByRole("button", { name: /Management/ }).click();
+  await page.getByRole("button", { name: "Management", exact: true }).click();
   await page.getByText("Compliance coverage").waitFor();
   assert.equal(calls.filter((call) => call.operation.startsWith("get-")).length, 0);
   await noPageOverflow(page);
@@ -155,6 +155,7 @@ try {
   await page.getByRole("button", { name: "Refresh", exact: true }).click();
   await rows(page, 18);
   await page.getByRole("alert").filter({ hasText: "3 of 4 accounts available" }).waitFor();
+  await page.getByRole("button", { name: "Dashboard", exact: true }).click();
   assert.ok((await page.getByLabel("Executive summary", { exact: true }).innerText()).includes("Available accounts only"));
   for (const alias of ["ACCOUNT_A", "ACCOUNT_C", "ACCOUNT_D"]) unavailable.add(alias);
   clock += 5000;
