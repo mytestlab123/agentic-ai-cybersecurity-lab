@@ -59,12 +59,12 @@ function App() {
     try {
       const saved = localStorage.getItem("seccop-config-dashboard");
       if (saved === "management" || saved === "security" || saved === "operations") return saved;
-    } catch {}
+    } catch { return "management"; }
     return "management";
   });
   const chooseDashboard = (value: "management" | "security" | "operations") => {
     setDashboard(value); setSection("dashboard");
-    try { localStorage.setItem("seccop-config-dashboard", value); } catch {}
+    try { localStorage.setItem("seccop-config-dashboard", value); } catch { /* Local preference is optional. */ }
   };
   const detailGeneration = useRef(0);
   const { query } = useOne<Snapshot>({ resource: "controls", id: environment || "UNSELECTED", meta: { refresh },
