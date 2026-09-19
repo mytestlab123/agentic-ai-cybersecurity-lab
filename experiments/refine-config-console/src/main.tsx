@@ -50,7 +50,8 @@ function App() {
     [descending, setDescending] = useState(false), [refresh, setRefresh] = useState(0);
   const [selected, setSelected] = useState<Rule | null>(null), [resources, setResources] = useState<Resource[]>([]),
     [token, setToken] = useState<string | undefined>(), [detailError, setDetailError] = useState(""),
-    [loading, setLoading] = useState(false), [observed, setObserved] = useState<Record<string, string[]>>({});
+    [detailNotice, setDetailNotice] = useState(""), [loading, setLoading] = useState(false),
+    [observed, setObserved] = useState<Record<string, string[]>>({});
   const [mode, setMode] = useState("Checking mode");
   const [navigationOpen, setNavigationOpen] = useState(false);
   const detailGeneration = useRef(0);
@@ -77,11 +78,11 @@ function App() {
     return () => { cancelled = true; };
   }, []);
   const closeDetail = () => {
-    detailGeneration.current++; setSelected(null); setResources([]); setToken(undefined); setDetailError("");
+    detailGeneration.current++; setSelected(null); setResources([]); setToken(undefined); setDetailError(""); setDetailNotice("");
   };
   const changeEnvironment = (value: string) => { closeDetail(); setObserved({}); setEnvironment(value); };
   const openRule = (rule: Rule) => {
-    detailGeneration.current++; setResources([]); setToken(undefined); setDetailError(""); setSelected(rule);
+    detailGeneration.current++; setResources([]); setToken(undefined); setDetailError(""); setDetailNotice(""); setSelected(rule);
   };
   // Each drawer binds the selected row's account, never the All Accounts selector.
   useEffect(() => {
@@ -97,7 +98,7 @@ function App() {
         return body;
       }).then((body) => {
         if (controller.signal.aborted || generation !== detailGeneration.current) return;
-        setResources(body.resources); setToken(body.nextToken);
+        setResources(body.resources); setToken(body.nextToken); setDetailNotice(body.message || "");
         setObserved((old) => ({ ...old, [selected.id]: body.resources.map((x: Resource) => x.ResourceType) }));
       }).catch((error) => {
         if (!controller.signal.aborted && generation === detailGeneration.current) setDetailError(error.message);
@@ -243,8 +244,9 @@ function App() {
         <h3>Input parameters</h3><pre>{(() => { try { return JSON.stringify(JSON.parse(selected.InputParameters || "{}"), null, 2); } catch { return selected.InputParameters; } })()}</pre>
         <h3><Icon name="layers" />Affected resources · NON_COMPLIANT</h3><p className="muted">Fetched only on opening this control. Empty results do not override the inventory compliance state.{allAccounts ? " Resource identifiers are shown as account-scoped aliases." : ""}</p>
         {loading && <p role="status">Reading resource page...</p>}{detailError && <p role="alert" className="danger-text">{detailError}</p>}
+        {detailNotice && <p role="note" className="detail-notice">{detailNotice}</p>}
         {resources.map((r, i) => <div className="resource-card" key={`${r.ResourceId}-${i}`}><Fields value={r} /></div>)}
-        {!loading && !detailError && !resources.length && <p>No non-compliant resource evaluations returned.</p>}
+        {!loading && !detailError && !detailNotice && !resources.length && <p>No non-compliant resource evaluations returned.</p>}
         {token && <Button onClick={loadMore} disabled={loading}><Icon name="layers" />Load more resources</Button>}
         <h3><Icon name="clock" />Evaluation health</h3><Fields value={Object.fromEntries(["FirstActivatedTime", "LastSuccessfulInvocationTime", "LastFailedInvocationTime", "LastSuccessfulEvaluationTime", "LastFailedEvaluationTime", "LastErrorCode", "LastErrorMessage"].map((key) => [key, selected.health[key]]))} />
         <p className="muted">Latest provider timestamps only; this is not historical timeline data.</p>
