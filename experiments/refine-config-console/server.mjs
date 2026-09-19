@@ -5,6 +5,7 @@ import path from "node:path";
 import { createProvider } from "./provider.mjs";
 import { fixtureRead } from "./fixtures.mjs";
 import { createMultiAccountProvider, fourAccountFixtureRead } from "./multi-account.mjs";
+import { createOrgAggregatorProvider } from "./org-aggregator.mjs";
 const root = path.dirname(fileURLToPath(import.meta.url));
 export function createServer(provider, { fixture = false } = {}) {
   const environments = provider.environments || ["DEV", "PROD"];
@@ -91,7 +92,7 @@ export function createServer(provider, { fixture = false } = {}) {
         error:
           status === 404
             ? "Not found"
-            : "Provider read failed. Check selected profile authorization locally; no login or fallback was attempted.",
+            : "Provider read failed. Check the configured read-only AWS source locally; no login or fallback was attempted.",
       });
     }
   });
@@ -103,15 +104,18 @@ if (
   const port = Number(process.env.PORT || 1111);
   if (!Number.isInteger(port) || port < 1024 || port > 65535 || port === 2222)
     throw Error("Use a free experiment port (default 1111), never SecCop 2222");
-  if (process.argv.slice(2).some((arg) => !["--fixture", "--four-account-fixture"].includes(arg)))
-    throw Error("Unknown mode; live four-account mapping is not configured");
+  if (process.argv.slice(2).some((arg) => !["--fixture", "--four-account-fixture", "--org-aggregator"].includes(arg)))
+    throw Error("Unknown Config console mode");
   const fourAccountFixture = process.argv.includes("--four-account-fixture");
-  const fixture = fourAccountFixture || process.argv.includes("--fixture");
-  const server = createServer(
-    fourAccountFixture ? createMultiAccountProvider(fourAccountFixtureRead)
-      : createProvider(fixture ? fixtureRead : undefined),
-    { fixture },
-  );
+  const orgAggregator = process.argv.includes("--org-aggregator");
+  const legacyFixture = process.argv.includes("--fixture");
+  if ([fourAccountFixture, orgAggregator, legacyFixture].filter(Boolean).length > 1)
+    throw Error("Choose exactly one Config console mode");
+  const fixture = fourAccountFixture || legacyFixture;
+  const provider = orgAggregator ? createOrgAggregatorProvider()
+    : fourAccountFixture ? createMultiAccountProvider(fourAccountFixtureRead)
+      : createProvider(legacyFixture ? fixtureRead : undefined);
+  const server = createServer(provider, { fixture });
   server.on("error", () => {
     console.error("Listener unavailable; no existing process was stopped.");
     process.exitCode = 1;
