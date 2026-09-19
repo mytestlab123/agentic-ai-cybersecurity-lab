@@ -35,7 +35,7 @@ try {
   assert.equal(await page.locator("tbody tr").count(), 6);
   assert.equal(calls.filter((x) => x[1].startsWith("get-")).length, 0);
   assert.equal(
-    await page.getByLabel("Control summary").locator(":scope > div").count(),
+    await page.getByLabel("Executive summary").locator(":scope > div").count(),
     4,
   );
   assert.ok(await page.getByText("25+", { exact: true }).isVisible());
@@ -60,13 +60,13 @@ try {
     await page.locator("tbody tr").first().innerText(),
     /ec2-metadata-check/,
   );
-  await page.getByLabel("Reverse sort order").click();
+  await page.getByLabel("Sort descending").click();
   assert.match(
     await page.locator("tbody tr").first().innerText(),
     /security-group-check/,
   );
   await page.getByLabel("Compliance filter").selectOption("ALL");
-  await page.getByLabel("Reverse sort order").click();
+  await page.getByLabel("Sort ascending").click();
   if (process.env.SCREENSHOT_DIR) {
     await mkdir(process.env.SCREENSHOT_DIR, { recursive: true });
     await page.screenshot({

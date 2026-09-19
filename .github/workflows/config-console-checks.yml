@@ -1,0 +1,72 @@
+name: Config console checks
+
+on:
+  pull_request:
+    branches: [main]
+    paths:
+      - 'experiments/refine-config-console/**'
+      - '.github/workflows/config-console-checks.yml'
+  push:
+    branches: [main]
+    paths:
+      - 'experiments/refine-config-console/**'
+      - '.github/workflows/config-console-checks.yml'
+
+permissions:
+  contents: read
+
+concurrency:
+  group: config-console-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    defaults:
+      run:
+        working-directory: experiments/refine-config-console
+    env:
+      AWS_EC2_METADATA_DISABLED: 'true'
+      AWS_CONFIG_FILE: /dev/null
+      AWS_SHARED_CREDENTIALS_FILE: /dev/null
+    steps:
+      - name: Checkout
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          persist-credentials: false
+      - name: Node
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7
+        with:
+          node-version: '22'
+          package-manager-cache: false
+      - name: Install locked dependencies
+        run: npm ci
+      - name: Synthetic provider and HTTP tests
+        run: npm test
+      - name: TypeScript and production build
+        run: npm run build
+      - name: Lint
+        run: npm run lint
+      - name: Whitespace
+        run: git diff --check
+      - name: Install existing repository browser dependency
+        working-directory: .
+        run: npm ci
+      - name: Synthetic browser checks
+        env:
+          SCREENSHOT_DIR: ${{ runner.temp }}/config-console-synthetic
+        run: |
+          set -eu
+          browser="$(command -v google-chrome || command -v chromium || true)"
+          test -n "$browser" && test -x "$browser"
+          export CHROMIUM_EXECUTABLE="$browser"
+          node test/browser.mjs
+          node test/theme-browser.mjs
+      - name: Upload synthetic preview only
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: config-console-synthetic-preview
+          path: ${{ runner.temp }}/config-console-synthetic/*.png
+          if-no-files-found: error
+          retention-days: 3

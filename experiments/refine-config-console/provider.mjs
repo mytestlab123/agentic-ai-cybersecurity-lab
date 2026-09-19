@@ -52,7 +52,8 @@ export async function awsRead(environment, operation, parameters = {}) {
   );
   return JSON.parse(stdout);
 }
-export function createProvider(read = awsRead, now = Date.now) {
+export function createProvider(read = awsRead, now = Date.now, aliases = Object.keys(profiles)) {
+  const environments = Object.freeze([...aliases]);
   const cache = new Map(),
     pending = new Map();
   async function pages(environment, operation) {
@@ -74,8 +75,9 @@ export function createProvider(read = awsRead, now = Date.now) {
     return rows;
   }
   return {
+    environments,
     async list(environment, refresh = false) {
-      if (!Object.hasOwn(profiles, environment))
+      if (!environments.includes(environment))
         throw Error("Unknown environment");
       const prior = cache.get(environment);
       // Coalesce refresh bursts; otherwise explicit refresh bypasses the 30s cache.
@@ -101,6 +103,9 @@ export function createProvider(read = awsRead, now = Date.now) {
       pending.set(environment, request);
       try {
         return await request;
+      } catch (error) {
+        cache.delete(environment);
+        throw error;
       } finally {
         pending.delete(environment);
       }
