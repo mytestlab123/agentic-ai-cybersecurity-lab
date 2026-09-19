@@ -369,7 +369,7 @@ function App() {
       </details>
       <section className={`table-panel ${section === "controls" ? "" : "section-secondary"}`} aria-label="Control inventory">
         <div className="table-heading"><h2>{category}</h2><span className="muted">{hasEvidence ? filtered.length : "--"} shown</span></div>
-        <div className="quick-filters" aria-label="Quick compliance filters">
+        <div className="quick-filters" aria-label="Quick views">
           <span className="muted">Quick view</span>
           <button aria-pressed={status === "ALL"} onClick={() => setStatus("ALL")}>All <b>{rules.length}</b></button>
           <button aria-pressed={status === "NON_COMPLIANT"} onClick={() => setStatus("NON_COMPLIANT")}>Non-compliant <b>{noncompliant}</b></button>
