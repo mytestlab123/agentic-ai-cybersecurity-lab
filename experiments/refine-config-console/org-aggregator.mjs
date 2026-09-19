@@ -47,23 +47,20 @@ export async function awsJson(args) {
   return value;
 }
 
-function metadataByName(rows = []) {
-  const out = new Map();
-  for (const row of rows) {
-    const name = row?.OrganizationConfigRuleName;
-    if (typeof name !== "string") continue;
-    const managed = row.OrganizationManagedRuleMetadata || {};
-    out.set(name, {
-      sourceIdentifier: managed.RuleIdentifier || name,
-      resourceTypes: Array.isArray(managed.ResourceTypesScope) ? managed.ResourceTypesScope : [],
-    });
-  }
-  return out;
-}
+const CONTROL_METADATA = new Map([
+  ["s3-bucket-level-public-access-prohibited", {
+    sourceIdentifier: "S3_BUCKET_LEVEL_PUBLIC_ACCESS_PROHIBITED",
+    resourceTypes: ["AWS::S3::Bucket"],
+  }],
+  ["restricted-ssh", {
+    sourceIdentifier: "INCOMING_SSH_DISABLED",
+    resourceTypes: ["AWS::EC2::SecurityGroup"],
+  }],
+]);
 
-function baseRuleName(rawName, metadata) {
-  if (metadata.has(rawName)) return rawName;
-  for (const name of metadata.keys())
+function baseRuleName(rawName) {
+  if (CONTROL_METADATA.has(rawName)) return rawName;
+  for (const name of CONTROL_METADATA.keys())
     if (rawName.startsWith(`OrgConfigRule-${name}-`)) return name;
   return null;
 }
@@ -81,14 +78,12 @@ export function createOrgAggregatorProvider({
 
   async function load(refresh = false) {
     if (cache && now() - cache.at < (refresh ? 2000 : 30000)) return cache.value;
-    const [compliance, orgRules] = await Promise.all([
-      run(["configservice", "describe-aggregate-compliance-by-config-rules",
-        "--configuration-aggregator-name", AGGREGATOR]),
-      run(["configservice", "describe-organization-config-rules"]),
+    const compliance = await run([
+      "configservice", "describe-aggregate-compliance-by-config-rules",
+      "--configuration-aggregator-name", AGGREGATOR,
     ]);
     const rows = compliance.AggregateComplianceByConfigRules;
     if (!Array.isArray(rows) || rows.length > 500) throw Error("unexpected aggregate compliance response");
-    const metadata = metadataByName(orgRules.OrganizationConfigRules);
     const accounts = new Map(ACCOUNT_ALIASES.map((alias) => [alias, []]));
     bindings.clear();
 
@@ -96,11 +91,11 @@ export function createOrgAggregatorProvider({
       const alias = reverse.get(row?.AccountId);
       const rawName = row?.ConfigRuleName;
       if (!alias || row?.AwsRegion !== REGION || typeof rawName !== "string") continue;
-      const name = baseRuleName(rawName, metadata);
+      const name = baseRuleName(rawName);
       if (!name) continue;
       const status = row?.Compliance?.ComplianceType;
       if (!STATES.has(status)) throw Error("unexpected aggregate compliance state");
-      const meta = metadata.get(name) || { sourceIdentifier: name, resourceTypes: [] };
+      const meta = CONTROL_METADATA.get(name);
       const id = keyFor(alias, REGION, rawName);
       const contributor = row?.Compliance?.ComplianceContributorCount || {};
       bindings.set(`${alias}:${id}`, { alias, accountId: targets.get(alias), rawName, tokens: new Map() });
