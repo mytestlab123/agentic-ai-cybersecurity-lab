@@ -145,7 +145,7 @@ try {
   await rows(page, 3);
   await page.getByLabel("Sort controls").selectOption("name");
   assert.match(await page.locator("tbody tr").first().innerText(), /ec2-metadata-check/);
-  await page.getByLabel("Reverse sort order").click();
+  await page.getByLabel("Sort descending").click();
   assert.match(await page.locator("tbody tr").first().innerText(), /security-group-check/);
   await page.getByLabel("Compliance filter").selectOption("ALL");
   await page.getByLabel("Account", { exact: true }).selectOption("ALL");
