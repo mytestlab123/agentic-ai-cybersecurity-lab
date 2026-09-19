@@ -52,6 +52,8 @@ export function createHistoryStore({
   file = process.env.CONFIG_HISTORY_FILE || "/var/lib/aws-config-console/history.json",
   max = MAX_HISTORY,
 } = {}) {
+  let writeQueue = Promise.resolve();
+
   async function readRows() {
     try {
       const value = JSON.parse(await readFile(file, "utf8"));
@@ -61,23 +63,35 @@ export function createHistoryStore({
       throw error;
     }
   }
+
+  function serialize(task) {
+    const next = writeQueue.catch(() => undefined).then(task);
+    writeQueue = next.then(() => undefined, () => undefined);
+    return next;
+  }
+
   async function record(snapshot) {
     const entry = summarizeSnapshot(snapshot);
     if (!entry?.fetchedAt) return null;
-    const rows = await readRows();
-    if (rows.at(-1)?.fetchedAt === entry.fetchedAt) return rows.at(-1);
-    rows.push(entry);
-    const bounded = rows.slice(-max);
-    await mkdir(path.dirname(file), { recursive: true });
-    const temp = file + ".tmp";
-    await writeFile(temp, JSON.stringify(bounded), { mode: 0o600 });
-    await rename(temp, file);
-    return entry;
+    return serialize(async () => {
+      const rows = await readRows();
+      if (rows.at(-1)?.fetchedAt === entry.fetchedAt) return rows.at(-1);
+      rows.push(entry);
+      const bounded = rows.slice(-max);
+      await mkdir(path.dirname(file), { recursive: true });
+      const temp = file + ".tmp";
+      await writeFile(temp, JSON.stringify(bounded), { mode: 0o600 });
+      await rename(temp, file);
+      return entry;
+    });
   }
+
   async function list(limit = 60) {
+    await writeQueue;
     const bounded = Math.max(1, Math.min(365, Number(limit) || 60));
     return (await readRows()).slice(-bounded);
   }
+
   return { record, list };
 }
 
