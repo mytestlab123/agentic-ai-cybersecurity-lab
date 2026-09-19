@@ -49,9 +49,10 @@ test("bounded CodeBuild prepare validates fixed four-account public result", asy
   assert.equal(value.mutationCount, 3);
   assert.equal(value.providerVerified, true);
   assert.deepEqual(value.aliases, aliases);
-  const start = JSON.stringify(calls[0]);
-  assert.match(start, /"SECOPS_MODE","value":"prepare"/);
-  assert.doesNotMatch(start, /source-version|buildspec/i);
+  const start = calls[0];
+  const overrides = JSON.parse(start[start.indexOf("--environment-variables-override") + 1]);
+  assert.ok(overrides.some((row) => row.name === "SECOPS_MODE" && row.value === "prepare"));
+  assert.equal(JSON.stringify(start).match(/source-version|buildspec/gi), null);
 });
 
 test("unified server records history and gates four-account demo confirmation", async () => {
