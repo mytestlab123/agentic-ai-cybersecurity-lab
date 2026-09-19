@@ -13,9 +13,13 @@ two bounded four-account re-arm families.
 Hosted reverse proxy requirements:
 
 - ordinary Config UI/API reads may use a 60-second upstream read timeout;
-- exact `POST /api/demo/rearm` must allow up to **360 seconds** because the fixed
-  CodeBuild four-account PREPARE run can exceed 60 seconds;
-- keep that longer timeout scoped to the exact re-arm route, not the whole console;
+- Demo re-arm is asynchronous: `POST /api/demo/rearm` returns a sanitized
+  server-owned job ID immediately and the browser polls `GET /api/demo/jobs/<id>`;
+- the existing 360-second exact re-arm route timeout may remain as defense in
+  depth, but normal successful requests no longer depend on a long-held HTTP request;
+- raw CodeBuild build IDs never leave the backend;
+- only one active PREPARE job per control is allowed; repeated accepted requests
+  reuse that active job instead of starting duplicate CodeBuild work;
 - HTML gateway/proxy errors must not be interpreted as JSON by the browser;
 - the backend still validates exactly four aliases and the exact retained Issue #82
   demo resources before reporting success.
@@ -59,6 +63,13 @@ Use an owned terminal or a dedicated tmux session when keeping the console
 running. Example from this directory: `tmux new-session -s refine-config-console
 'npm start'`. This is process lifecycle only, never agent prompt delivery.
 Do not run synthetic and live listeners on the same port or repurpose port 2222.
+
+## Historical persistence
+
+Sanitized aggregate history uses one serialized in-process write queue plus an
+atomic temp-file rename. Concurrent All Accounts refreshes therefore preserve
+both successful snapshots instead of racing the same `history.json.tmp`.
+The history file remains mode 0600 and contains aliases/aggregate counts only.
 
 ## Data flow and boundaries
 
