@@ -9,7 +9,7 @@ const shapes: Record<string, ReactNode> = {
   bucket: <><ellipse cx="12" cy="5" rx="8" ry="3"/><path d="m4 5 2 14c1.5 3 10.5 3 12 0l2-14M6 13c3 2 9 2 12 0"/></>,
   lambda: <><path d="M5 3h4l9 18h3M11 8 3 21"/></>,
   key: <><circle cx="15.5" cy="8.5" r="5.5"/><path d="m11.5 12.5-8 8H2v-4l3-3 2 2 3-3"/></>,
-  layers: <><path d="m12 3 10 5-10 5L2 8 10-5ZM2 12l10 5 10-5M2 16l10 5 10-5"/></>,
+  layers: <><path d="M12 3 22 8 12 13 2 8Z M2 12l10 5 10-5 M2 16l10 5 10-5"/></>,
   search: <><circle cx="10.5" cy="10.5" r="6.5"/><path d="m15.5 15.5 5 5"/></>,
   refresh: <><path d="M20 8a8 8 0 0 0-14-3L3 8m0-5v5h5M4 16a8 8 0 0 0 14 3l3-3m0 5v-5h-5"/></>,
   check: <><circle cx="12" cy="12" r="9"/><path d="m8 12 3 3 5-6"/></>,
