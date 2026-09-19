@@ -22,8 +22,19 @@ async function screenshot(page, name) {
   const body = await page.locator("body").innerText();
   assert.ok(body.includes("SYNTHETIC"));
   assert.ok(!/MUST_NOT_LEAK|arn:aws|\b\d{12}\b/.test(body));
+  if (await page.getByRole("dialog").count()) {
+    await page.getByRole("dialog").evaluate((node) => { node.scrollTop = 0; });
+  } else {
+    await page.evaluate(() => {
+      document.activeElement?.blur();
+      window.scrollTo(0, 0);
+      const table = document.querySelector(".table-scroll");
+      if (table) table.scrollLeft = 0;
+    });
+  }
   await mkdir(screenshotDir, { recursive: true });
-  await page.screenshot({ path: `${screenshotDir}/${name}.png`, fullPage: true });
+  // Viewport screenshots avoid misleading full-page captures of fixed overlays.
+  await page.screenshot({ path: `${screenshotDir}/${name}.png`, fullPage: false });
 }
 async function rows(page, count) {
   await page.waitForFunction((expected) => document.querySelectorAll("tbody tr").length === expected, count);
@@ -111,6 +122,7 @@ try {
   await screenshot(page, "03-synthetic-dark-detail");
   await page.keyboard.press("Escape");
   await page.getByRole("dialog").waitFor({ state: "hidden" });
+  await page.waitForFunction(() => document.activeElement?.textContent?.trim() === "ec2-metadata-check");
 
   await page.getByLabel("Account", { exact: true }).selectOption("ACCOUNT_A");
   await rows(page, 6);
@@ -161,7 +173,9 @@ try {
     assert.ok(await page.getByRole("dialog").evaluate((node) => node.scrollWidth <= node.clientWidth + 1));
     await page.getByRole("button", { name: "Close details" }).click();
     await page.getByRole("dialog").waitFor({ state: "hidden" });
+    await page.waitForFunction(() => document.activeElement?.textContent?.trim() === "ec2-metadata-check");
   }
+  await page.setViewportSize({ width: 320, height: 1150 });
   await screenshot(page, "04-synthetic-mobile-dark");
 
   const denied = await browser.newPage({ viewport: { width: 390, height: 844 }, colorScheme: "dark" });
@@ -178,7 +192,7 @@ try {
   assert.ok(requests.every((request) => request.method === "GET"));
   assert.ok(calls.every((call) => /^(describe-|get-compliance-details)/.test(call.operation)));
   console.log(JSON.stringify({ result: "PASS", mode: "SYNTHETIC", viewports: [1600, 390, 320],
-    checks: ["icons", "light/dark contrast", "Enter/Space", "saved reload", "denied storage", "no theme API calls", "account switch", "filters/sort", "lazy details/pagination", "partial/all failures/recovery", "mobile navigation", "no page overflow", "no external requests"],
+    checks: ["icons", "light/dark contrast", "Enter/Space", "saved reload", "denied storage", "no theme API calls", "account switch", "filters/sort", "lazy details/pagination", "partial/all failures/recovery", "mobile navigation", "drawer focus restoration", "no page overflow", "no external requests"],
     awsCalls: 0, pageErrors: errors.length, screenshots: screenshotDir ? 4 : 0 }));
 } finally {
   await browser?.close();
