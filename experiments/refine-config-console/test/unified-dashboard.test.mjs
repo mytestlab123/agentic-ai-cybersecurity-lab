@@ -1,7 +1,10 @@
 import test from "node:test";
 import assert from "node:assert/strict";
+import { mkdtemp, rm } from "node:fs/promises";
+import os from "node:os";
+import path from "node:path";
 import { createServer } from "../server.mjs";
-import { createMemoryHistoryStore, summarizeSnapshot } from "../history.mjs";
+import { createHistoryStore, createMemoryHistoryStore, summarizeSnapshot } from "../history.mjs";
 import { createDemoAdmin, PROJECT } from "../demo-admin.mjs";
 
 const aliases = ["lab-dev", "lab-poc", "lab-qa", "lab-sec"];
@@ -29,7 +32,7 @@ test("history stores only sanitized aggregate metrics", async () => {
   assert.equal(JSON.stringify(value).includes("sg-"), false);
 });
 
-test("bounded CodeBuild prepare validates fixed four-account public result", async () => {
+test("bounded CodeBuild prepare uses sanitized async jobs", async () => {
   const result = {
     control: "restricted-ssh", decision: "PREPARE", provider_verified: true, mutation_count: 3,
     aliases, account_ids: "hidden-by-default", resource_identifiers: "hidden-by-default",
@@ -38,21 +41,60 @@ test("bounded CodeBuild prepare validates fixed four-account public result", asy
   const encoded = Buffer.from(JSON.stringify(result)).toString("base64");
   const calls = [];
   const admin = createDemoAdmin({
-    sleep: async () => {},
     run: async (args) => {
       calls.push(args);
-      if (args.includes("start-build")) return { build: { id: PROJECT+":1" } };
+      if (args.includes("start-build")) return { build: { id: PROJECT+":private-build-id" } };
       return { builds: [{ buildStatus: "SUCCEEDED", exportedEnvironmentVariables: [{ name: "SECOPS_RESULT_B64", value: encoded }] }] };
     },
   });
-  const value = await admin.prepare("restricted-ssh");
+  const started = await admin.start("restricted-ssh");
+  assert.equal(started.state, "RUNNING");
+  assert.equal(started.control, "restricted-ssh");
+  assert.equal(JSON.stringify(started).includes("private-build-id"), false);
+  const value = await admin.status(started.jobId);
+  assert.equal(value.state, "SUCCEEDED");
   assert.equal(value.mutationCount, 3);
   assert.equal(value.providerVerified, true);
-  assert.deepEqual(value.aliases, aliases);
+  assert.equal(JSON.stringify(value).includes("private-build-id"), false);
   const start = calls[0];
   const overrides = JSON.parse(start[start.indexOf("--environment-variables-override") + 1]);
   assert.ok(overrides.some((row) => row.name === "SECOPS_MODE" && row.value === "prepare"));
   assert.equal(JSON.stringify(start).match(/source-version|buildspec/gi), null);
+});
+
+test("same-control active demo jobs are single-flight", async () => {
+  let starts = 0;
+  const admin = createDemoAdmin({
+    run: async (args) => {
+      if (args.includes("start-build")) {
+        starts++;
+        return { build: { id: PROJECT+":only-one" } };
+      }
+      return { builds: [{ buildStatus: "IN_PROGRESS", exportedEnvironmentVariables: [] }] };
+    },
+  });
+  const first = await admin.start("restricted-ssh");
+  const second = await admin.start("restricted-ssh");
+  assert.equal(starts, 1);
+  assert.equal(second.jobId, first.jobId);
+  assert.equal(second.reused, true);
+  const status = await admin.status(first.jobId);
+  assert.equal(status.state, "RUNNING");
+});
+
+test("serialized file history retains concurrent refresh snapshots", async () => {
+  const dir = await mkdtemp(path.join(os.tmpdir(), "seccop-history-"));
+  try {
+    const store = createHistoryStore({ file: path.join(dir, "history.json"), max: 10 });
+    const first = snapshot();
+    const second = { ...snapshot(), fetchedAt: "2026-09-19T06:21:00.000Z" };
+    await Promise.all([store.record(first), store.record(second)]);
+    const rows = await store.list(10);
+    assert.equal(rows.length, 2);
+    assert.deepEqual(rows.map((row) => row.fetchedAt), [first.fetchedAt, second.fetchedAt]);
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
 });
 
 test("unified server records history and gates four-account demo confirmation", async () => {
@@ -63,11 +105,17 @@ test("unified server records history and gates four-account demo confirmation", 
     async details() { return { resources: [] }; },
   };
   const prepared = [];
+  const jobId = "11111111-1111-4111-8111-111111111111";
   const demoAdmin = {
     controls: ["s3-bucket-level-public-access-prohibited", "restricted-ssh"],
-    async prepare(control) {
+    async start(control) {
       prepared.push(control);
-      return { control, aliases, mutationCount: 2, providerVerified: true, startingState: "NON_COMPLIANT", changedAliases: aliases.slice(0,2) };
+      return { jobId, control, state: "RUNNING", reused: false, startedAt: "2026-09-19T06:20:00.000Z" };
+    },
+    async status(id) {
+      if (id !== jobId) return null;
+      return { jobId, control: prepared[0], state: "SUCCEEDED", mutationCount: 2,
+        providerVerified: true, startingState: "NON_COMPLIANT", changedAliases: aliases.slice(0,2) };
     },
   };
   const server = createServer(provider, { historyStore, demoAdmin });
@@ -90,10 +138,16 @@ test("unified server records history and gates four-account demo confirmation", 
       method:"POST", headers:{"Content-Type":"application/json","Origin":base},
       body:JSON.stringify({control:preview.control,confirmationToken:preview.confirmationToken}),
     });
-    assert.equal(runResponse.status, 200);
-    const run = await runResponse.json();
-    assert.equal(run.mutationCount, 2);
+    assert.equal(runResponse.status, 202);
+    const started = await runResponse.json();
+    assert.equal(started.state, "RUNNING");
+    assert.equal(started.jobId, jobId);
     assert.deepEqual(prepared, ["s3-bucket-level-public-access-prohibited"]);
+    const statusResponse = await fetch(base+"/api/demo/jobs/"+jobId);
+    assert.equal(statusResponse.status, 200);
+    const run = await statusResponse.json();
+    assert.equal(run.state, "SUCCEEDED");
+    assert.equal(run.mutationCount, 2);
     const replay = await fetch(base+"/api/demo/rearm", {
       method:"POST", headers:{"Content-Type":"application/json","Origin":base},
       body:JSON.stringify({control:preview.control,confirmationToken:preview.confirmationToken}),

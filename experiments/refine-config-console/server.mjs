@@ -36,8 +36,12 @@ export function createServer(provider, { fixture = false, historyStore = createM
     const expected = [...environments].sort();
     if (rows.length !== 4 || JSON.stringify(aliases) !== JSON.stringify(expected))
       throw Error("four-account control evidence is incomplete");
+    const now = Date.now();
+    for (const [key, value] of confirmations)
+      if (value.expiresAt < now) confirmations.delete(key);
+    while (confirmations.size >= 32) confirmations.delete(confirmations.keys().next().value);
     const token = randomUUID();
-    confirmations.set(token, { control, expiresAt: Date.now() + 120000 });
+    confirmations.set(token, { control, expiresAt: now + 120000 });
     return {
       control,
       confirmationToken: token,
@@ -87,9 +91,16 @@ export function createServer(provider, { fixture = false, historyStore = createM
         confirmations.delete(body.confirmationToken);
         if (!item || item.control !== body.control || item.expiresAt < Date.now())
           return json(409, { error: "Demo confirmation expired or mismatched" });
-        return json(200, await demoAdmin.prepare(item.control));
+        return json(202, await demoAdmin.start(item.control));
       }
       if (req.method !== "GET") return json(405, { error: "Unsupported method" });
+      if (url.pathname.startsWith("/api/demo/jobs/")) {
+        if (!demoAdmin || fixture) return json(403, { error: "Demo controls unavailable" });
+        const jobId = decodeURIComponent(url.pathname.slice("/api/demo/jobs/".length));
+        if (!/^[0-9a-f-]{36}$/i.test(jobId)) return json(400, { error: "Invalid demo job" });
+        const job = await demoAdmin.status(jobId);
+        return job ? json(200, job) : json(404, { error: "Demo job not found" });
+      }
       if (url.pathname === "/api/health")
         return json(200, {
           mode: fixture ? "SYNTHETIC" : "AWS_READ_ONLY",
@@ -97,6 +108,7 @@ export function createServer(provider, { fixture = false, historyStore = createM
           environments,
           allAccounts,
           demoControls: Boolean(demoAdmin && !fixture),
+          demoJobMode: demoAdmin && !fixture ? "async-single-flight" : "disabled",
         });
       if (url.pathname === "/api/history") {
         const limit = Math.max(1, Math.min(365, Number(url.searchParams.get("limit")) || 60));

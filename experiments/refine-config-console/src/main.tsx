@@ -259,10 +259,19 @@ function App() {
     if (!demoPreview) return;
     setDemoBusy(true); setDemoError("");
     try {
-      const result = await post("/api/demo/rearm", {
+      const started = await post("/api/demo/rearm", {
         control: demoPreview.control, confirmationToken: demoPreview.confirmationToken,
       });
-      setDemoResult(result); setDemoPreview(null); setRefresh((x) => x + 1);
+      if (!started?.jobId || started?.state !== "RUNNING") throw Error("Demo job did not start correctly");
+      setDemoPreview(null);
+      let result = started;
+      for (let attempt = 0; attempt < 180 && result.state === "RUNNING"; attempt++) {
+        await new Promise((resolve) => setTimeout(resolve, 2000));
+        result = await request("/api/demo/jobs/" + encodeURIComponent(started.jobId));
+      }
+      if (result.state === "RUNNING") throw Error("Demo re-arm is still running; refresh and try again later");
+      if (result.state !== "SUCCEEDED") throw Error(result.error || "Demo re-arm failed");
+      setDemoResult(result); setRefresh((x) => x + 1);
     } catch (error) { setDemoError((error as Error).message); }
     finally { setDemoBusy(false); }
   };
