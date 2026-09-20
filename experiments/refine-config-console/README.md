@@ -18,6 +18,11 @@ Hosted reverse proxy requirements:
 - the existing 360-second exact re-arm route timeout may remain as defense in
   depth, but normal successful requests no longer depend on a long-held HTTP request;
 - raw CodeBuild build IDs never leave the backend;
+- active/terminal Demo-control job metadata is persisted server-side in
+  `/var/lib/aws-config-console/demo-jobs.json` with mode 0600;
+- after a Config service restart, the backend reloads RUNNING jobs, rebuilds the
+  per-control single-flight index, and resumes polling the same private CodeBuild run;
+- malformed or foreign job-journal records fail closed rather than starting AWS work;
 - only one active PREPARE job per control is allowed; repeated accepted requests
   reuse that active job instead of starting duplicate CodeBuild work;
 - HTML gateway/proxy errors must not be interpreted as JSON by the browser;
