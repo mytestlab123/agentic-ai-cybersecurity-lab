@@ -93,11 +93,14 @@ test("active demo job recovers across process restart and remains single-flight"
       changed_aliases: [],
     };
     const encoded = Buffer.from(JSON.stringify(result)).toString("base64");
+    let statusChecks = 0;
     const run = async (args) => {
       if (args.includes("start-build")) {
         starts++;
         return { build: { id: PROJECT+":recovered-build" } };
       }
+      statusChecks++;
+      if (statusChecks === 1) return { builds: [{ buildStatus: "IN_PROGRESS", exportedEnvironmentVariables: [] }] };
       return { builds: [{ buildStatus: "SUCCEEDED", exportedEnvironmentVariables: [{ name: "SECOPS_RESULT_B64", value: encoded }] }] };
     };
 
@@ -125,6 +128,87 @@ test("active demo job recovers across process restart and remains single-flight"
   } finally {
     await rm(dir, { recursive: true, force: true });
   }
+});
+
+test("missing recovered CodeBuild job becomes UNKNOWN and releases single-flight", async () => {
+  let starts = 0;
+  const buildIds = [];
+  const admin = createDemoAdmin({
+    run: async (args) => {
+      if (args.includes("start-build")) {
+        starts++;
+        const id = PROJECT+":build-"+starts;
+        buildIds.push(id);
+        return { build: { id } };
+      }
+      return { builds: [], buildsNotFound: [buildIds.at(-1)] };
+    },
+  });
+  const first = await admin.start("restricted-ssh");
+  const reconciled = await admin.start("restricted-ssh");
+  assert.equal(starts, 1);
+  assert.equal(reconciled.jobId, first.jobId);
+  assert.equal(reconciled.reused, true);
+  assert.equal(reconciled.state, "UNKNOWN");
+  assert.match(reconciled.error, /no longer available.*not verified/i);
+  assert.equal(JSON.stringify(reconciled).includes(buildIds[0]), false);
+
+  const fresh = await admin.start("restricted-ssh");
+  assert.equal(starts, 2);
+  assert.notEqual(fresh.jobId, first.jobId);
+  assert.equal(fresh.state, "RUNNING");
+});
+
+test("non-success CodeBuild terminal state becomes UNKNOWN", async () => {
+  const privateId = PROJECT+":stopped-build";
+  const admin = createDemoAdmin({
+    run: async (args) => args.includes("start-build")
+      ? { build: { id: privateId } }
+      : { builds: [{ buildStatus: "STOPPED", exportedEnvironmentVariables: [] }] },
+  });
+  const started = await admin.start("restricted-ssh");
+  const value = await admin.status(started.jobId);
+  assert.equal(value.state, "UNKNOWN");
+  assert.match(value.error, /without verified provider evidence/i);
+  assert.equal(JSON.stringify(value).includes(privateId), false);
+});
+
+test("invalid successful CodeBuild result becomes UNKNOWN", async () => {
+  const privateId = PROJECT+":invalid-result";
+  const admin = createDemoAdmin({
+    run: async (args) => args.includes("start-build")
+      ? { build: { id: privateId } }
+      : { builds: [{ buildStatus: "SUCCEEDED", exportedEnvironmentVariables: [] }] },
+  });
+  const started = await admin.start("s3-bucket-level-public-access-prohibited");
+  const value = await admin.status(started.jobId);
+  assert.equal(value.state, "UNKNOWN");
+  assert.match(value.error, /could not be verified/i);
+  assert.equal(JSON.stringify(value).includes(privateId), false);
+});
+
+test("transient CodeBuild lookup failure preserves RUNNING state", async () => {
+  let lookupFails = true;
+  let starts = 0;
+  const privateId = PROJECT+":transient-build";
+  const admin = createDemoAdmin({
+    run: async (args) => {
+      if (args.includes("start-build")) {
+        starts++;
+        return { build: { id: privateId } };
+      }
+      if (lookupFails) throw Error("temporary CodeBuild read failure");
+      return { builds: [{ buildStatus: "IN_PROGRESS", exportedEnvironmentVariables: [] }] };
+    },
+  });
+  const started = await admin.start("restricted-ssh");
+  await assert.rejects(() => admin.status(started.jobId), /temporary CodeBuild read failure/);
+  lookupFails = false;
+  const reused = await admin.start("restricted-ssh");
+  assert.equal(starts, 1);
+  assert.equal(reused.jobId, started.jobId);
+  assert.equal(reused.reused, true);
+  assert.equal(reused.state, "RUNNING");
 });
 
 test("malformed persisted demo job journal fails closed", async () => {
