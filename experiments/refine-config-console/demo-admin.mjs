@@ -316,5 +316,74 @@ export function createDemoAdmin({
 
       return reconcile(job);
     },
+
+    async diagnostics() {
+      await ensureLoaded();
+      if (cleanup()) await persist();
+      const counts = { RUNNING: 0, SUCCEEDED: 0, FAILED: 0, UNKNOWN: 0 };
+      for (const job of jobs.values()) counts[job.state]++;
+
+      const journal = {
+        status: "READY",
+        jobs: jobs.size,
+        running: counts.RUNNING,
+        succeeded: counts.SUCCEEDED,
+        failed: counts.FAILED,
+        unknown: counts.UNKNOWN,
+      };
+
+      const latest = [...jobs.values()].sort((a, b) => b.startedAt - a.startedAt)[0];
+      if (!latest) {
+        return {
+          journal,
+          codebuild: {
+            status: "DEGRADED",
+            fixedProject: true,
+            message: "No retained build reference is available for a read-only CodeBuild probe.",
+          },
+        };
+      }
+
+      try {
+        const value = await run(["codebuild", "batch-get-builds", "--ids", latest.buildId]);
+        const notFound = Array.isArray(value?.buildsNotFound) && value.buildsNotFound.includes(latest.buildId);
+        if (notFound)
+          return {
+            journal,
+            codebuild: {
+              status: "NOT_READY",
+              fixedProject: true,
+              message: "The retained fixed-project build reference is no longer queryable.",
+            },
+          };
+        const builds = Array.isArray(value?.builds) ? value.builds : [];
+        if (builds.length !== 1)
+          return {
+            journal,
+            codebuild: {
+              status: "NOT_READY",
+              fixedProject: true,
+              message: "The fixed CodeBuild dependency could not be validated.",
+            },
+          };
+        return {
+          journal,
+          codebuild: {
+            status: "READY",
+            fixedProject: true,
+            message: "The fixed CodeBuild dependency is queryable using retained private evidence.",
+          },
+        };
+      } catch {
+        return {
+          journal,
+          codebuild: {
+            status: "NOT_READY",
+            fixedProject: true,
+            message: "The fixed CodeBuild dependency read failed under the current host role.",
+          },
+        };
+      }
+    },
   };
 }
