@@ -111,6 +111,75 @@ export function createServer(provider, { fixture = false, historyStore = createM
           demoJobMode: demoAdmin && !fixture ? "async-single-flight" : "disabled",
           demoJobRecovery: demoAdmin && !fixture ? demoAdmin.recovery : "disabled",
         });
+      if (url.pathname === "/api/diagnostics") {
+        const safe = async (fn, message) => {
+          try { return await fn(); }
+          catch { return { status: "NOT_READY", message }; }
+        };
+        const providerCheck = await safe(async () => {
+          const selection = allAccounts ? "ALL" : environments[0];
+          const snapshot = await provider.list(selection, false);
+          const aliases = Array.isArray(snapshot.accounts)
+            ? snapshot.accounts.map((account) => account.alias).filter((alias) => environments.includes(alias))
+            : [];
+          const exactAliases = aliases.length === environments.length &&
+            [...aliases].sort().join(",") === [...environments].sort().join(",");
+          const ready = snapshot.available !== false && !snapshot.partial &&
+            snapshot.availableAccounts === snapshot.totalAccounts &&
+            snapshot.totalAccounts === environments.length && exactAliases;
+          return {
+            status: ready ? "READY" : "DEGRADED",
+            availableAccounts: Number(snapshot.availableAccounts) || 0,
+            totalAccounts: Number(snapshot.totalAccounts) || environments.length,
+            aliases: [...environments],
+            fetchedAt: snapshot.fetchedAt || null,
+            ...(ready ? {} : { message: "Config evidence is partial or does not cover the full registered account set." }),
+          };
+        }, "Config provider readiness could not be validated.");
+
+        const historyCheck = await safe(
+          async () => historyStore.diagnostics(),
+          "Historical snapshot storage is not readable.",
+        );
+
+        const demoCheck = demoAdmin && !fixture
+          ? await safe(
+              async () => demoAdmin.diagnostics(),
+              "Demo-job journal or fixed CodeBuild dependency could not be validated.",
+            )
+          : {
+              journal: { status: "READY", enabled: false, jobs: 0, running: 0, succeeded: 0, failed: 0, unknown: 0 },
+              codebuild: { status: "READY", enabled: false, fixedProject: false },
+            };
+
+        const journalCheck = demoCheck.journal || {
+          status: "NOT_READY",
+          message: "Demo-job journal readiness could not be validated.",
+        };
+        const codebuildCheck = demoCheck.codebuild || {
+          status: "NOT_READY",
+          fixedProject: true,
+          message: "Fixed CodeBuild readiness could not be validated.",
+        };
+
+        const components = {
+          configProvider: providerCheck,
+          historyStore: historyCheck,
+          demoJournal: journalCheck,
+          codebuild: codebuildCheck,
+        };
+        const statuses = Object.values(components).map((component) => component.status);
+        const status = statuses.includes("NOT_READY")
+          ? "NOT_READY"
+          : statuses.includes("DEGRADED") ? "DEGRADED" : "READY";
+        const ready = statuses.every((value) => value === "READY");
+        return json(status === "NOT_READY" ? 503 : 200, {
+          status,
+          ready,
+          checkedAt: new Date().toISOString(),
+          components,
+        });
+      }
       if (url.pathname === "/api/history") {
         const limit = Math.max(1, Math.min(365, Number(url.searchParams.get("limit")) || 60));
         return json(200, { snapshots: await historyStore.list(limit) });
