@@ -92,7 +92,17 @@ export function createHistoryStore({
     return (await readRows()).slice(-bounded);
   }
 
-  return { record, list };
+  async function diagnostics() {
+    await writeQueue;
+    const rows = await readRows();
+    return {
+      status: "READY",
+      snapshots: rows.length,
+      latestAt: rows.at(-1)?.fetchedAt || null,
+    };
+  }
+
+  return { record, list, diagnostics };
 }
 
 export function createMemoryHistoryStore() {
@@ -105,5 +115,12 @@ export function createMemoryHistoryStore() {
       return entry;
     },
     async list(limit = 60) { return rows.slice(-Math.max(1, Math.min(365, Number(limit) || 60))); },
+    async diagnostics() {
+      return {
+        status: "READY",
+        snapshots: rows.length,
+        latestAt: rows.at(-1)?.fetchedAt || null,
+      };
+    },
   };
 }

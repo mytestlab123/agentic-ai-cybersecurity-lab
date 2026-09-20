@@ -32,6 +32,45 @@ test("history stores only sanitized aggregate metrics", async () => {
   assert.equal(JSON.stringify(value).includes("sg-"), false);
 });
 
+test("history diagnostics expose sanitized persistence readiness", async () => {
+  const store = createMemoryHistoryStore();
+  await store.record(snapshot());
+  const value = await store.diagnostics();
+  assert.equal(value.status, "READY");
+  assert.equal(value.snapshots, 1);
+  assert.equal(value.latestAt, snapshot().fetchedAt);
+  assert.equal(JSON.stringify(value).includes("AccountId"), false);
+});
+
+test("demo diagnostics use retained private build evidence without leaking it", async () => {
+  const privateId = PROJECT+":diagnostic-build";
+  const admin = createDemoAdmin({
+    run: async (args) => {
+      if (args.includes("start-build")) return { build: { id: privateId } };
+      return { builds: [{ id: privateId, buildStatus: "IN_PROGRESS", exportedEnvironmentVariables: [] }] };
+    },
+  });
+  await admin.start("restricted-ssh");
+  const value = await admin.diagnostics();
+  assert.equal(value.journal.status, "READY");
+  assert.equal(value.journal.jobs, 1);
+  assert.equal(value.journal.running, 1);
+  assert.equal(value.codebuild.status, "READY");
+  assert.equal(value.codebuild.fixedProject, true);
+  assert.equal(JSON.stringify(value).includes(privateId), false);
+});
+
+test("demo diagnostics degrade without a retained build reference", async () => {
+  const admin = createDemoAdmin({
+    run: async () => { throw Error("AWS read should not run without retained evidence"); },
+  });
+  const value = await admin.diagnostics();
+  assert.equal(value.journal.status, "READY");
+  assert.equal(value.journal.jobs, 0);
+  assert.equal(value.codebuild.status, "DEGRADED");
+  assert.equal(value.codebuild.fixedProject, true);
+});
+
 test("bounded CodeBuild prepare uses sanitized async jobs", async () => {
   const result = {
     control: "restricted-ssh", decision: "PREPARE", provider_verified: true, mutation_count: 3,
@@ -262,6 +301,12 @@ test("unified server records history and gates four-account demo confirmation", 
       return { jobId, control: prepared[0], state: "SUCCEEDED", mutationCount: 2,
         providerVerified: true, startingState: "NON_COMPLIANT", changedAliases: aliases.slice(0,2) };
     },
+    async diagnostics() {
+      return {
+        journal: { status: "READY", jobs: 1, running: 0, succeeded: 1, failed: 0, unknown: 0 },
+        codebuild: { status: "READY", fixedProject: true, message: "Fixed dependency is queryable." },
+      };
+    },
   };
   const server = createServer(provider, { historyStore, demoAdmin });
   await new Promise((resolve) => server.listen(0, "127.0.0.1", resolve));
@@ -273,6 +318,17 @@ test("unified server records history and gates four-account demo confirmation", 
     assert.equal(inventory.status, 200);
     const history = await (await fetch(base+"/api/history?limit=10")).json();
     assert.equal(history.snapshots.length, 1);
+    const diagnosticsResponse = await fetch(base+"/api/diagnostics");
+    assert.equal(diagnosticsResponse.status, 200);
+    const diagnostics = await diagnosticsResponse.json();
+    assert.equal(diagnostics.status, "READY");
+    assert.equal(diagnostics.ready, true);
+    assert.equal(diagnostics.components.configProvider.availableAccounts, 4);
+    assert.equal(diagnostics.components.historyStore.snapshots, 1);
+    assert.equal(diagnostics.components.demoJournal.status, "READY");
+    assert.equal(diagnostics.components.codebuild.status, "READY");
+    assert.equal(JSON.stringify(diagnostics).includes("AccountId"), false);
+    assert.equal(JSON.stringify(diagnostics).includes(PROJECT+":"), false);
     const previewResponse = await fetch(base+"/api/demo/preview", {
       method:"POST", headers:{"Content-Type":"application/json","Origin":base},
       body:JSON.stringify({control:"s3-bucket-level-public-access-prohibited"}),
