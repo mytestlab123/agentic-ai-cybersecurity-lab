@@ -1,11 +1,11 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { mkdtemp, rm } from "node:fs/promises";
+import { mkdtemp, rm, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { createServer } from "../server.mjs";
 import { createHistoryStore, createMemoryHistoryStore, summarizeSnapshot } from "../history.mjs";
-import { createDemoAdmin, PROJECT } from "../demo-admin.mjs";
+import { createDemoAdmin, createDemoJobStore, PROJECT } from "../demo-admin.mjs";
 
 const aliases = ["lab-dev", "lab-poc", "lab-qa", "lab-sec"];
 function snapshot() {
@@ -82,6 +82,66 @@ test("same-control active demo jobs are single-flight", async () => {
   assert.equal(status.state, "RUNNING");
 });
 
+test("active demo job recovers across process restart and remains single-flight", async () => {
+  const dir = await mkdtemp(path.join(os.tmpdir(), "seccop-demo-job-"));
+  try {
+    const file = path.join(dir, "demo-jobs.json");
+    let starts = 0;
+    const result = {
+      control: "restricted-ssh", decision: "PREPARE", provider_verified: true, mutation_count: 0,
+      aliases, account_ids: "hidden-by-default", resource_identifiers: "hidden-by-default",
+      changed_aliases: [],
+    };
+    const encoded = Buffer.from(JSON.stringify(result)).toString("base64");
+    const run = async (args) => {
+      if (args.includes("start-build")) {
+        starts++;
+        return { build: { id: PROJECT+":recovered-build" } };
+      }
+      return { builds: [{ buildStatus: "SUCCEEDED", exportedEnvironmentVariables: [{ name: "SECOPS_RESULT_B64", value: encoded }] }] };
+    };
+
+    const firstProcess = createDemoAdmin({ run, store: createDemoJobStore({ file }) });
+    const started = await firstProcess.start("restricted-ssh");
+    assert.equal(starts, 1);
+
+    const secondProcess = createDemoAdmin({ run, store: createDemoJobStore({ file }) });
+    const reused = await secondProcess.start("restricted-ssh");
+    assert.equal(starts, 1);
+    assert.equal(reused.jobId, started.jobId);
+    assert.equal(reused.reused, true);
+    assert.equal(JSON.stringify(reused).includes("recovered-build"), false);
+
+    const completed = await secondProcess.status(started.jobId);
+    assert.equal(completed.state, "SUCCEEDED");
+    assert.equal(completed.mutationCount, 0);
+    assert.equal(completed.providerVerified, true);
+    assert.equal(JSON.stringify(completed).includes("recovered-build"), false);
+
+    const thirdProcess = createDemoAdmin({ run, store: createDemoJobStore({ file }) });
+    const recoveredTerminal = await thirdProcess.status(started.jobId);
+    assert.equal(recoveredTerminal.state, "SUCCEEDED");
+    assert.equal(recoveredTerminal.mutationCount, 0);
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test("malformed persisted demo job journal fails closed", async () => {
+  const dir = await mkdtemp(path.join(os.tmpdir(), "seccop-demo-job-bad-"));
+  try {
+    const file = path.join(dir, "demo-jobs.json");
+    await writeFile(file, JSON.stringify({ version: 1, jobs: [{ jobId: "bad" }] }));
+    const admin = createDemoAdmin({
+      run: async () => { throw Error("AWS should not be called"); },
+      store: createDemoJobStore({ file }),
+    });
+    await assert.rejects(() => admin.start("restricted-ssh"), /demo job journal invalid/);
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
 test("serialized file history retains concurrent refresh snapshots", async () => {
   const dir = await mkdtemp(path.join(os.tmpdir(), "seccop-history-"));
   try {
@@ -108,6 +168,7 @@ test("unified server records history and gates four-account demo confirmation", 
   const jobId = "11111111-1111-4111-8111-111111111111";
   const demoAdmin = {
     controls: ["s3-bucket-level-public-access-prohibited", "restricted-ssh"],
+    recovery: "persistent-journal",
     async start(control) {
       prepared.push(control);
       return { jobId, control, state: "RUNNING", reused: false, startedAt: "2026-09-19T06:20:00.000Z" };
@@ -122,6 +183,8 @@ test("unified server records history and gates four-account demo confirmation", 
   await new Promise((resolve) => server.listen(0, "127.0.0.1", resolve));
   const base = "http://127.0.0.1:"+server.address().port;
   try {
+    const health = await (await fetch(base+"/api/health")).json();
+    assert.equal(health.demoJobRecovery, "persistent-journal");
     const inventory = await fetch(base+"/api/controls?environment=ALL&refresh=1");
     assert.equal(inventory.status, 200);
     const history = await (await fetch(base+"/api/history?limit=10")).json();
