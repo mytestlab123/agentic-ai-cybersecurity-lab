@@ -9,6 +9,7 @@ import { createMultiAccountProvider, fourAccountFixtureRead } from "./multi-acco
 import { createOrgAggregatorProvider } from "./org-aggregator.mjs";
 import { createHistoryStore, createMemoryHistoryStore } from "./history.mjs";
 import { createDemoAdmin, createDemoJobStore, CONTROLS as DEMO_CONTROLS } from "./demo-admin.mjs";
+import { createDemoAuditStore } from "./demo-audit.mjs";
 const root = path.dirname(fileURLToPath(import.meta.url));
 export function createServer(provider, { fixture = false, historyStore = createMemoryHistoryStore(), demoAdmin = null } = {}) {
   const environments = provider.environments || ["DEV", "PROD"];
@@ -42,6 +43,12 @@ export function createServer(provider, { fixture = false, historyStore = createM
     while (confirmations.size >= 32) confirmations.delete(confirmations.keys().next().value);
     const token = randomUUID();
     confirmations.set(token, { control, expiresAt: now + 120000 });
+    await demoAdmin.audit({
+      event: "PREVIEW_CREATED",
+      control,
+      state: "PENDING_CONFIRMATION",
+      messageCode: "FOUR_ACCOUNT_EVIDENCE_VERIFIED",
+    });
     return {
       control,
       confirmationToken: token,
@@ -89,8 +96,21 @@ export function createServer(provider, { fixture = false, historyStore = createM
         const body = await readBody(req);
         const item = confirmations.get(body.confirmationToken);
         confirmations.delete(body.confirmationToken);
-        if (!item || item.control !== body.control || item.expiresAt < Date.now())
+        if (!item || item.control !== body.control || item.expiresAt < Date.now()) {
+          await demoAdmin.audit({
+            event: "CONFIRMATION_REJECTED",
+            control: DEMO_CONTROLS.includes(body.control) ? body.control : null,
+            state: "REJECTED",
+            messageCode: "CONFIRMATION_INVALID",
+          });
           return json(409, { error: "Demo confirmation expired or mismatched" });
+        }
+        await demoAdmin.audit({
+          event: "CONFIRMATION_ACCEPTED",
+          control: item.control,
+          state: "RUNNING",
+          messageCode: "CONFIRMATION_ACCEPTED",
+        });
         return json(202, await demoAdmin.start(item.control));
       }
       if (req.method !== "GET") return json(405, { error: "Unsupported method" });
@@ -100,6 +120,11 @@ export function createServer(provider, { fixture = false, historyStore = createM
         if (!/^[0-9a-f-]{36}$/i.test(jobId)) return json(400, { error: "Invalid demo job" });
         const job = await demoAdmin.status(jobId);
         return job ? json(200, job) : json(404, { error: "Demo job not found" });
+      }
+      if (url.pathname === "/api/demo/audit") {
+        if (!demoAdmin || fixture) return json(403, { error: "Demo controls unavailable" });
+        const limit = Math.max(1, Math.min(200, Number(url.searchParams.get("limit")) || 100));
+        return json(200, { events: await demoAdmin.auditList(limit) });
       }
       if (url.pathname === "/api/health")
         return json(200, {
@@ -152,6 +177,13 @@ export function createServer(provider, { fixture = false, historyStore = createM
               codebuild: { status: "READY", enabled: false, fixedProject: false },
             };
 
+        const auditCheck = demoAdmin && !fixture
+          ? await safe(
+              async () => demoAdmin.auditDiagnostics(),
+              "Demo audit storage is not readable.",
+            )
+          : { status: "READY", enabled: false, events: 0 };
+
         const journalCheck = demoCheck.journal || {
           status: "NOT_READY",
           message: "Demo-job journal readiness could not be validated.",
@@ -166,6 +198,7 @@ export function createServer(provider, { fixture = false, historyStore = createM
           configProvider: providerCheck,
           historyStore: historyCheck,
           demoJournal: journalCheck,
+          demoAudit: auditCheck,
           codebuild: codebuildCheck,
         };
         const statuses = Object.values(components).map((component) => component.status);
@@ -256,7 +289,10 @@ if (
     : fourAccountFixture ? createMultiAccountProvider(fourAccountFixtureRead)
       : createProvider(legacyFixture ? fixtureRead : undefined);
   const historyStore = orgAggregator ? createHistoryStore() : createMemoryHistoryStore();
-  const demoAdmin = orgAggregator ? createDemoAdmin({ store: createDemoJobStore() }) : null;
+  const demoAdmin = orgAggregator ? createDemoAdmin({
+    store: createDemoJobStore(),
+    auditStore: createDemoAuditStore(),
+  }) : null;
   const server = createServer(provider, { fixture, historyStore, demoAdmin });
   server.on("error", () => {
     console.error("Listener unavailable; no existing process was stopped.");

@@ -1,11 +1,12 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { mkdtemp, rm, writeFile } from "node:fs/promises";
+import { mkdtemp, rm, stat, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { createServer } from "../server.mjs";
 import { createHistoryStore, createMemoryHistoryStore, summarizeSnapshot } from "../history.mjs";
 import { createDemoAdmin, createDemoJobStore, PROJECT } from "../demo-admin.mjs";
+import { createDemoAuditStore, createMemoryDemoAuditStore } from "../demo-audit.mjs";
 
 const aliases = ["lab-dev", "lab-poc", "lab-qa", "lab-sec"];
 function snapshot() {
@@ -69,6 +70,87 @@ test("demo diagnostics degrade without a retained build reference", async () => 
   assert.equal(value.journal.jobs, 0);
   assert.equal(value.codebuild.status, "DEGRADED");
   assert.equal(value.codebuild.fixedProject, true);
+});
+
+test("demo audit store is bounded sanitized and mode 0600", async () => {
+  const dir = await mkdtemp(path.join(os.tmpdir(), "seccop-audit-"));
+  try {
+    const file = path.join(dir, "demo-audit.json");
+    let clock = Date.parse("2026-09-20T04:00:00.000Z");
+    const store = createDemoAuditStore({
+      file, max: 3, maxAgeMs: 24 * 60 * 60 * 1000, now: () => clock,
+    });
+    for (const control of [
+      "restricted-ssh",
+      "s3-bucket-level-public-access-prohibited",
+      "restricted-ssh",
+      "s3-bucket-level-public-access-prohibited",
+    ]) {
+      await store.record({
+        event: "PREVIEW_CREATED",
+        control,
+        state: "PENDING_CONFIRMATION",
+        messageCode: "FOUR_ACCOUNT_EVIDENCE_VERIFIED",
+      });
+      clock += 1000;
+    }
+    const rows = await store.list(200);
+    assert.equal(rows.length, 3);
+    assert.equal(rows[0].event, "PREVIEW_CREATED");
+    assert.equal(JSON.stringify(rows).includes("confirmationToken"), false);
+    assert.equal(JSON.stringify(rows).includes("AccountId"), false);
+    assert.equal(JSON.stringify(rows).includes(PROJECT+":"), false);
+    const mode = (await stat(file)).mode & 0o777;
+    assert.equal(mode, 0o600);
+    const diagnostics = await store.diagnostics();
+    assert.equal(diagnostics.status, "READY");
+    assert.equal(diagnostics.events, 3);
+    assert.equal(diagnostics.retentionDays, 30);
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test("demo admin audits start completion reuse and transient status failures", async () => {
+  const auditStore = createMemoryDemoAuditStore();
+  const result = {
+    control: "restricted-ssh", decision: "PREPARE", provider_verified: true, mutation_count: 1,
+    aliases, account_ids: "hidden-by-default", resource_identifiers: "hidden-by-default",
+    changed_aliases: ["lab-dev"],
+  };
+  const encoded = Buffer.from(JSON.stringify(result)).toString("base64");
+  let statusMode = "in-progress";
+  let starts = 0;
+  const admin = createDemoAdmin({
+    auditStore,
+    run: async (args) => {
+      if (args.includes("start-build")) {
+        starts++;
+        return { build: { id: PROJECT+":private-audit-build" } };
+      }
+      if (statusMode === "fail") throw Error("private transient detail");
+      if (statusMode === "in-progress")
+        return { builds: [{ buildStatus: "IN_PROGRESS", exportedEnvironmentVariables: [] }] };
+      return { builds: [{ buildStatus: "SUCCEEDED", exportedEnvironmentVariables: [{ name: "SECOPS_RESULT_B64", value: encoded }] }] };
+    },
+  });
+  const first = await admin.start("restricted-ssh");
+  const reused = await admin.start("restricted-ssh");
+  assert.equal(starts, 1);
+  assert.equal(reused.reused, true);
+  statusMode = "fail";
+  await assert.rejects(() => admin.status(first.jobId), /private transient detail/);
+  statusMode = "success";
+  const completed = await admin.status(first.jobId);
+  assert.equal(completed.state, "SUCCEEDED");
+  const events = await admin.auditList(20);
+  assert.ok(events.some((row) => row.event === "JOB_STARTED"));
+  assert.ok(events.some((row) => row.event === "JOB_REUSED"));
+  assert.ok(events.some((row) => row.event === "JOB_STATUS_READ_FAILED"));
+  assert.ok(events.some((row) => row.event === "JOB_COMPLETED" && row.mutationCount === 1));
+  const raw = JSON.stringify(events);
+  assert.equal(raw.includes("private-audit-build"), false);
+  assert.equal(raw.includes("private transient detail"), false);
 });
 
 test("bounded CodeBuild prepare uses sanitized async jobs", async () => {
@@ -288,6 +370,7 @@ test("unified server records history and gates four-account demo confirmation", 
     async details() { return { resources: [] }; },
   };
   const prepared = [];
+  const auditEvents = [];
   const jobId = "11111111-1111-4111-8111-111111111111";
   const demoAdmin = {
     controls: ["s3-bucket-level-public-access-prohibited", "restricted-ssh"],
@@ -306,6 +389,16 @@ test("unified server records history and gates four-account demo confirmation", 
         journal: { status: "READY", jobs: 1, running: 0, succeeded: 1, failed: 0, unknown: 0 },
         codebuild: { status: "READY", fixedProject: true, message: "Fixed dependency is queryable." },
       };
+    },
+    async audit(entry) {
+      auditEvents.push({ eventId: "22222222-2222-4222-8222-222222222222", at: "2026-09-20T04:00:00.000Z",
+        control: null, jobId: null, state: null, reused: null, mutationCount: null,
+        providerVerified: null, ...entry });
+    },
+    async auditList(limit = 100) { return auditEvents.slice(-limit).reverse(); },
+    async auditDiagnostics() {
+      return { status: "READY", events: auditEvents.length, latestAt: auditEvents.at(-1)?.at || null,
+        retentionDays: 30, maxEvents: 500 };
     },
   };
   const server = createServer(provider, { historyStore, demoAdmin });
@@ -326,6 +419,7 @@ test("unified server records history and gates four-account demo confirmation", 
     assert.equal(diagnostics.components.configProvider.availableAccounts, 4);
     assert.equal(diagnostics.components.historyStore.snapshots, 1);
     assert.equal(diagnostics.components.demoJournal.status, "READY");
+    assert.equal(diagnostics.components.demoAudit.status, "READY");
     assert.equal(diagnostics.components.codebuild.status, "READY");
     assert.equal(JSON.stringify(diagnostics).includes("AccountId"), false);
     assert.equal(JSON.stringify(diagnostics).includes(PROJECT+":"), false);
@@ -356,6 +450,14 @@ test("unified server records history and gates four-account demo confirmation", 
       body:JSON.stringify({control:preview.control,confirmationToken:preview.confirmationToken}),
     });
     assert.equal(replay.status, 409);
+    const auditResponse = await fetch(base+"/api/demo/audit?limit=20");
+    assert.equal(auditResponse.status, 200);
+    const audit = await auditResponse.json();
+    assert.ok(audit.events.some((row) => row.event === "PREVIEW_CREATED"));
+    assert.ok(audit.events.some((row) => row.event === "CONFIRMATION_ACCEPTED"));
+    assert.ok(audit.events.some((row) => row.event === "CONFIRMATION_REJECTED"));
+    assert.equal(JSON.stringify(audit).includes(preview.confirmationToken), false);
+    assert.equal(JSON.stringify(audit).includes("AccountId"), false);
   } finally {
     await new Promise((resolve) => server.close(resolve));
   }
