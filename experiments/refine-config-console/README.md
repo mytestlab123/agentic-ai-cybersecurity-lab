@@ -45,7 +45,8 @@ Config Dashboard. The separate Compliance Agent remains at `sec.astromedicomp.or
 - `GET /api/health` is intentionally cheap **process liveness**. It does not call
   AWS or persistence dependencies.
 - `GET /api/diagnostics` is sanitized **dependency readiness** for the four-account
-  Config provider, historical snapshot store, Demo-job journal, and fixed CodeBuild path.
+  Config provider, historical snapshot store, Demo-job journal, Demo audit store,
+  and fixed CodeBuild path.
 - Diagnostics expose aliases, counts, timestamps and status only. They never return
   account IDs, resource IDs, private CodeBuild build IDs, CLI stderr or credentials.
 - The host role intentionally has no `BatchGetProjects` / `ListBuildsForProject`
@@ -100,6 +101,22 @@ Sanitized aggregate history uses one serialized in-process write queue plus an
 atomic temp-file rename. Concurrent All Accounts refreshes therefore preserve
 both successful snapshots instead of racing the same `history.json.tmp`.
 The history file remains mode 0600 and contains aliases/aggregate counts only.
+
+## Demo audit trail
+
+Bounded Demo-control lifecycle evidence is persisted separately in
+`/var/lib/aws-config-console/demo-audit.json`.
+
+- fixed-schema events only: preview, confirmation accept/reject, job start/reuse,
+  transient status-read failure, completion, and fail-closed reconciliation;
+- job-start failure is also recorded when the fixed CodeBuild start call itself
+  cannot be accepted;
+- retention is the newest **500 events** and at most **30 days**;
+- writes are serialized and atomically replace a mode-`0600` journal;
+- `GET /api/demo/audit?limit=N` returns newest events first, maximum 200;
+- confirmation tokens, AWS account/resource IDs, private CodeBuild build IDs,
+  credentials, request metadata and arbitrary exception text are never stored;
+- the audit store is also included in `/api/diagnostics` readiness.
 
 ## Data flow and boundaries
 
