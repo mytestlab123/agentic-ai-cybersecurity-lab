@@ -8,7 +8,7 @@ import { fixtureRead } from "./fixtures.mjs";
 import { createMultiAccountProvider, fourAccountFixtureRead } from "./multi-account.mjs";
 import { createOrgAggregatorProvider } from "./org-aggregator.mjs";
 import { createHistoryStore, createMemoryHistoryStore } from "./history.mjs";
-import { createDemoAdmin, CONTROLS as DEMO_CONTROLS } from "./demo-admin.mjs";
+import { createDemoAdmin, createDemoJobStore, CONTROLS as DEMO_CONTROLS } from "./demo-admin.mjs";
 const root = path.dirname(fileURLToPath(import.meta.url));
 export function createServer(provider, { fixture = false, historyStore = createMemoryHistoryStore(), demoAdmin = null } = {}) {
   const environments = provider.environments || ["DEV", "PROD"];
@@ -109,6 +109,7 @@ export function createServer(provider, { fixture = false, historyStore = createM
           allAccounts,
           demoControls: Boolean(demoAdmin && !fixture),
           demoJobMode: demoAdmin && !fixture ? "async-single-flight" : "disabled",
+          demoJobRecovery: demoAdmin && !fixture ? demoAdmin.recovery : "disabled",
         });
       if (url.pathname === "/api/history") {
         const limit = Math.max(1, Math.min(365, Number(url.searchParams.get("limit")) || 60));
@@ -186,7 +187,7 @@ if (
     : fourAccountFixture ? createMultiAccountProvider(fourAccountFixtureRead)
       : createProvider(legacyFixture ? fixtureRead : undefined);
   const historyStore = orgAggregator ? createHistoryStore() : createMemoryHistoryStore();
-  const demoAdmin = orgAggregator ? createDemoAdmin() : null;
+  const demoAdmin = orgAggregator ? createDemoAdmin({ store: createDemoJobStore() }) : null;
   const server = createServer(provider, { fixture, historyStore, demoAdmin });
   server.on("error", () => {
     console.error("Listener unavailable; no existing process was stopped.");

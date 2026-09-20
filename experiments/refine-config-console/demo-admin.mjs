@@ -1,5 +1,7 @@
 import { randomUUID } from "node:crypto";
 import { execFile } from "node:child_process";
+import { mkdir, readFile, rename, writeFile } from "node:fs/promises";
+import path from "node:path";
 import { promisify } from "node:util";
 
 const exec = promisify(execFile);
@@ -12,6 +14,8 @@ const ALIASES = Object.freeze(["lab-dev", "lab-poc", "lab-qa", "lab-sec"]);
 const TERMINAL = new Set(["SUCCEEDED", "FAILED", "FAULT", "STOPPED", "TIMED_OUT"]);
 const JOB_RETENTION_MS = 15 * 60 * 1000;
 const MAX_JOBS = 32;
+const JOURNAL_VERSION = 1;
+const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 
 function cleanEnv() {
   const env = { ...process.env };
@@ -53,9 +57,98 @@ function validatedResult(control, build) {
   };
 }
 
-export function createDemoAdmin({ run = defaultRun, now = Date.now } = {}) {
+function validatePersistedJob(job) {
+  if (!job || typeof job !== "object" || Array.isArray(job)) throw Error("demo job journal invalid");
+  const keys = Object.keys(job).sort().join(",");
+  if (keys !== "buildId,control,error,finishedAt,jobId,result,startedAt,state")
+    throw Error("demo job journal invalid");
+  if (!UUID_RE.test(job.jobId) || !CONTROLS.includes(job.control) ||
+      typeof job.buildId !== "string" || !job.buildId.startsWith(PROJECT + ":") ||
+      !["RUNNING", "SUCCEEDED", "FAILED"].includes(job.state) ||
+      !Number.isInteger(job.startedAt) || job.startedAt <= 0 ||
+      !Number.isInteger(job.finishedAt) || job.finishedAt < 0 ||
+      (job.state === "RUNNING" && job.finishedAt !== 0) ||
+      (job.state !== "RUNNING" && job.finishedAt <= 0) ||
+      typeof job.error !== "string" ||
+      (job.result !== null && (typeof job.result !== "object" || Array.isArray(job.result))))
+    throw Error("demo job journal invalid");
+  if (job.result) {
+    const { mutationCount, providerVerified, startingState, changedAliases } = job.result;
+    if (!Number.isInteger(mutationCount) || mutationCount < 0 || mutationCount > 4 ||
+        providerVerified !== true || startingState !== "NON_COMPLIANT" ||
+        !Array.isArray(changedAliases) || changedAliases.some((x) => !ALIASES.includes(x)))
+      throw Error("demo job journal invalid");
+  }
+  return {
+    jobId: job.jobId,
+    buildId: job.buildId,
+    control: job.control,
+    state: job.state,
+    startedAt: job.startedAt,
+    finishedAt: job.finishedAt,
+    result: job.result,
+    error: job.error,
+  };
+}
+
+export function createDemoJobStore({
+  file = process.env.CONFIG_DEMO_JOB_FILE || "/var/lib/aws-config-console/demo-jobs.json",
+} = {}) {
+  let queue = Promise.resolve();
+
+  const serialize = (task) => {
+    const next = queue.catch(() => undefined).then(task);
+    queue = next.then(() => undefined, () => undefined);
+    return next;
+  };
+
+  const readRows = async () => {
+    try {
+      const value = JSON.parse(await readFile(file, "utf8"));
+      if (!value || value.version !== JOURNAL_VERSION || !Array.isArray(value.jobs))
+        throw Error("demo job journal invalid");
+      return value.jobs.map(validatePersistedJob);
+    } catch (error) {
+      if (error?.code === "ENOENT") return [];
+      if (String(error?.message) === "demo job journal invalid") throw error;
+      throw Error("demo job journal invalid");
+    }
+  };
+
+  return {
+    async load() {
+      await queue;
+      return readRows();
+    },
+    async save(rows) {
+      const copy = rows.map(validatePersistedJob);
+      return serialize(async () => {
+        await mkdir(path.dirname(file), { recursive: true });
+        const temp = file + ".tmp";
+        await writeFile(temp, JSON.stringify({ version: JOURNAL_VERSION, jobs: copy }), { mode: 0o600 });
+        await rename(temp, file);
+      });
+    },
+  };
+}
+
+export function createMemoryDemoJobStore(initial = []) {
+  let rows = initial.map(validatePersistedJob);
+  return {
+    async load() { return rows.map((row) => ({ ...row, result: row.result ? { ...row.result } : null })); },
+    async save(next) { rows = next.map(validatePersistedJob); },
+  };
+}
+
+export function createDemoAdmin({
+  run = defaultRun,
+  now = Date.now,
+  store = createMemoryDemoJobStore(),
+} = {}) {
   const jobs = new Map();
   const activeByControl = new Map();
+  let loaded = false;
+  let loading = null;
 
   const publicJob = (job, reused = false) => ({
     jobId: job.jobId,
@@ -68,31 +161,79 @@ export function createDemoAdmin({ run = defaultRun, now = Date.now } = {}) {
     ...(job.error ? { error: job.error } : {}),
   });
 
+  const persistedRows = () => [...jobs.values()].map((job) => ({
+    jobId: job.jobId,
+    buildId: job.buildId,
+    control: job.control,
+    state: job.state,
+    startedAt: job.startedAt,
+    finishedAt: job.finishedAt,
+    result: job.result,
+    error: job.error,
+  }));
+
   const cleanup = () => {
+    let changed = false;
     const cutoff = now() - JOB_RETENTION_MS;
     for (const [jobId, job] of jobs) {
-      if (job.state !== "RUNNING" && job.finishedAt < cutoff) jobs.delete(jobId);
+      if (job.state !== "RUNNING" && job.finishedAt < cutoff) {
+        jobs.delete(jobId);
+        changed = true;
+      }
     }
     const terminal = [...jobs.values()]
       .filter((job) => job.state !== "RUNNING")
       .sort((a, b) => a.finishedAt - b.finishedAt);
-    while (jobs.size > MAX_JOBS && terminal.length) jobs.delete(terminal.shift().jobId);
+    while (jobs.size > MAX_JOBS && terminal.length) {
+      jobs.delete(terminal.shift().jobId);
+      changed = true;
+    }
+    return changed;
   };
 
-  const finish = (job, state, values = {}) => {
+  const ensureLoaded = async () => {
+    if (loaded) return;
+    if (!loading) {
+      loading = (async () => {
+        const rows = await store.load();
+        const runningControls = new Set();
+        for (const row of rows) {
+          const job = validatePersistedJob(row);
+          if (jobs.has(job.jobId)) throw Error("demo job journal invalid");
+          if (job.state === "RUNNING") {
+            if (runningControls.has(job.control)) throw Error("demo job journal has duplicate active control");
+            runningControls.add(job.control);
+            activeByControl.set(job.control, job.jobId);
+          }
+          jobs.set(job.jobId, job);
+        }
+        const changed = cleanup();
+        if (changed) await store.save(persistedRows());
+        loaded = true;
+      })();
+    }
+    try { await loading; } finally { if (!loaded) loading = null; }
+  };
+
+  const persist = async () => store.save(persistedRows());
+
+  const finish = async (job, state, values = {}) => {
     job.state = state;
     job.finishedAt = now();
     Object.assign(job, values);
     if (activeByControl.get(job.control) === job.jobId) activeByControl.delete(job.control);
     cleanup();
+    await persist();
   };
 
   return {
     controls: CONTROLS,
+    recovery: "persistent-journal",
 
     async start(control) {
       if (!CONTROLS.includes(control)) throw Error("unsupported demo control");
-      cleanup();
+      await ensureLoaded();
+      if (cleanup()) await persist();
       const existingId = activeByControl.get(control);
       if (existingId) {
         const existing = jobs.get(existingId);
@@ -125,11 +266,13 @@ export function createDemoAdmin({ run = defaultRun, now = Date.now } = {}) {
       jobs.set(job.jobId, job);
       activeByControl.set(control, job.jobId);
       cleanup();
+      await persist();
       return publicJob(job);
     },
 
     async status(jobId) {
-      cleanup();
+      await ensureLoaded();
+      if (cleanup()) await persist();
       const job = jobs.get(jobId);
       if (!job) return null;
       if (job.state !== "RUNNING") return publicJob(job);
@@ -140,13 +283,13 @@ export function createDemoAdmin({ run = defaultRun, now = Date.now } = {}) {
       if (!TERMINAL.has(build.buildStatus)) return publicJob(job);
 
       if (build.buildStatus !== "SUCCEEDED") {
-        finish(job, "FAILED", { error: "bounded four-account prepare failed" });
+        await finish(job, "FAILED", { error: "bounded four-account prepare failed" });
         return publicJob(job);
       }
       try {
-        finish(job, "SUCCEEDED", { result: validatedResult(job.control, build) });
+        await finish(job, "SUCCEEDED", { result: validatedResult(job.control, build) });
       } catch {
-        finish(job, "FAILED", { error: "prepare result failed scope validation" });
+        await finish(job, "FAILED", { error: "prepare result failed scope validation" });
       }
       return publicJob(job);
     },
