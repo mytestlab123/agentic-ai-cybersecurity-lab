@@ -3,6 +3,7 @@ import { execFile } from "node:child_process";
 import { mkdir, readFile, rename, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { promisify } from "node:util";
+import { createMemoryDemoAuditStore } from "./demo-audit.mjs";
 
 const exec = promisify(execFile);
 export const PROJECT = "aws-secops-four-account-executor";
@@ -144,6 +145,7 @@ export function createDemoAdmin({
   run = defaultRun,
   now = Date.now,
   store = createMemoryDemoJobStore(),
+  auditStore = createMemoryDemoAuditStore({ now }),
 } = {}) {
   const jobs = new Map();
   const activeByControl = new Map();
@@ -226,14 +228,35 @@ export function createDemoAdmin({
     await persist();
   };
 
+  const audit = async (entry) => auditStore.record(entry);
+
   const reconcile = async (job) => {
     if (job.state !== "RUNNING") return publicJob(job);
 
-    const status = await run(["codebuild", "batch-get-builds", "--ids", job.buildId]);
+    let status;
+    try {
+      status = await run(["codebuild", "batch-get-builds", "--ids", job.buildId]);
+    } catch (error) {
+      await audit({
+        event: "JOB_STATUS_READ_FAILED",
+        control: job.control,
+        jobId: job.jobId,
+        state: "RUNNING",
+        messageCode: "CODEBUILD_STATUS_READ_FAILED",
+      });
+      throw error;
+    }
     const notFound = Array.isArray(status?.buildsNotFound) && status.buildsNotFound.includes(job.buildId);
     if (notFound) {
       await finish(job, "UNKNOWN", {
         error: "Previous demo job is no longer available in CodeBuild; provider outcome is not verified. Refresh Config evidence before retrying.",
+      });
+      await audit({
+        event: "JOB_RECONCILED",
+        control: job.control,
+        jobId: job.jobId,
+        state: "UNKNOWN",
+        messageCode: "BUILD_NOT_FOUND",
       });
       return publicJob(job);
     }
@@ -247,14 +270,38 @@ export function createDemoAdmin({
       await finish(job, "UNKNOWN", {
         error: "Previous demo job ended without verified provider evidence. Refresh Config evidence before retrying.",
       });
+      await audit({
+        event: "JOB_RECONCILED",
+        control: job.control,
+        jobId: job.jobId,
+        state: "UNKNOWN",
+        messageCode: "BUILD_TERMINAL_UNVERIFIED",
+      });
       return publicJob(job);
     }
 
     try {
-      await finish(job, "SUCCEEDED", { result: validatedResult(job.control, build) });
+      const result = validatedResult(job.control, build);
+      await finish(job, "SUCCEEDED", { result });
+      await audit({
+        event: "JOB_COMPLETED",
+        control: job.control,
+        jobId: job.jobId,
+        state: "SUCCEEDED",
+        mutationCount: result.mutationCount,
+        providerVerified: true,
+        messageCode: "PROVIDER_VERIFIED",
+      });
     } catch {
       await finish(job, "UNKNOWN", {
         error: "Previous demo job completed but its provider result could not be verified. Refresh Config evidence before retrying.",
+      });
+      await audit({
+        event: "JOB_RECONCILED",
+        control: job.control,
+        jobId: job.jobId,
+        state: "UNKNOWN",
+        messageCode: "RESULT_UNVERIFIED",
       });
     }
     return publicJob(job);
@@ -273,19 +320,40 @@ export function createDemoAdmin({
         const existing = jobs.get(existingId);
         if (existing?.state === "RUNNING") {
           await reconcile(existing);
+          await audit({
+            event: "JOB_REUSED",
+            control,
+            jobId: existing.jobId,
+            state: existing.state,
+            reused: true,
+            mutationCount: existing.result?.mutationCount ?? null,
+            providerVerified: existing.result?.providerVerified ?? null,
+            messageCode: "ACTIVE_JOB_REUSED",
+          });
           return publicJob(existing, true);
         }
         activeByControl.delete(control);
       }
 
-      const started = await run([
-        "codebuild", "start-build",
-        "--project-name", PROJECT,
-        "--environment-variables-override", JSON.stringify([
-          { name: "SECOPS_MODE", value: "prepare", type: "PLAINTEXT" },
-          { name: "SECOPS_CONTROL", value: control, type: "PLAINTEXT" },
-        ]),
-      ]);
+      let started;
+      try {
+        started = await run([
+          "codebuild", "start-build",
+          "--project-name", PROJECT,
+          "--environment-variables-override", JSON.stringify([
+            { name: "SECOPS_MODE", value: "prepare", type: "PLAINTEXT" },
+            { name: "SECOPS_CONTROL", value: control, type: "PLAINTEXT" },
+          ]),
+        ]);
+      } catch (error) {
+        await audit({
+          event: "JOB_START_FAILED",
+          control,
+          state: "UNKNOWN",
+          messageCode: "JOB_START_FAILED",
+        });
+        throw error;
+      }
       const buildId = started?.build?.id;
       if (typeof buildId !== "string" || !buildId.startsWith(PROJECT + ":"))
         throw Error("unexpected CodeBuild start response");
@@ -304,6 +372,14 @@ export function createDemoAdmin({
       activeByControl.set(control, job.jobId);
       cleanup();
       await persist();
+      await audit({
+        event: "JOB_STARTED",
+        control,
+        jobId: job.jobId,
+        state: "RUNNING",
+        reused: false,
+        messageCode: "JOB_STARTED",
+      });
       return publicJob(job);
     },
 
@@ -316,6 +392,10 @@ export function createDemoAdmin({
 
       return reconcile(job);
     },
+
+    async audit(entry) { return audit(entry); },
+    async auditList(limit = 100) { return auditStore.list(limit); },
+    async auditDiagnostics() { return auditStore.diagnostics(); },
 
     async diagnostics() {
       await ensureLoaded();
