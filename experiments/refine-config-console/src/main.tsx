@@ -262,8 +262,13 @@ function App() {
       const started = await post("/api/demo/rearm", {
         control: demoPreview.control, confirmationToken: demoPreview.confirmationToken,
       });
-      if (!started?.jobId || started?.state !== "RUNNING") throw Error("Demo job did not start correctly");
+      if (!started?.jobId) throw Error("Demo job did not start correctly");
       setDemoPreview(null);
+      if (started.state === "SUCCEEDED") {
+        setDemoResult(started); setRefresh((x) => x + 1); return;
+      }
+      if (started.state !== "RUNNING")
+        throw Error(started.error || "Previous demo job is not verified. Refresh Config evidence before retrying.");
       let result = started;
       for (let attempt = 0; attempt < 180 && result.state === "RUNNING"; attempt++) {
         await new Promise((resolve) => setTimeout(resolve, 2000));
