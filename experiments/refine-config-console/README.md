@@ -22,9 +22,17 @@ Hosted reverse proxy requirements:
   `/var/lib/aws-config-console/demo-jobs.json` with mode 0600;
 - after a Config service restart, the backend reloads RUNNING jobs, rebuilds the
   per-control single-flight index, and resumes polling the same private CodeBuild run;
+- RUNNING jobs are reconciled against CodeBuild before same-control reuse:
+  active stays RUNNING, validated success becomes SUCCEEDED, and a definitively
+  missing/stopped/timed-out/unverified run becomes **UNKNOWN**;
+- UNKNOWN is terminal evidence, clears the active-control lock, and never launches
+  a replacement build in that same accepted request; the UI tells the operator to
+  refresh Config evidence before a later fresh Preview + Confirm;
+- transient CodeBuild read failures do not rewrite durable state and leave the job
+  RUNNING for later reconciliation;
 - malformed or foreign job-journal records fail closed rather than starting AWS work;
 - only one active PREPARE job per control is allowed; repeated accepted requests
-  reuse that active job instead of starting duplicate CodeBuild work;
+  reconcile and reuse that active job instead of starting duplicate CodeBuild work;
 - HTML gateway/proxy errors must not be interpreted as JSON by the browser;
 - the backend still validates exactly four aliases and the exact retained Issue #82
   demo resources before reporting success.

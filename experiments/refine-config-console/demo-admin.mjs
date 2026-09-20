@@ -64,7 +64,7 @@ function validatePersistedJob(job) {
     throw Error("demo job journal invalid");
   if (!UUID_RE.test(job.jobId) || !CONTROLS.includes(job.control) ||
       typeof job.buildId !== "string" || !job.buildId.startsWith(PROJECT + ":") ||
-      !["RUNNING", "SUCCEEDED", "FAILED"].includes(job.state) ||
+      !["RUNNING", "SUCCEEDED", "FAILED", "UNKNOWN"].includes(job.state) ||
       !Number.isInteger(job.startedAt) || job.startedAt <= 0 ||
       !Number.isInteger(job.finishedAt) || job.finishedAt < 0 ||
       (job.state === "RUNNING" && job.finishedAt !== 0) ||
@@ -226,6 +226,40 @@ export function createDemoAdmin({
     await persist();
   };
 
+  const reconcile = async (job) => {
+    if (job.state !== "RUNNING") return publicJob(job);
+
+    const status = await run(["codebuild", "batch-get-builds", "--ids", job.buildId]);
+    const notFound = Array.isArray(status?.buildsNotFound) && status.buildsNotFound.includes(job.buildId);
+    if (notFound) {
+      await finish(job, "UNKNOWN", {
+        error: "Previous demo job is no longer available in CodeBuild; provider outcome is not verified. Refresh Config evidence before retrying.",
+      });
+      return publicJob(job);
+    }
+
+    const builds = Array.isArray(status?.builds) ? status.builds : [];
+    if (builds.length !== 1) throw Error("CodeBuild status unavailable");
+    const build = builds[0];
+    if (!TERMINAL.has(build.buildStatus)) return publicJob(job);
+
+    if (build.buildStatus !== "SUCCEEDED") {
+      await finish(job, "UNKNOWN", {
+        error: "Previous demo job ended without verified provider evidence. Refresh Config evidence before retrying.",
+      });
+      return publicJob(job);
+    }
+
+    try {
+      await finish(job, "SUCCEEDED", { result: validatedResult(job.control, build) });
+    } catch {
+      await finish(job, "UNKNOWN", {
+        error: "Previous demo job completed but its provider result could not be verified. Refresh Config evidence before retrying.",
+      });
+    }
+    return publicJob(job);
+  };
+
   return {
     controls: CONTROLS,
     recovery: "persistent-journal",
@@ -237,7 +271,10 @@ export function createDemoAdmin({
       const existingId = activeByControl.get(control);
       if (existingId) {
         const existing = jobs.get(existingId);
-        if (existing?.state === "RUNNING") return publicJob(existing, true);
+        if (existing?.state === "RUNNING") {
+          await reconcile(existing);
+          return publicJob(existing, true);
+        }
         activeByControl.delete(control);
       }
 
@@ -277,21 +314,7 @@ export function createDemoAdmin({
       if (!job) return null;
       if (job.state !== "RUNNING") return publicJob(job);
 
-      const status = await run(["codebuild", "batch-get-builds", "--ids", job.buildId]);
-      const build = status?.builds?.[0];
-      if (!build || status.builds.length !== 1) throw Error("CodeBuild status unavailable");
-      if (!TERMINAL.has(build.buildStatus)) return publicJob(job);
-
-      if (build.buildStatus !== "SUCCEEDED") {
-        await finish(job, "FAILED", { error: "bounded four-account prepare failed" });
-        return publicJob(job);
-      }
-      try {
-        await finish(job, "SUCCEEDED", { result: validatedResult(job.control, build) });
-      } catch {
-        await finish(job, "FAILED", { error: "prepare result failed scope validation" });
-      }
-      return publicJob(job);
+      return reconcile(job);
     },
   };
 }
