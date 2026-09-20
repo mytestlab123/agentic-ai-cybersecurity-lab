@@ -40,6 +40,23 @@ Hosted reverse proxy requirements:
 The former `ops.astromedicomp.org` product surface is retired and redirects to
 Config Dashboard. The separate Compliance Agent remains at `sec.astromedicomp.org`.
 
+### Backend liveness vs readiness
+
+- `GET /api/health` is intentionally cheap **process liveness**. It does not call
+  AWS or persistence dependencies.
+- `GET /api/diagnostics` is sanitized **dependency readiness** for the four-account
+  Config provider, historical snapshot store, Demo-job journal, and fixed CodeBuild path.
+- Diagnostics expose aliases, counts, timestamps and status only. They never return
+  account IDs, resource IDs, private CodeBuild build IDs, CLI stderr or credentials.
+- The host role intentionally has no `BatchGetProjects` / `ListBuildsForProject`
+  permission. CodeBuild readiness therefore uses the existing read-only
+  `BatchGetBuilds` permission against the newest private build reference retained
+  by the Demo-job journal. If no reference is retained, that component is
+  `DEGRADED` rather than widening IAM or starting a build.
+- `READY` means the dependency is proven usable, `DEGRADED` means read-only
+  service remains usable but full readiness is not proven, and `NOT_READY`
+  means a required dependency failed validation.
+
 ## Run
 
 On the shared host, read `~/.codex/port.md` before configuring or starting a
